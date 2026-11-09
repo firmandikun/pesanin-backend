@@ -1,0 +1,83 @@
+<?php
+
+// Subset of Indonesian provinces/cities/districts for shipping-rate lookup.
+// Replace with a full dataset (or a courier API) for production.
+return [
+    'DKI JAKARTA' => ['Jawa', [
+        'JAKARTA SELATAN' => ['TEBET', 'SETIABUDI', 'KEBAYORAN BARU', 'KEBAYORAN LAMA', 'MAMPANG PRAPATAN', 'PANCORAN', 'CILANDAK', 'PASAR MINGGU', 'JAGAKARSA', 'PESANGGRAHAN'],
+        'JAKARTA PUSAT' => ['GAMBIR', 'TANAH ABANG', 'MENTENG', 'SENEN', 'CEMPAKA PUTIH', 'KEMAYORAN'],
+        'JAKARTA BARAT' => ['CENGKARENG', 'GROGOL PETAMBURAN', 'KEBON JERUK', 'KEMBANGAN', 'PALMERAH', 'TAMBORA'],
+        'JAKARTA TIMUR' => ['CAKUNG', 'DUREN SAWIT', 'JATINEGARA', 'KRAMAT JATI', 'MATRAMAN', 'PULO GADUNG', 'CIRACAS'],
+        'JAKARTA UTARA' => ['KELAPA GADING', 'PENJARINGAN', 'TANJUNG PRIOK', 'KOJA', 'CILINCING', 'PADEMANGAN'],
+    ]],
+    'BANTEN' => ['Jawa', [
+        'TANGERANG SELATAN' => ['SERPONG', 'PAMULANG', 'CIPUTAT', 'PONDOK AREN', 'BINTARO'],
+        'TANGERANG' => ['KARAWACI', 'CIPONDOH', 'CILEDUG', 'TANGERANG', 'BATUCEPER'],
+        'SERANG' => ['SERANG', 'CIPOCOK JAYA', 'KASEMEN'],
+    ]],
+    'JAWA BARAT' => ['Jawa', [
+        'BANDUNG' => ['COBLONG', 'SUKAJADI', 'CICENDO', 'ANDIR', 'BATUNUNGGAL', 'BUAHBATU', 'LENGKONG', 'ANTAPANI'],
+        'BEKASI' => ['BEKASI BARAT', 'BEKASI TIMUR', 'BEKASI SELATAN', 'BEKASI UTARA', 'RAWALUMBU', 'JATIASIH'],
+        'DEPOK' => ['BEJI', 'PANCORAN MAS', 'CIMANGGIS', 'SUKMAJAYA', 'CINERE', 'LIMO'],
+        'BOGOR' => ['BOGOR TENGAH', 'BOGOR UTARA', 'BOGOR SELATAN', 'TANAH SAREAL'],
+        'CIREBON' => ['KEJAKSAN', 'LEMAHWUNGKUK', 'KESAMBI'],
+    ]],
+    'JAWA TENGAH' => ['Jawa', [
+        'SEMARANG' => ['SEMARANG TENGAH', 'SEMARANG BARAT', 'BANYUMANIK', 'TEMBALANG', 'PEDURUNGAN'],
+        'SURAKARTA' => ['LAWEYAN', 'SERENGAN', 'PASAR KLIWON', 'JEBRES', 'BANJARSARI'],
+        'MAGELANG' => ['MAGELANG TENGAH', 'MAGELANG UTARA'],
+    ]],
+    'DI YOGYAKARTA' => ['Jawa', [
+        'YOGYAKARTA' => ['GONDOKUSUMAN', 'JETIS', 'KRATON', 'MERGANGSAN', 'UMBULHARJO'],
+        'SLEMAN' => ['DEPOK', 'MLATI', 'NGAGLIK', 'GAMPING'],
+    ]],
+    'JAWA TIMUR' => ['Jawa', [
+        'SURABAYA' => ['GUBENG', 'WONOKROMO', 'TEGALSARI', 'SUKOLILO', 'RUNGKUT', 'GENTENG', 'TAMBAKSARI'],
+        'MALANG' => ['KLOJEN', 'LOWOKWARU', 'BLIMBING', 'SUKUN', 'KEDUNGKANDANG'],
+        'SIDOARJO' => ['SIDOARJO', 'WARU', 'TAMAN', 'BUDURAN'],
+    ]],
+    'BALI' => ['Bali & Nusa Tenggara', [
+        'DENPASAR' => ['DENPASAR BARAT', 'DENPASAR TIMUR', 'DENPASAR SELATAN', 'DENPASAR UTARA'],
+        'BADUNG' => ['KUTA', 'KUTA UTARA', 'MENGWI'],
+    ]],
+    'NUSA TENGGARA BARAT' => ['Bali & Nusa Tenggara', [
+        'MATARAM' => ['AMPENAN', 'CAKRANEGARA', 'MATARAM', 'SELAPARANG'],
+    ]],
+    'SUMATERA UTARA' => ['Sumatera', [
+        'MEDAN' => ['MEDAN BARU', 'MEDAN KOTA', 'MEDAN PETISAH', 'MEDAN SUNGGAL', 'MEDAN JOHOR'],
+    ]],
+    'SUMATERA BARAT' => ['Sumatera', [
+        'PADANG' => ['PADANG BARAT', 'PADANG TIMUR', 'PADANG UTARA', 'KOTO TANGAH'],
+    ]],
+    'RIAU' => ['Sumatera', [
+        'PEKANBARU' => ['SUKAJADI', 'SAIL', 'TAMPAN', 'MARPOYAN DAMAI'],
+    ]],
+    'SUMATERA SELATAN' => ['Sumatera', [
+        'PALEMBANG' => ['ILIR BARAT I', 'ILIR TIMUR I', 'SEBERANG ULU I', 'KEMUNING'],
+    ]],
+    'LAMPUNG' => ['Sumatera', [
+        'BANDAR LAMPUNG' => ['TANJUNG KARANG PUSAT', 'KEDATON', 'RAJABASA', 'SUKARAME'],
+    ]],
+    'KALIMANTAN TIMUR' => ['Kalimantan', [
+        'BALIKPAPAN' => ['BALIKPAPAN KOTA', 'BALIKPAPAN SELATAN', 'BALIKPAPAN UTARA'],
+        'SAMARINDA' => ['SAMARINDA KOTA', 'SAMARINDA ULU', 'SUNGAI KUNJANG'],
+    ]],
+    'KALIMANTAN BARAT' => ['Kalimantan', [
+        'PONTIANAK' => ['PONTIANAK KOTA', 'PONTIANAK SELATAN', 'PONTIANAK BARAT'],
+    ]],
+    'KALIMANTAN SELATAN' => ['Kalimantan', [
+        'BANJARMASIN' => ['BANJARMASIN TENGAH', 'BANJARMASIN UTARA', 'BANJARMASIN SELATAN'],
+    ]],
+    'SULAWESI SELATAN' => ['Sulawesi', [
+        'MAKASSAR' => ['PANAKKUKANG', 'RAPPOCINI', 'TAMALATE', 'UJUNG PANDANG', 'BIRINGKANAYA'],
+    ]],
+    'SULAWESI UTARA' => ['Sulawesi', [
+        'MANADO' => ['WENANG', 'MALALAYANG', 'SARIO', 'TIKALA'],
+    ]],
+    'MALUKU' => ['Maluku & Papua', [
+        'AMBON' => ['SIRIMAU', 'NUSANIWE', 'BAGUALA'],
+    ]],
+    'PAPUA' => ['Maluku & Papua', [
+        'JAYAPURA' => ['JAYAPURA UTARA', 'JAYAPURA SELATAN', 'ABEPURA', 'HERAM'],
+    ]],
+];
