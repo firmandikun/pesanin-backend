@@ -25,7 +25,7 @@ class IntegrationController extends Controller
     {
         $rows = $request->user()->integrations()->get()->keyBy('provider');
 
-        return collect(self::PROVIDERS)->mapWithKeys(fn ($p) => [$p => $this->present($rows[$p] ?? null)]);
+        return collect(self::PROVIDERS)->mapWithKeys(fn ($p) => [$p => $this->present($rows[$p] ?? null, $p)]);
     }
 
     /** Save keys, verify them against the provider, and keep them only if they work. */
@@ -43,9 +43,9 @@ class IntegrationController extends Controller
             ? ['app_id' => [$existing ? 'nullable' : 'required', 'string', 'max:100'], 'secret' => [$existing ? 'nullable' : 'required', 'string', 'max:200']]
             : ($provider === 'biteship'
             ? ['api_key' => [$existing ? 'nullable' : 'required', 'string', 'max:300'], 'cod_type' => 'nullable|in:7_days,5_days,3_days']
-            : ['server_key' => [$existing ? 'nullable' : 'required', 'string', 'max:200'], 'client_key' => ['nullable', 'string', 'max:200'], 'is_production' => 'required|boolean']))));
+            : ['server_key' => [$existing ? 'nullable' : 'required', 'string', 'max:200'], 'client_key' => ['nullable', 'string', 'max:200'], 'signature_key' => ['nullable', 'string', 'max:200'], 'is_production' => 'required|boolean']))));
 
-        $creds = array_merge($existing?->credentials ?? [], array_filter(collect($data)->only(['api_key', 'server_key', 'client_key', 'app_id', 'secret', 'access_token', 'app_secret'])->all()));
+        $creds = array_merge($existing?->credentials ?? [], array_filter(collect($data)->only(['api_key', 'server_key', 'client_key', 'signature_key', 'app_id', 'secret', 'access_token', 'app_secret'])->all()));
         $integration = $existing ?? new UserIntegration(['user_id' => $user->id, 'provider' => $provider, 'webhook_token' => Str::random(40)]);
         $integration->fill([
             'credentials' => $creds,
@@ -71,7 +71,7 @@ class IntegrationController extends Controller
                     'display_phone' => $n['display_phone_number'] ?? null, 'verified_name' => $n['verified_name'] ?? null, 'quality' => $n['quality_rating'] ?? null,
                 ])(\App\Support\WhatsApp\WhatsAppCloud::for($integration)->info())),
                 'biteship' => (new Biteship($integration))->couriers(),
-                default => (new Midtrans($creds['server_key'], $integration->is_production))->verify(),
+                default => (new Midtrans($creds['server_key'], (bool) $integration->is_production, $creds['signature_key'] ?? null))->verify(),
             };
         } catch (Throwable $e) {
             abort(422, 'Koneksi gagal: '.$e->getMessage());
@@ -82,7 +82,7 @@ class IntegrationController extends Controller
         $integration->fill(['status' => 'active', 'last_error' => null, 'verified_at' => now()])->save();
         ActivityLog::record($user, "integration.{$provider}", ucfirst($provider).' terhubung');
 
-        return $this->present($integration);
+        return $this->present($integration, $provider);
     }
 
     /**
@@ -190,7 +190,7 @@ class IntegrationController extends Controller
         }
 
         $order = Order::with('user.integrations')->where('code', $orderId)->first();
-        $mt = $order ? Midtrans::forSeller($order->user->integration('midtrans')) : null;
+        $mt = $order ? Midtrans::forSeller($order->user?->integration('midtrans')) : null;
         abort_unless($order && $mt && $mt->validSignature($n), 403);
 
         Midtrans::applyToOrder($order, $n);
@@ -198,12 +198,33 @@ class IntegrationController extends Controller
         return response()->json(['ok' => true]);
     }
 
-    private function present(?UserIntegration $i): array
+    private function present(?UserIntegration $i, ?string $provider = null): array
     {
+        $p = $provider ?? $i?->provider;
+        $mask = fn (?string $k) => $k ? substr($k, 0, 12).'…'.substr($k, -4) : null;
+
+        if ($p === 'midtrans' && config('services.midtrans.server_key')) {
+            return [
+                'connected' => true,
+                'is_production' => (bool) config('services.midtrans.production'),
+                'verified_at' => now(),
+                'last_error' => null,
+                'settings' => null,
+                'keys' => [
+                    'server_key' => $mask(config('services.midtrans.server_key')),
+                    'client_key' => $mask(config('services.midtrans.client_key')),
+                    'signature_key' => $mask(config('services.midtrans.signature_key')),
+                ],
+                'webhook_url' => null,
+                'verify_token' => null,
+                'details' => null,
+                'from_env' => true,
+            ];
+        }
+
         if (! $i) {
             return ['connected' => false];
         }
-        $mask = fn (?string $k) => $k ? substr($k, 0, 12).'…'.substr($k, -4) : null;
 
         return [
             'connected' => $i->status === 'active',
@@ -212,7 +233,7 @@ class IntegrationController extends Controller
             'last_error' => $i->last_error,
             'settings' => $i->settings,
             'keys' => match ($i->provider) {
-                'midtrans' => ['server_key' => $mask($i->key('server_key')), 'client_key' => $mask($i->key('client_key'))],
+                'midtrans' => ['server_key' => $mask($i->key('server_key')), 'client_key' => $mask($i->key('client_key')), 'signature_key' => $mask($i->key('signature_key'))],
                 'shopee_affiliate' => ['app_id' => $mask($i->key('app_id')), 'secret' => $mask($i->key('secret'))],
                 'whatsapp_cloud' => ['phone_number_id' => $i->settings['phone_number_id'] ?? null, 'waba_id' => $i->settings['waba_id'] ?? null, 'access_token' => $mask($i->key('access_token')), 'app_secret' => $mask($i->key('app_secret'))],
                 default => ['api_key' => $mask($i->key('api_key'))],

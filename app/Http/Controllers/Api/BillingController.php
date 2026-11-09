@@ -19,6 +19,31 @@ class BillingController extends Controller
     {
         $user = $request->user();
         $this->expireOverdue($user->id);
+
+        if ($mt = \App\Support\Midtrans\Midtrans::platform()) {
+            foreach ($user->subscriptionInvoices()->where('status', 'unpaid')->get() as $inv) {
+                try {
+                    $st = $mt->status(\App\Support\Midtrans\Midtrans::invoiceOrderId($inv));
+                    $outcome = \App\Support\Midtrans\Midtrans::outcome($st);
+                    if ($outcome === 'paid') {
+                        DB::transaction(function () use ($inv) {
+                            $inv->update(['status' => 'paid', 'paid_at' => now()]);
+                            $inv->user->forceFill([
+                                'plan' => $inv->plan,
+                                'plan_billing' => $inv->billing,
+                                'plan_expires_at' => Carbon::parse($inv->period_end)->endOfDay(),
+                                'plan_auto_renew' => true,
+                            ])->save();
+                        });
+                        ActivityLog::record($inv->user, 'billing.paid', "Pembayaran {$inv->number} diterima (Midtrans)");
+                    } elseif ($outcome === 'failed') {
+                        $inv->update(['status' => 'cancelled']);
+                    }
+                } catch (\Throwable) {
+                }
+            }
+        }
+
         $plan = Plans::current($user);
 
         return [

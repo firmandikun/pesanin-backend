@@ -23,18 +23,30 @@ class Midtrans
         'mandiri_bill' => ['echannel'], 'gopay' => ['gopay'], 'shopeepay' => ['shopeepay'],
     ];
 
-    public function __construct(private string $serverKey, private bool $production) {}
+    public function __construct(
+        private string $serverKey,
+        private bool $production,
+        private ?string $signatureKey = null
+    ) {}
 
-    public static function forSeller(?UserIntegration $i): ?self
+    public static function forSeller(?UserIntegration $i = null): ?self
     {
-        return $i && $i->provider === 'midtrans' && $i->key('server_key') ? new self($i->key('server_key'), $i->is_production) : null;
+        if ($i && $i->provider === 'midtrans' && $i->key('server_key')) {
+            return new self($i->key('server_key'), (bool) $i->is_production, $i->key('signature_key'));
+        }
+
+        return self::platform();
     }
 
     public static function platform(): ?self
     {
         $key = config('services.midtrans.server_key');
 
-        return $key ? new self($key, (bool) config('services.midtrans.production')) : null;
+        return $key ? new self(
+            $key,
+            (bool) config('services.midtrans.production'),
+            config('services.midtrans.signature_key')
+        ) : null;
     }
 
     private function snapHost(): string
@@ -112,12 +124,28 @@ class Midtrans
         $order->save();
     }
 
-    /** Midtrans signs notifications with sha512(order_id + status_code + gross_amount + server_key). */
+    /** Midtrans signs notifications with sha512(order_id + status_code + gross_amount + key). Key can be Signature Secret Key or Server Key. */
     public function validSignature(array $n): bool
     {
-        $expected = hash('sha512', ($n['order_id'] ?? '').($n['status_code'] ?? '').($n['gross_amount'] ?? '').$this->serverKey);
+        $payload = ($n['order_id'] ?? '').($n['status_code'] ?? '').($n['gross_amount'] ?? '');
+        $receivedSig = (string) ($n['signature_key'] ?? '');
 
-        return hash_equals($expected, (string) ($n['signature_key'] ?? ''));
+        if ($receivedSig === '') {
+            return false;
+        }
+
+        $candidates = array_filter(array_unique([
+            $this->signatureKey,
+            $this->serverKey,
+        ]));
+
+        foreach ($candidates as $secret) {
+            if (hash_equals(hash('sha512', $payload.$secret), $receivedSig)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /** paid | pending | failed */

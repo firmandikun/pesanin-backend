@@ -106,14 +106,20 @@ class PublicCheckoutController extends Controller
 
         $order = CheckoutService::place($product, $data, ['ip_address' => $request->ip(), 'source' => 'checkout']);
 
-        // E-Payment through the seller's Midtrans: hosted payment page, result arrives via notification.
-        if ($order->payment_method === 'epayment' && $mt = Midtrans::forSeller($product->user->integration('midtrans'))) {
-            try {
-                $snap = $mt->forOrder($order, $product->form_settings['payment']['epayment']['channels'] ?? null,
-                    rtrim(config('app.frontend_url'), '/')."/c/{$slug}?order={$order->code}");
-                $order->forceFill(['payment_url' => $snap['redirect_url'], 'payment_ref' => $snap['token']])->save();
-            } catch (\Throwable $e) {
-                \Illuminate\Support\Facades\Log::warning("Midtrans snap {$order->code}: {$e->getMessage()}");
+        // E-Payment through the seller's Midtrans (or platform fallback): hosted payment page, result arrives via notification.
+        if ($order->payment_method === 'epayment') {
+            $mt = Midtrans::forSeller($product->user->integration('midtrans')) ?? Midtrans::platform();
+            if ($mt) {
+                try {
+                    $snap = $mt->forOrder($order, $product->form_settings['payment']['epayment']['channels'] ?? null,
+                        rtrim(config('app.frontend_url'), '/')."/c/{$slug}?order={$order->code}");
+                    $order->forceFill(['payment_url' => $snap['redirect_url'], 'payment_ref' => $snap['token']])->save();
+                } catch (\Throwable $e) {
+                    \Illuminate\Support\Facades\Log::warning("Midtrans snap {$order->code}: {$e->getMessage()}");
+                    abort(422, 'Gagal memproses pembayaran Midtrans: '.$e->getMessage());
+                }
+            } else {
+                abort(422, 'Metode E-Payment belum dikonfigurasi.');
             }
         }
 
@@ -125,7 +131,7 @@ class PublicCheckoutController extends Controller
     {
         $order = Order::with('user.integrations')->where('code', $code)->where('payment_method', 'epayment')->firstOrFail();
         // Don't wait only for the notification: ask Midtrans directly (also covers local dev without a public URL).
-        if ($order->payment_status !== 'paid' && $order->status === 'pending' && $mt = Midtrans::forSeller($order->user->integration('midtrans'))) {
+        if ($order->payment_status !== 'paid' && $order->status === 'pending' && $mt = (Midtrans::forSeller($order->user->integration('midtrans')) ?? Midtrans::platform())) {
             try {
                 $st = $mt->status($order->code);
                 if (in_array((string) ($st['status_code'] ?? ''), ['200', '201', '202', '407'], true) && ($st['order_id'] ?? null) === $order->code) {

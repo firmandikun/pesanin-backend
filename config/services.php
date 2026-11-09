@@ -40,6 +40,7 @@ return [
     'midtrans' => [
         'server_key' => env('MIDTRANS_SERVER_KEY'),
         'client_key' => env('MIDTRANS_CLIENT_KEY'),
+        'signature_key' => env('MIDTRANS_SIGNATURE_KEY'),
         'production' => (bool) env('MIDTRANS_PRODUCTION', false),
     ],
 
