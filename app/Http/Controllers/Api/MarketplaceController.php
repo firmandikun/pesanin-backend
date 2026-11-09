@@ -97,11 +97,20 @@ class MarketplaceController extends Controller
             'access_expires_at' => now()->addSeconds($t['expire_in'] ?? 14400), 'refresh_expires_at' => now()->addDays(30),
             'status' => 'active', 'last_error' => null, 'shop_name' => $shop->shop_name ?? "Toko {$shopId}",
         ])->save();
-        try {
-            (new ShopeeSync)->shopInfo($shop);
-        } catch (ShopeeException) {
-            // name stays as placeholder until the next sync
+        // Make the first visit useful immediately: import the shop's existing
+        // catalogue and recent orders before redirecting the seller back.
+        // A sync failure must not invalidate an otherwise successful OAuth flow;
+        // the scheduled/manual sync can retry it later.
+        $sync = new ShopeeSync;
+        $syncErrors = [];
+        foreach (['shop' => fn () => $sync->shopInfo($shop), 'products' => fn () => $sync->products($shop), 'orders' => fn () => $sync->orders($shop)] as $part => $run) {
+            try {
+                $run();
+            } catch (ShopeeException $e) {
+                $syncErrors[] = "{$part}: {$e->getMessage()}";
+            }
         }
+        $shop->update(['last_error' => $syncErrors ? mb_substr(implode(' | ', $syncErrors), 0, 250) : null]);
 
         return $shop->setRelation('user', $user);
     }
