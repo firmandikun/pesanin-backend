@@ -12,6 +12,8 @@ use App\Support\Shopee\ShopeeClient;
 use App\Support\Shopee\ShopeeDemo;
 use App\Support\Shopee\ShopeeException;
 use App\Support\Shopee\ShopeeSync;
+use App\Support\Analytics;
+use Illuminate\Support\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Crypt;
 use Illuminate\Validation\Rule;
@@ -231,6 +233,37 @@ class MarketplaceController extends Controller
         }
 
         return ['message' => 'Sinkronisasi selesai', 'result' => $result, 'shop' => $shop->fresh()];
+    }
+
+    public function transactions(Request $request, MarketplaceShop $shop)
+    {
+        $this->own($request, $shop);
+        $data = $request->validate([
+            'from' => 'nullable|date', 'to' => 'nullable|date', 'search' => 'nullable|string|max:100',
+            'status' => 'nullable|string|max:30', 'page' => 'nullable|integer|min:1', 'per_page' => 'nullable|integer|min:10|max:100',
+        ]);
+        $to = Carbon::parse($data['to'] ?? today())->endOfDay();
+        $from = Carbon::parse($data['from'] ?? $to->copy()->subDays(29))->startOfDay();
+        $rows = Analytics::transactions($request->user(), $from, $to, $shop->id)
+            ->when($data['status'] ?? null, fn ($c, $status) => $c->where('status', $status))
+            ->when($data['search'] ?? null, function ($c, $search) {
+                $needle = mb_strtolower($search);
+                return $c->filter(fn ($row) => str_contains(mb_strtolower(($row['order_sn'] ?? '').' '.($row['customer_name'] ?? '').' '.($row['tracking_number'] ?? '')), $needle));
+            })->values();
+        $perPage = (int) ($data['per_page'] ?? 20);
+        $page = (int) ($data['page'] ?? 1);
+
+        return [
+            'transactions' => [
+                'data' => $rows->forPage($page, $perPage)->values(), 'current_page' => $page,
+                'last_page' => max(1, (int) ceil($rows->count() / $perPage)), 'total' => $rows->count(),
+            ],
+            'summary' => [
+                'gmv' => (int) $rows->sum('gmv'), 'fees' => (int) $rows->sum('fees'),
+                'net_revenue' => (int) $rows->sum('net_revenue'), 'cogs' => (int) $rows->sum('cogs'),
+                'profit' => (int) $rows->sum('profit'), 'missing_cost' => $rows->where('missing_cost', true)->count(),
+            ],
+        ];
     }
 
     public function disconnect(Request $request, MarketplaceShop $shop)

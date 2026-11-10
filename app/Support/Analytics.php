@@ -157,6 +157,34 @@ class Analytics
         ];
     }
 
+    /** Financial ledger rows for a Shopee shop, separate from fulfilment actions. */
+    public static function transactions(User $user, Carbon $from, Carbon $to, int $shopId): Collection
+    {
+        $orders = $user->orders()->where('channel', 'shopee')->where('marketplace_shop_id', $shopId)
+            ->where('is_abandoned', false)->whereBetween('created_at', [$from, $to])->latest()->get();
+        $costs = Product::withTrashed()->where('user_id', $user->id)->where('cost_price', '>', 0)
+            ->pluck('cost_price', 'id')->map(fn ($v) => (int) $v)->all();
+        self::$listingCosts = MarketplaceListing::where('user_id', $user->id)->where('marketplace_shop_id', $shopId)->where('cost_price', '>', 0)->get()
+            ->mapWithKeys(fn ($l) => [$l->marketplace_shop_id.':'.$l->item_id.':'.$l->model_id => (int) $l->cost_price])->all();
+        $feeRates = self::shopFeeRates($user);
+
+        return $orders->map(function (Order $order) use ($costs, $feeRates) {
+            $money = self::breakdown($order, $costs, $feeRates);
+            $netRevenue = $money['revenue'] - $money['fees'];
+            $profit = $netRevenue - $money['cogs'];
+
+            return [
+                'id' => $order->id, 'order_sn' => $order->external_order_sn, 'created_at' => $order->created_at,
+                'status' => $order->external_status, 'customer_name' => $order->customer_name,
+                'tracking_number' => $order->tracking_number, 'courier' => $order->courier, 'items' => $order->items ?? [],
+                'quantity' => $order->quantity, 'gmv' => $money['gmv'], 'revenue' => $money['revenue'],
+                'fees' => $money['fees'], 'net_revenue' => $netRevenue, 'cogs' => $money['cogs'],
+                'profit' => $profit, 'margin' => $money['revenue'] ? round($profit / $money['revenue'] * 100, 1) : 0,
+                'fee_final' => $money['fee_final'], 'missing_cost' => $money['missing_cost'],
+            ];
+        });
+    }
+
     /** Last 30 days vs the 30 before, per product across all channels, with stock cover. */
     public static function research(User $user): array
     {
