@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use Carbon\Carbon;
 use Carbon\CarbonPeriod;
 use App\Support\Analytics;
+use App\Support\Traffic;
 use Illuminate\Http\Request;
 
 class ReportController extends Controller
@@ -79,15 +80,48 @@ class ReportController extends Controller
     public function sales(Request $request)
     {
         [$from, $to] = $this->range($request);
-        $rows = $request->user()->orders()->active()
+        $base = $request->user()->orders()->active()
             ->whereBetween('created_at', [$from, $to])
-            ->when($request->query('product_id'), fn ($q, $v) => $q->where('product_id', $v))
+            ->when($request->query('product_id'), fn ($q, $v) => $q->where('product_id', $v));
+        $rows = (clone $base)
             ->selectRaw("DATE(created_at) as date, COUNT(*) as orders,
                 SUM(payment_status = 'paid') as paid_orders,
                 SUM(quantity) as items,
                 SUM(total) as gross,
                 SUM(CASE WHEN payment_status = 'paid' THEN total ELSE 0 END) as net")
             ->groupBy('date')->get()->keyBy('date');
+
+        $sourceRows = (clone $base)->with('marketplaceShop:id,shop_name')
+            ->get(['id', 'channel', 'marketplace_shop_id', 'utm_source', 'payment_status', 'quantity', 'total'])
+            ->groupBy(function ($order) {
+                if ($order->channel === 'shopee') {
+                    return 'shopee:'.$order->marketplace_shop_id;
+                }
+
+                return $order->channel === 'manual' ? 'manual' : 'social:'.Traffic::of($order->utm_source);
+            })->map(function ($orders, string $key) {
+                $first = $orders->first();
+                $marketplace = str_starts_with($key, 'shopee:');
+                $label = match (true) {
+                    $marketplace => 'Shopee · '.($first->marketplaceShop?->shop_name ?? 'Toko tidak diketahui'),
+                    $key === 'manual' => 'Media Sosial · Input manual',
+                    default => 'Media Sosial · '.Traffic::label(substr($key, 7)),
+                };
+
+                return [
+                    'key' => $key,
+                    'type' => $marketplace ? 'marketplace' : 'social_media',
+                    'platform' => $marketplace ? 'shopee' : ($key === 'manual' ? 'manual' : substr($key, 7)),
+                    'shop_id' => $marketplace ? $first->marketplace_shop_id : null,
+                    'shop_name' => $marketplace ? $first->marketplaceShop?->shop_name : null,
+                    'label' => $label,
+                    'orders' => $orders->count(),
+                    'paid_orders' => $orders->where('payment_status', 'paid')->count(),
+                    'items' => (int) $orders->sum('quantity'),
+                    'gross' => (int) $orders->sum('total'),
+                    'net' => (int) $orders->where('payment_status', 'paid')->sum('total'),
+                ];
+            })->sortByDesc('gross')->values();
 
         $daily = collect(CarbonPeriod::create($from, $to))->map(function (Carbon $d) use ($rows) {
             $r = $rows->get($d->toDateString());
@@ -104,6 +138,7 @@ class ReportController extends Controller
 
         return [
             'daily' => $daily,
+            'sources' => $sourceRows,
             'totals' => [
                 'orders' => $daily->sum('orders'),
                 'paid_orders' => $daily->sum('paid_orders'),
