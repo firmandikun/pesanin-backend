@@ -56,7 +56,8 @@ return [
     'serpapi' => ['key' => env('SERPAPI_KEY')],
 
     // WhatsApp Cloud API webhooks must reach a public HTTPS URL; set this to a tunnel or the live domain.
-    'whatsapp' => ['webhook_base' => env('WHATSAPP_WEBHOOK_BASE')],
+    // verify_token: for the app-wide webhook https://<domain>/api/whatsapp/webhook set once in the Meta app.
+    'whatsapp' => ['webhook_base' => env('WHATSAPP_WEBHOOK_BASE'), 'verify_token' => env('WHATSAPP_VERIFY_TOKEN')],
 
     // Meta Marketing API ("Login dengan Facebook" → ads_read). App from developers.facebook.com.
     'meta' => [

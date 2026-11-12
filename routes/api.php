@@ -21,6 +21,8 @@ Route::post('/login', [AuthController::class, 'login'])->middleware('throttle:10
 // Public checkout pages
 // Shopee: OAuth return and Live Push (called by Shopee, not by the app).
 Route::get('/shopee/callback', [MarketplaceController::class, 'callback']);
+Route::get('/whatsapp/webhook', [\App\Http\Controllers\Api\WhatsAppChatController::class, 'verifyApp']);
+Route::post('/whatsapp/webhook', [\App\Http\Controllers\Api\WhatsAppChatController::class, 'receiveApp'])->middleware('throttle:1200,1');
 Route::get('/whatsapp/webhook/{token}', [\App\Http\Controllers\Api\WhatsAppChatController::class, 'verify']);
 Route::post('/whatsapp/webhook/{token}', [\App\Http\Controllers\Api\WhatsAppChatController::class, 'receive'])->middleware('throttle:600,1');
 Route::get('/meta/callback', [\App\Http\Controllers\Api\MetaAdsController::class, 'callback']);

@@ -19,7 +19,41 @@ use Throwable;
  */
 class WhatsAppChatController extends Controller
 {
-    /** Meta's subscription check: echo hub.challenge when the verify token matches this connection. */
+    /**
+     * App-wide webhook (production): one URL for every seller, set once in the Meta app.
+     * Verified with WHATSAPP_VERIFY_TOKEN; payloads must be signed with META_APP_SECRET.
+     * Each change is routed to the seller whose connected number it belongs to.
+     */
+    public function verifyApp(Request $request)
+    {
+        $expected = (string) config('services.whatsapp.verify_token');
+        abort_unless($expected !== '' && $request->query('hub_mode') === 'subscribe' && hash_equals($expected, (string) $request->query('hub_verify_token')), 403);
+
+        return response((string) $request->query('hub_challenge'), 200)->header('Content-Type', 'text/plain');
+    }
+
+    public function receiveApp(Request $request)
+    {
+        $secret = (string) config('services.meta.app_secret');
+        $sig = 'sha256='.hash_hmac('sha256', $request->getContent(), $secret);
+        if ($secret === '' || ! hash_equals($sig, (string) $request->header('X-Hub-Signature-256'))) {
+            Log::warning('WhatsApp app webhook: invalid signature (check META_APP_SECRET)');
+            abort(403);
+        }
+        $byNumber = UserIntegration::where('provider', 'whatsapp_cloud')->get()->keyBy(fn ($i) => (string) ($i->settings['phone_number_id'] ?? ''));
+        foreach ($request->input('entry', []) as $entry) {
+            foreach ($entry['changes'] ?? [] as $change) {
+                $v = $change['value'] ?? [];
+                if ($i = $byNumber->get((string) ($v['metadata']['phone_number_id'] ?? ''))) {
+                    self::process($i, $v);
+                }
+            }
+        }
+
+        return response()->json(['ok' => true]);
+    }
+
+    /** Meta's subscription check for a per-seller webhook (own Meta app): echo hub.challenge when the token matches. */
     public function verify(Request $request, string $token)
     {
         $i = UserIntegration::where('provider', 'whatsapp_cloud')->where('webhook_token', $token)->first();
@@ -40,37 +74,41 @@ class WhatsAppChatController extends Controller
                 abort(403);
             }
         }
-        Log::info('WhatsApp webhook received', ['integration' => $i->id, 'fields' => collect($request->input('entry', []))->flatMap(fn ($e) => array_column($e['changes'] ?? [], 'field'))->all()]);
-
         foreach ($request->input('entry', []) as $entry) {
             foreach ($entry['changes'] ?? [] as $change) {
                 $v = $change['value'] ?? [];
-                $pnid = (string) ($v['metadata']['phone_number_id'] ?? '');
-                if ($pnid !== ($i->settings['phone_number_id'] ?? null)) {
-                    continue;
-                }
-                $names = collect($v['contacts'] ?? [])->mapWithKeys(fn ($c) => [$c['wa_id'] => $c['profile']['name'] ?? null]);
-                foreach ($v['messages'] ?? [] as $m) {
-                    $msg = WaMessage::firstOrCreate(['message_id' => $m['id']], [
-                        'user_id' => $i->user_id, 'phone_number_id' => $pnid, 'wa_id' => $m['from'],
-                        'contact_name' => $names[$m['from']] ?? null, 'direction' => 'in', 'type' => $m['type'] ?? 'text',
-                        'text' => self::incomingText($m), 'media_id' => $m[$m['type'] ?? '']['id'] ?? null,
-                        'sent_at' => Carbon::createFromTimestamp((int) ($m['timestamp'] ?? time())),
-                    ]);
-                    if ($msg->wasRecentlyCreated) {
-                        Notifier::send($i->user_id, 'chat', 'Pesan WhatsApp baru',
-                            mb_strimwidth(($msg->contact_name ?: '+'.$msg->wa_id).': '.$msg->text, 0, 120, '…'),
-                            "/chat?channel=whatsapp&source={$pnid}&c={$msg->wa_id}");
-                    }
-                }
-                foreach ($v['statuses'] ?? [] as $s) {
-                    WaMessage::where('message_id', $s['id'])->where('direction', 'out')->update(['status' => $s['status'] ?? null]);
-                    \App\Support\WhatsApp\BroadcastSender::status($s);
+                if ((string) ($v['metadata']['phone_number_id'] ?? '') === ($i->settings['phone_number_id'] ?? null)) {
+                    self::process($i, $v);
                 }
             }
         }
 
         return response()->json(['ok' => true]);
+    }
+
+    /** Stores incoming messages (with a notification) and delivery statuses for one seller's number. */
+    private static function process(UserIntegration $i, array $v): void
+    {
+        $pnid = (string) ($v['metadata']['phone_number_id'] ?? '');
+        Log::info('WhatsApp webhook received', ['integration' => $i->id, 'messages' => count($v['messages'] ?? []), 'statuses' => count($v['statuses'] ?? [])]);
+        $names = collect($v['contacts'] ?? [])->mapWithKeys(fn ($c) => [$c['wa_id'] => $c['profile']['name'] ?? null]);
+        foreach ($v['messages'] ?? [] as $m) {
+            $msg = WaMessage::firstOrCreate(['message_id' => $m['id']], [
+                'user_id' => $i->user_id, 'phone_number_id' => $pnid, 'wa_id' => $m['from'],
+                'contact_name' => $names[$m['from']] ?? null, 'direction' => 'in', 'type' => $m['type'] ?? 'text',
+                'text' => self::incomingText($m), 'media_id' => $m[$m['type'] ?? '']['id'] ?? null,
+                'sent_at' => Carbon::createFromTimestamp((int) ($m['timestamp'] ?? time())),
+            ]);
+            if ($msg->wasRecentlyCreated) {
+                Notifier::send($i->user_id, 'chat', 'Pesan WhatsApp baru',
+                    mb_strimwidth(($msg->contact_name ?: '+'.$msg->wa_id).': '.$msg->text, 0, 120, '…'),
+                    "/chat?channel=whatsapp&source={$pnid}&c={$msg->wa_id}");
+            }
+        }
+        foreach ($v['statuses'] ?? [] as $s) {
+            WaMessage::where('message_id', $s['id'])->where('direction', 'out')->update(['status' => $s['status'] ?? null]);
+            \App\Support\WhatsApp\BroadcastSender::status($s);
+        }
     }
 
     /** One conversation per customer number, in the shared Conv shape. */
