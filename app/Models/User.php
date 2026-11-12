@@ -27,17 +27,26 @@ class User extends Authenticatable
             'cod_fee_percent' => 'float',
             'settings' => 'array',
             'plan_expires_at' => 'datetime',
+            'trial_ends_at' => 'datetime',
             'plan_auto_renew' => 'boolean',
+            'is_admin' => 'boolean',
+            'suspended_at' => 'datetime',
         ];
     }
 
     /** @var list<string> */
-    protected $appends = ['active_plan'];
+    protected $appends = ['active_plan', 'subscription'];
 
     /** Plan in effect right now (Gratis once a paid period has lapsed). */
     public function getActivePlanAttribute(): string
     {
         return \App\Support\Plans::current($this);
+    }
+
+    /** Trial / active / grace / expired state, see Plans::status(). */
+    public function getSubscriptionAttribute(): array
+    {
+        return \App\Support\Plans::status($this);
     }
 
     public function marketplaceShops(): HasMany

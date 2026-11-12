@@ -120,6 +120,6 @@ class SettingsController extends Controller
 
     public function activity(Request $request)
     {
-        return $request->user()->activityLogs()->latest('created_at')->paginate(min(100, max(1, $request->integer('per_page', 10))));
+        return $request->user()->activityLogs()->latest('created_at')->paginate(min(1000, max(1, $request->integer('per_page', 10))));
     }
 }

@@ -61,7 +61,7 @@ class BroadcastController extends Controller
             'connected' => (bool) $i, 'phone' => $i?->settings['display_phone'] ?? null, 'name' => $i?->settings['verified_name'] ?? null,
             'waba_id' => $i?->settings['waba_id'] ?? null, 'quality' => null, 'tier' => null, 'capacity' => null,
             'used_24h' => self::sentSince($user, now()->subDay()),
-            'plan' => ['name' => Plans::PLANS[$plan]['name'], 'limit' => Plans::PLANS[$plan]['limits']['broadcast'], 'used' => Plans::usage($user)['broadcast']],
+            'plan' => ['name' => Plans::all()[$plan]['name'], 'limit' => Plans::all()[$plan]['limits']['broadcast'], 'used' => Plans::usage($user)['broadcast']],
             'customers_with_phone' => Customer::where('user_id', $user->id)->whereNotNull('phone')->count(),
             'opted_in' => Customer::where('user_id', $user->id)->whereNotNull('phone')->where('opt_in', true)->count(),
             'error' => null,
@@ -193,7 +193,7 @@ class BroadcastController extends Controller
             ->when($request->query('tab') === 'history', fn ($w) => $w->whereIn('status', ['done', 'cancelled']))
             ->latest();
 
-        return $q->paginate(min(50, max(5, (int) $request->query('per_page', 10))));
+        return $q->paginate(min(1000, max(5, (int) $request->query('per_page', 10))));
     }
 
     public function show(Request $request, Broadcast $broadcast)
@@ -286,10 +286,10 @@ class BroadcastController extends Controller
         $rows = $this->audience($request, $d['audience']);
         abort_unless($rows, 422, 'Tidak ada penerima. Pastikan pelanggan punya nomor HP'.(($d['audience']['opt_in_only'] ?? true) && $d['audience']['source'] === 'customers' ? ' dan sudah setuju menerima promosi.' : '.'));
         $plan = Plans::current($user);
-        $limit = Plans::PLANS[$plan]['limits']['broadcast'];
+        $limit = Plans::all()[$plan]['limits']['broadcast'];
         $used = Plans::usage($user)['broadcast'];
         if ($limit !== null && $used + count($rows) > $limit) {
-            abort(response()->json(['message' => 'Kuota broadcast paket '.Plans::PLANS[$plan]['name']." tersisa {$limit} − {$used} = ".max(0, $limit - $used).' penerima bulan ini. Kurangi penerima atau upgrade paket.', 'upgrade' => true, 'limit' => 'broadcast'], 402));
+            abort(response()->json(['message' => 'Kuota broadcast paket '.Plans::all()[$plan]['name']." tersisa {$limit} − {$used} = ".max(0, $limit - $used).' penerima bulan ini. Kurangi penerima atau upgrade paket.', 'upgrade' => true, 'limit' => 'broadcast'], 402));
         }
 
         $b = DB::transaction(function () use ($user, $i, $d, $tpl, $vars, $rows, $request) {

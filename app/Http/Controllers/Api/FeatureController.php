@@ -233,7 +233,7 @@ class FeatureController extends Controller
     {
         return DB::table('wa_rotator_hits as h')->join('wa_rotators as r', 'r.id', '=', 'h.wa_rotator_id')->leftJoin('cs_staff as s', 's.id', '=', 'h.cs_staff_id')
             ->where('r.user_id', $request->user()->id)->when($request->query('search'), fn ($q, $s) => $q->where('h.chat_id', 'like', "%{$s}%"))
-            ->orderByDesc('h.id')->select('h.id', 'r.title as rotator', 's.name as staff', 'h.chat_id', 'h.created_at')->paginate($request->integer('per_page', 10));
+            ->orderByDesc('h.id')->select('h.id', 'r.title as rotator', 's.name as staff', 'h.chat_id', 'h.created_at')->paginate(min(1000, max(1, $request->integer('per_page', 10))));
     }
 
     /** Public rotator link: pick the next available CS (round robin, respecting shifts & time off). */

@@ -28,7 +28,7 @@ class LandingPageController extends Controller
             ->when($request->query('search'), fn ($q, $s) => $q->where('title', 'like', "%{$s}%"))
             ->when($request->query('label'), fn ($q, $l) => $q->where('label', $l))
             ->latest('updated_at')
-            ->paginate(min(100, max(1, $request->integer('per_page', 10))));
+            ->paginate(min(1000, max(1, $request->integer('per_page', 10))));
 
         $counts = $user->landingPages()->selectRaw('status, COUNT(*) n')->groupBy('status')->pluck('n', 'status');
 

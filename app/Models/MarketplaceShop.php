@@ -23,6 +23,7 @@ class MarketplaceShop extends Model
             'products_synced_at' => 'datetime',
             'orders_synced_at' => 'datetime',
             'is_demo' => 'boolean',
+            'ads_ppn' => 'float',
         ];
     }
 

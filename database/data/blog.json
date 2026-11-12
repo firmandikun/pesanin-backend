@@ -1,0 +1,81 @@
+[
+ {
+  "slug": "rincian-potongan-shopee-per-pesanan",
+  "title": "Rincian Potongan Shopee per Pesanan: Dari Biaya Admin sampai Rp1.250",
+  "excerpt": "Kenapa saldo yang cair selalu lebih kecil dari harga jual? Ini daftar potongan Shopee yang perlu kamu hitung di setiap pesanan.",
+  "date": "2026-11-12",
+  "category": "Marketplace",
+  "minutes": 6,
+  "body": [
+   "Harga jual di Shopee bukan uang yang kamu terima. Di antara pembeli membayar dan dana dilepas ke saldo penjual, ada beberapa potongan yang angkanya berbeda di tiap pesanan.",
+   "## Potongan yang muncul di rincian penghasilan",
+   "- Biaya Administrasi: persentase dari harga produk, tergantung kategori dan status toko (Non-Star, Star, Mall).",
+   "- Biaya Layanan: misalnya Gratis Ongkir XTRA atau Cashback XTRA kalau tokomu ikut programnya.",
+   "- Biaya Proses Pesanan: Rp1.250 per pesanan yang berhasil sejak 20 Juli 2025, berlaku untuk semua jenis penjual.",
+   "- Ongkir aktual dan subsidi ongkir Shopee: selisihnya bisa jadi beban penjual.",
+   "- Komisi AMS (affiliate) kalau pesanan datang dari affiliator.",
+   "- Pajak pemotongan, premi proteksi pengiriman, ongkir retur, dan pengembalian dana ke pembeli.",
+   "## Kenapa sering salah hitung",
+   "Sebelum pesanan selesai, angka yang terlihat masih estimasi. Ongkir aktual, retur sebagian, atau penyesuaian bisa mengubah hasil akhirnya. Kalau kamu menghitung laba dari estimasi, laporanmu bisa meleset.",
+   "## Cara Pesanin menghitungnya",
+   "Pesanin mengambil data penghasilan setiap pesanan langsung dari API resmi Shopee, menampilkan setiap jenis potongan secara terpisah, dan menandainya \"Estimasi\" sampai dana dilepas. Begitu pesanan selesai, angkanya otomatis diperbarui menjadi final."
+  ]
+ },
+ {
+  "slug": "cara-menghitung-hpp-dan-laba-bersih",
+  "title": "Cara Menghitung HPP dan Laba Bersih untuk Seller Online",
+  "excerpt": "Omzet besar belum tentu untung. Pelajari rumus laba bersih yang memasukkan HPP, potongan marketplace, iklan, dan biaya operasional.",
+  "date": "2026-11-10",
+  "category": "Keuangan",
+  "minutes": 5,
+  "body": [
+   "Banyak seller merasa ramai pesanan tapi saldo tidak bertambah. Biasanya karena yang dipantau hanya omzet, bukan laba bersih.",
+   "## Apa itu HPP",
+   "Harga Pokok Penjualan (HPP) adalah modal untuk setiap unit produk: harga beli atau biaya produksi, ditambah biaya yang melekat ke produk seperti kemasan khusus. HPP diisi per produk atau per variasi (SKU), karena modal tiap variasi bisa berbeda.",
+   "## Rumus laba bersih",
+   "- Omzet: total harga produk yang terjual (tanpa ongkir yang dibayar pembeli).",
+   "- Dikurangi potongan marketplace: admin, layanan, proses pesanan, ongkir yang ditanggung penjual, dan lain-lain.",
+   "- Dikurangi HPP: modal × jumlah terjual.",
+   "- Dikurangi biaya iklan: termasuk PPN 11% untuk Shopee Ads.",
+   "- Dikurangi biaya operasional: gaji, sewa, listrik, packing.",
+   "## Hal yang sering terlupa",
+   "Pesanan batal tidak boleh dihitung sebagai penjualan, retur harus dicatat sebagai kerugian (ongkir retur tetap dibayar), dan pembelian stok bukan biaya di laporan laba rugi karena sudah masuk HPP saat barangnya terjual.",
+   "Di Pesanin, semua komponen ini dihitung otomatis setelah kamu mengisi HPP sekali."
+  ]
+ },
+ {
+  "slug": "mengukur-roas-iklan-shopee-dan-meta",
+  "title": "Mengukur ROAS Iklan Shopee dan Meta: Jangan Berhenti di Omzet",
+  "excerpt": "ROAS tinggi belum tentu untung. Ini cara membaca ROAS bersama margin produk supaya budget iklan tidak bocor.",
+  "date": "2026-11-05",
+  "category": "Iklan",
+  "minutes": 4,
+  "body": [
+   "ROAS (Return on Ad Spend) adalah penjualan dari iklan dibagi biaya iklan. ROAS 5× berarti setiap Rp1 iklan menghasilkan Rp5 penjualan.",
+   "## Kenapa ROAS saja tidak cukup",
+   "Kalau margin produkmu 20% setelah HPP dan potongan, ROAS minimal untuk balik modal adalah 5×. Di bawah itu, iklan justru menggerus laba walaupun omzet naik.",
+   "- ROAS impas = 1 ÷ margin setelah HPP dan potongan.",
+   "- Hitung biaya iklan Shopee termasuk PPN 11%, karena itulah yang benar-benar kamu bayar.",
+   "- Bandingkan ROAS per produk, bukan hanya per toko.",
+   "## Cara memantau di Pesanin",
+   "Pesanin menarik biaya Shopee Ads harian secara otomatis, menampilkan ROAS per kampanye dan per produk, lalu memasukkan biaya iklan ke perhitungan laba bersih. Kamu langsung melihat iklan mana yang perlu dimatikan."
+  ]
+ },
+ {
+  "slug": "checkout-dan-cod-untuk-jualan-di-media-sosial",
+  "title": "Checkout Rapi dan COD untuk Jualan di Instagram, TikTok, dan WhatsApp",
+  "excerpt": "Kurangi chat bolak-balik soal ongkir. Satu link checkout dengan ongkir otomatis, COD, dan resi yang terbit sendiri.",
+  "date": "2026-10-28",
+  "category": "Jualan",
+  "minutes": 4,
+  "body": [
+   "Jualan lewat DM dan WhatsApp sering habis waktu untuk menanyakan alamat, menghitung ongkir, dan menunggu konfirmasi transfer.",
+   "## Satu link untuk semua",
+   "- Pembeli mengisi nama, nomor WhatsApp, dan kecamatan, lalu ongkir dari beberapa kurir muncul otomatis.",
+   "- Pilih COD, transfer bank, atau e-payment (QRIS, VA, e-wallet).",
+   "- Data pembeli lama terisi otomatis untuk repeat order.",
+   "## Setelah pembeli bayar",
+   "Pesanin bisa memesan kurir lewat Biteship dan menerbitkan resi asli begitu pesanan lunas. Untuk produk digital, link akses dikirim otomatis lewat WhatsApp dan email. Semua pesanan ini ikut masuk ke laporan laba bersama pesanan Shopee."
+  ]
+ }
+]

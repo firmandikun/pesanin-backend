@@ -11,6 +11,11 @@ class MemberAccess
 {
     public function handle(Request $request, Closure $next)
     {
+        // A suspended store is locked out entirely (owner and team).
+        if ($request->user()?->suspended_at) {
+            $request->user()->currentAccessToken()?->delete();
+            abort(403, 'Akun ini dinonaktifkan. Hubungi tim Pesanin.');
+        }
         $token = $request->user()?->currentAccessToken();
         if (! is_string($token?->name ?? null) || ! str_starts_with($token->name, 'member:')) {
             return $next($request);

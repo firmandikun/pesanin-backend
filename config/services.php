@@ -36,6 +36,12 @@ return [
     ],
 
     // Courier tracking for website/manual orders (binderbyte.com, free tier). Empty = status history only.
+    // "Masuk dengan Google" (Google Identity Services ID token, verified server-side).
+    'google' => [
+        'client_id' => env('GOOGLE_CLIENT_ID'),
+        'client_secret' => env('GOOGLE_CLIENT_SECRET'),
+    ],
+
     // Midtrans for Pesanin's own subscription invoices (sellers connect their own keys in Pengaturan → Integrasi).
     'midtrans' => [
         'server_key' => env('MIDTRANS_SERVER_KEY'),

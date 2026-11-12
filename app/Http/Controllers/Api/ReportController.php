@@ -32,7 +32,7 @@ class ReportController extends Controller
         $prev = Analytics::profit($user, $prevFrom, $prevTo)['summary'];
         $pick = fn (array $s) => [
             'revenue' => $s['revenue'], 'net_profit' => $s['net_profit'], 'margin' => $s['margin'], 'orders' => $s['orders'],
-            'items' => $s['items'], 'ads' => $s['ads'], 'roas' => $s['roas'], 'fees' => $s['fees'], 'cogs' => $s['cogs'],
+            'items' => $s['items'], 'ads' => $s['ads'], 'opex' => $s['opex'], 'roas' => $s['roas'], 'fees' => $s['fees'], 'cogs' => $s['cogs'],
             'aov' => $s['orders'] ? (int) round($s['revenue'] / $s['orders']) : 0,
         ];
 

@@ -38,7 +38,7 @@ class ProductController extends Controller
             ->withSum(['orders as sold_qty' => fn ($q) => $q->where('is_abandoned', false)->where('payment_status', 'paid')], 'quantity')
             ->withSum(['orders as net_revenue' => fn ($q) => $q->where('is_abandoned', false)->where('payment_status', 'paid')], 'total')
             ->latest()
-            ->paginate(min(100, max(1, $request->integer('per_page', 10))));
+            ->paginate(min(1000, max(1, $request->integer('per_page', 10))));
 
         $paidOrders = $user->orders()->active()->where('payment_status', 'paid');
 

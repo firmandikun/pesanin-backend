@@ -269,7 +269,7 @@ class InboxController extends Controller
             })
             ->when($request->query('label'), fn ($w, $l) => $w->whereJsonContains('labels', $l))
             ->latest();
-        $page = $q->paginate(min(100, max(5, (int) $request->query('per_page', 10))));
+        $page = $q->paginate(min(1000, max(5, (int) $request->query('per_page', 10))));
         $page->setCollection($page->getCollection()->map(fn ($c) => $this->customerCard($c, false)));
 
         return $page;

@@ -37,7 +37,7 @@ class OrderController extends Controller
 
         $orders = $query->with(['product:id,name,type', 'marketplaceShop:id,shop_name,is_demo'])
             ->orderBy(in_array($request->query('sort'), self::SORTABLE, true) ? $request->query('sort') : 'created_at', $request->query('dir') === 'asc' ? 'asc' : 'desc')
-            ->paginate(min(100, max(1, $request->integer('per_page', 10))));
+            ->paginate(min(1000, max(1, $request->integer('per_page', 10))));
 
         return ['orders' => $orders, 'stats' => $stats];
     }

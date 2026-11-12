@@ -17,6 +17,7 @@ use Illuminate\Support\Facades\Route;
 
 Route::post('/register', [AuthController::class, 'register'])->middleware('throttle:10,1');
 Route::post('/login', [AuthController::class, 'login'])->middleware('throttle:10,1');
+Route::post('/auth/google', [AuthController::class, 'google'])->middleware('throttle:20,1');
 
 // Public checkout pages
 // Shopee: OAuth return and Live Push (called by Shopee, not by the app).
@@ -47,9 +48,35 @@ Route::prefix('public')->middleware('throttle:60,1')->group(function () {
     Route::get('/orders/{code}/payment', [PublicCheckoutController::class, 'paymentStatus']);
     Route::get('/digital/{token}', [PublicCheckoutController::class, 'digital']);
     Route::get('/digital/{token}/file', [PublicCheckoutController::class, 'digitalFile']);
+    Route::get('/tutorials', [\App\Http\Controllers\Api\ContentController::class, 'tutorials']);
+    Route::post('/tutorials/{slug}/view', [\App\Http\Controllers\Api\ContentController::class, 'tutorialView']);
+    Route::get('/blog', [\App\Http\Controllers\Api\ContentController::class, 'blog']);
+    Route::get('/blog/{slug}', [\App\Http\Controllers\Api\ContentController::class, 'blogPost']);
+    Route::get('/announcements', [\App\Http\Controllers\Api\ContentController::class, 'announcements']);
+    Route::get('/site', [\App\Http\Controllers\Api\ContentController::class, 'site']);
 });
 
-Route::middleware(['auth:sanctum', 'member'])->group(function () {
+// Pesanin platform admin (users.is_admin).
+Route::middleware(['auth:sanctum', 'member', 'admin'])->prefix('admin')->controller(\App\Http\Controllers\Api\AdminController::class)->group(function () {
+    Route::get('/overview', 'overview');
+    Route::get('/users', 'users');
+    Route::get('/users/{user}', 'user');
+    Route::put('/users/{user}', 'updateUser');
+    Route::get('/invoices', 'invoices');
+    Route::post('/invoices/{invoice}/paid', 'markInvoicePaid');
+    Route::get('/shops', 'shops');
+    Route::get('/platform', 'platform');
+    Route::put('/platform', 'updatePlatform');
+    Route::get('/blog-categories', 'blogCategories');
+    Route::post('/uploads', 'upload');
+    Route::get('/content/{type}', 'contentIndex');
+    Route::get('/content/{type}/{id}', 'contentShow')->whereNumber('id');
+    Route::post('/content/{type}', 'contentStore');
+    Route::put('/content/{type}/{id}', 'contentUpdate')->whereNumber('id');
+    Route::delete('/content/{type}/{id}', 'contentDestroy')->whereNumber('id');
+});
+
+Route::middleware(['auth:sanctum', 'member', 'subscribed'])->group(function () {
     Route::get('/me', [AuthController::class, 'me']);
     Route::post('/logout', [AuthController::class, 'logout']);
     Route::put('/me', [AuthController::class, 'updateProfile']);
@@ -61,6 +88,10 @@ Route::middleware(['auth:sanctum', 'member'])->group(function () {
     Route::get('/reports/statistics', [ReportController::class, 'statistics']);
     Route::get('/reports/profit', [ReportController::class, 'profit']);
     Route::get('/reports/research', [ReportController::class, 'research']);
+    Route::get('/expenses', [\App\Http\Controllers\Api\ExpenseController::class, 'index']);
+    Route::post('/expenses', [\App\Http\Controllers\Api\ExpenseController::class, 'store']);
+    Route::put('/expenses/{expense}', [\App\Http\Controllers\Api\ExpenseController::class, 'update']);
+    Route::delete('/expenses/{expense}', [\App\Http\Controllers\Api\ExpenseController::class, 'destroy']);
 
     Route::get('/marketplace/shops', [MarketplaceController::class, 'shops']);
     Route::post('/marketplace/shopee/connect', [MarketplaceController::class, 'connect']);
@@ -68,6 +99,7 @@ Route::middleware(['auth:sanctum', 'member'])->group(function () {
     Route::post('/marketplace/shopee/demo', [MarketplaceController::class, 'demo']);
     Route::post('/marketplace/shops/{shop}/sync', [MarketplaceController::class, 'sync'])->middleware('throttle:10,1');
     Route::get('/marketplace/shops/{shop}/transactions', [MarketplaceController::class, 'transactions']);
+    Route::get('/marketplace/shops/{shop}/transactions/export', [MarketplaceController::class, 'exportTransactions']);
     Route::delete('/marketplace/shops/{shop}', [MarketplaceController::class, 'disconnect']);
     // Chat inbox (all sources). Shopee for now; Meta channels plug in next to it.
     Route::get('/chat', [\App\Http\Controllers\Api\ShopeeChatController::class, 'conversations']);
@@ -179,6 +211,7 @@ Route::middleware(['auth:sanctum', 'member'])->group(function () {
     Route::get('/billing', [BillingController::class, 'show']);
     Route::post('/billing/checkout', [BillingController::class, 'checkout'])->middleware('throttle:20,1');
     Route::put('/billing/auto-renew', [BillingController::class, 'autoRenew']);
+    Route::post('/billing/free', [BillingController::class, 'chooseFree']);
     Route::post('/billing/invoices/{invoice}/cancel', [BillingController::class, 'cancel']);
     Route::post('/billing/invoices/{invoice}/simulate-pay', [BillingController::class, 'simulatePay']);
     Route::get('/user-settings', [FeatureController::class, 'userSettings']);

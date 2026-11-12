@@ -21,7 +21,7 @@ class MarketResearchController extends Controller
         return [
             'shopee' => (bool) $shopee, 'trends' => (bool) $trends,
             'source' => ['shopee' => $shopee, 'trends' => $trends],
-            'quota' => ['limit' => Plans::PLANS[Plans::current($u)]['limits']['research'], 'used' => Plans::researchUsed($u)],
+            'quota' => ['limit' => Plans::all()[Plans::current($u)]['limits']['research'], 'used' => Plans::researchUsed($u)],
             'periods' => GoogleTrends::PERIODS,
         ];
     }
@@ -33,9 +33,9 @@ class MarketResearchController extends Controller
             return;
         }
         $u = $request->user();
-        $limit = Plans::PLANS[Plans::current($u)]['limits']['research'];
+        $limit = Plans::all()[Plans::current($u)]['limits']['research'];
         if ($limit !== null && Plans::researchUsed($u) >= $limit) {
-            abort(response()->json(['message' => "Kuota riset hari ini ({$limit}x) di paket ".Plans::PLANS[Plans::current($u)]['name'].' sudah habis. Coba lagi besok atau upgrade paket.', 'upgrade' => true, 'limit' => 'research'], 402));
+            abort(response()->json(['message' => "Kuota riset hari ini ({$limit}x) di paket ".Plans::all()[Plans::current($u)]['name'].' sudah habis. Coba lagi besok atau upgrade paket.', 'upgrade' => true, 'limit' => 'research'], 402));
         }
         Plans::countResearch($u);
     }

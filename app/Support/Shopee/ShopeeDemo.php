@@ -79,7 +79,14 @@ class ShopeeDemo
                 $order->update([
                     'tracking_number' => 'SPXID0'.(41230000 + $i * 977),
                     'marketplace_fee' => $fee, 'seller_shipping_fee' => $i % 3 ? 0 : 5000,
-                    'escrow_amount' => $status === 'COMPLETED' ? $sub - $fee - ($i % 3 ? 0 : 5000) : null,
+                    'escrow_amount' => $sub - $fee - ($i % 3 ? 0 : 5000),
+                    'escrow_final' => $status === 'COMPLETED',
+                    'fee_breakdown' => array_values(array_filter([
+                        ['key' => 'commission_fee', 'label' => 'Biaya Admin', 'amount' => -(int) round($sub * 0.08)],
+                        ['key' => 'service_fee', 'label' => 'Biaya Layanan', 'amount' => -(int) round($sub * 0.04)],
+                        ['key' => 'seller_transaction_fee', 'label' => 'Biaya Transaksi', 'amount' => -(int) round($sub * 0.02)],
+                        $i % 3 ? null : ['key' => 'seller_shipping_discount', 'label' => 'Subsidi Ongkir dari Penjual', 'amount' => -5000],
+                    ])),
                 ]);
             }
         }

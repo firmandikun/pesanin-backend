@@ -3,6 +3,7 @@
 namespace App\Support;
 
 use App\Models\AdSpend;
+use App\Models\Expense;
 use App\Models\MarketplaceListing;
 use App\Models\MarketplaceShop;
 use App\Models\Order;
@@ -14,6 +15,9 @@ use Illuminate\Support\Collection;
 /** Omset, potongan marketplace, HPP, biaya iklan and laba bersih across every sales channel. */
 class Analytics
 {
+    /** Shopee's Biaya Proses Pesanan per completed order (since 20 Jul 2025), field seller_order_processing_fee. */
+    public const SHOPEE_ORDER_PROCESSING_FEE = 1250;
+
     public const AD_PLATFORMS = ['meta' => 'Meta Ads (FB/IG)', 'tiktok' => 'TikTok Ads', 'google' => 'Google Ads', 'shopee_ads' => 'Shopee Ads', 'other' => 'Lainnya'];
 
     /** Orders that count as a sale: not abandoned/cancelled/refunded, and paid or COD. */
@@ -21,7 +25,9 @@ class Analytics
     {
         return $user->orders()->getQuery()
             ->where('is_abandoned', false)
-            ->whereNotIn('status', ['cancelled', 'refunded'])
+            ->where('status', '!=', 'cancelled')
+            // A returned Shopee order still costs money (return shipping, refunds), so it stays in as a loss.
+            ->where(fn ($q) => $q->where('status', '!=', 'refunded')->orWhere('channel', 'shopee'))
             ->where(fn ($q) => $q->where('payment_status', 'paid')->orWhere('payment_method', 'cod'))
             ->whereBetween('created_at', [$from, $to])
             ->when($channel, fn ($q) => $q->where('channel', $channel))
@@ -31,13 +37,27 @@ class Analytics
     /** Per-order money breakdown. fee_final is false while Shopee has not released escrow. */
     public static function breakdown(Order $o, array $costs, array $shopFeeRate): array
     {
+        $shopeeStatus = $o->external_status;
+        if ($o->channel === 'shopee' && ($o->status === 'cancelled' || in_array($shopeeStatus, ['CANCELLED', 'IN_CANCEL'], true))) {
+            // Cancelled: no sale, no fee, no goods out.
+            return ['gmv' => 0, 'revenue' => 0, 'fees' => 0, 'cogs' => 0, 'fee_final' => true, 'missing_cost' => false];
+        }
+        if ($o->channel === 'shopee' && ($o->status === 'refunded' || $shopeeStatus === 'TO_RETURN')) {
+            // Returned: the goods come back, so no omzet and no HPP; whatever Shopee settles (usually a
+            // negative amount from return shipping) is the result of the order.
+            $net = (int) ($o->escrow_amount ?? 0);
+
+            return ['gmv' => 0, 'revenue' => 0, 'fees' => -$net, 'cogs' => 0, 'fee_final' => (bool) $o->escrow_final, 'missing_cost' => false];
+        }
         if ($o->channel === 'shopee') {
             $revenue = (int) $o->subtotal;
             if ($o->escrow_amount !== null) {
-                $fees = max(0, $revenue - (int) $o->escrow_amount);
-                $final = true;
+                // Shopee's own income figure; an estimate until escrow is released.
+                $fees = $revenue - (int) $o->escrow_amount;
+                $final = (bool) $o->escrow_final;
             } else {
-                $fees = (int) round($revenue * ($shopFeeRate[$o->marketplace_shop_id] ?? 0));
+                // No income figure from Shopee yet: the shop's usual % fees plus the fixed processing fee.
+                $fees = $revenue ? (int) round($revenue * ($shopFeeRate[$o->marketplace_shop_id] ?? 0)) + self::SHOPEE_ORDER_PROCESSING_FEE : 0;
                 $final = false;
             }
             $cogs = collect($o->items ?? [])->sum(fn ($i) => (self::itemCost($o, $i, $costs) ?? 0) * ($i['qty'] ?? 1));
@@ -99,6 +119,17 @@ class Analytics
             ->when($channel === 'shopee' || $shopId, fn ($q) => $q->where('platform', 'shopee_ads'))
             ->when($channel && $channel !== 'shopee', fn ($q) => $q->where('platform', '!=', 'shopee_ads'))
             ->when($shopId, fn ($q) => $q->where('marketplace_shop_id', $shopId))
+            ->get()
+            // The Shopee Ads API reports spend before PPN, but the seller pays it on top of the ad credit.
+            ->each(fn ($a) => $a->amount = self::adCost($a, $shops));
+
+        // Biaya operasional (Pengeluaran) cut profit; a shop's costs belong to the Shopee channel,
+        // business-wide costs (no shop) only show up in the overall figure.
+        $opex = Expense::where('user_id', $user->id)->where('category', 'operational')
+            ->whereBetween('spent_on', [$from->toDateString(), $to->toDateString()])
+            ->when($shopId, fn ($q) => $q->where('marketplace_shop_id', $shopId))
+            ->when(! $shopId && $channel === 'shopee', fn ($q) => $q->whereNotNull('marketplace_shop_id'))
+            ->when($channel && $channel !== 'shopee', fn ($q) => $q->whereNull('marketplace_shop_id'))
             ->get();
 
         $label = fn (string $k) => match (true) {
@@ -115,17 +146,21 @@ class Analytics
 
         $byChannel = [];
         foreach ($rows->groupBy(fn ($r) => $orderKey($r['order'])) as $k => $g) {
-            $byChannel[$k] = ['key' => $k, 'label' => $label($k), 'ads' => 0] + self::sum($g);
+            $byChannel[$k] = ['key' => $k, 'label' => $label($k), 'ads' => 0, 'opex' => 0] + self::sum($g);
         }
         foreach ($ads->groupBy(fn ($a) => $a->platform === 'shopee_ads' ? 'shopee:'.$a->marketplace_shop_id : 'website:'.(Traffic::AD_PLATFORM[$a->platform] ?? 'other')) as $k => $g) {
-            $byChannel[$k] ??= ['key' => $k, 'label' => $label($k), 'ads' => 0] + self::sum(collect());
+            $byChannel[$k] ??= ['key' => $k, 'label' => $label($k), 'ads' => 0, 'opex' => 0] + self::sum(collect());
             $byChannel[$k]['ads'] = (int) $g->sum('amount');
+        }
+        foreach ($opex->whereNotNull('marketplace_shop_id')->groupBy(fn ($e) => 'shopee:'.$e->marketplace_shop_id) as $k => $g) {
+            $byChannel[$k] ??= ['key' => $k, 'label' => $label($k), 'ads' => 0, 'opex' => 0] + self::sum(collect());
+            $byChannel[$k]['opex'] = (int) $g->sum('amount');
         }
         $byChannel = collect($byChannel)->map(fn ($c) => self::finish($c))->sortByDesc('revenue')->values();
 
         $daily = [];
         for ($d = $from->copy()->startOfDay(); $d <= $to; $d->addDay()) {
-            $daily[$d->toDateString()] = ['date' => $d->toDateString(), 'revenue' => 0, 'net' => 0, 'ads' => 0];
+            $daily[$d->toDateString()] = ['date' => $d->toDateString(), 'revenue' => 0, 'net' => 0, 'ads' => 0, 'opex' => 0];
         }
         foreach ($rows as $r) {
             $k = $r['order']->created_at->toDateString();
@@ -141,10 +176,17 @@ class Analytics
                 $daily[$k]['net'] -= $a->amount;
             }
         }
+        foreach ($opex as $e) {
+            $k = $e->spent_on->toDateString();
+            if (isset($daily[$k])) {
+                $daily[$k]['opex'] += $e->amount;
+                $daily[$k]['net'] -= $e->amount;
+            }
+        }
 
         $products = collect(self::productsAgg($rows, $costs))->map(fn ($p, $k) => $p + ['key' => $k])->sortByDesc('revenue')->values()->take(20);
 
-        $summary = self::finish(self::sum($rows) + ['ads' => (int) $ads->sum('amount')]);
+        $summary = self::finish(self::sum($rows) + ['ads' => (int) $ads->sum('amount'), 'opex' => (int) $opex->sum('amount')]);
         $summary['pending_fee_orders'] = $rows->where('fee_final', false)->count();
         $summary['missing_cost_orders'] = $rows->where('missing_cost', true)->count();
 
@@ -181,6 +223,8 @@ class Analytics
                 'fees' => $money['fees'], 'net_revenue' => $netRevenue, 'cogs' => $money['cogs'],
                 'profit' => $profit, 'margin' => $money['revenue'] ? round($profit / $money['revenue'] * 100, 1) : 0,
                 'fee_final' => $money['fee_final'], 'missing_cost' => $money['missing_cost'],
+                'fee_breakdown' => $order->fee_breakdown ?: self::fallbackFeeLines($order, $money),
+                'fee_source' => $order->fee_breakdown ? 'shopee' : ($order->escrow_amount !== null ? 'summary' : 'estimate'),
             ];
         });
     }
@@ -239,11 +283,54 @@ class Analytics
             ?? $costs[$i['product_id'] ?? 0] ?? null;
     }
 
-    /** Shopee fee ratio per shop, learned from orders whose escrow is already final. */
+    /**
+     * Fee lines for orders whose Shopee breakdown isn't stored yet: what the older sync kept
+     * (admin+layanan, ongkir borne by the seller), or the shop's average fee rate when Shopee
+     * hasn't given an income figure at all.
+     */
+    private static function fallbackFeeLines(Order $o, array $money): array
+    {
+        if (! $money['fees']) {
+            return [];
+        }
+        if ($o->escrow_amount === null) {
+            $pctFees = max(0, $money['fees'] - self::SHOPEE_ORDER_PROCESSING_FEE);
+            $pct = $money['revenue'] ? round($pctFees / $money['revenue'] * 100, 1) : 0;
+
+            return array_values(array_filter([
+                ['key' => 'estimate', 'label' => "Estimasi biaya admin, layanan & ongkir (rata-rata toko {$pct}%)", 'amount' => -$pctFees],
+                ['key' => 'seller_order_processing_fee', 'label' => 'Biaya Pemrosesan Pesanan', 'amount' => -min($money['fees'], self::SHOPEE_ORDER_PROCESSING_FEE)],
+            ], fn ($l) => $l['amount'] !== 0));
+        }
+        $lines = array_values(array_filter([
+            ['key' => 'commission_fee', 'label' => 'Biaya Admin & Layanan', 'amount' => -(int) $o->marketplace_fee],
+            ['key' => 'seller_shipping', 'label' => 'Ongkir ditanggung penjual', 'amount' => -(int) $o->seller_shipping_fee],
+        ], fn ($l) => $l['amount'] !== 0));
+        $rest = -$money['fees'] - array_sum(array_column($lines, 'amount'));
+        if ($rest) {
+            $lines[] = ['key' => 'other', 'label' => $rest > 0 ? 'Subsidi / penyesuaian lainnya' : 'Potongan lainnya', 'amount' => $rest];
+        }
+
+        return $lines;
+    }
+
+    /** Ad spend as the seller pays it: Shopee Ads plus the shop's PPN (default 11%). */
+    public static function adCost(AdSpend $a, Collection $shops): int
+    {
+        if ($a->platform !== 'shopee_ads' || ! $a->synced) {
+            return (int) $a->amount;
+        }
+        $ppn = (float) ($shops[$a->marketplace_shop_id]->ads_ppn ?? 11);
+
+        return (int) round($a->amount * (1 + $ppn / 100));
+    }
+
+    /** Shopee % fee ratio per shop (excluding the fixed processing fee), learned from orders that already have Shopee's income figure. */
     public static function shopFeeRates(User $user): array
     {
         return Order::where('user_id', $user->id)->where('channel', 'shopee')->whereNotNull('escrow_amount')->where('subtotal', '>', 0)
-            ->selectRaw('marketplace_shop_id, SUM(subtotal - escrow_amount) / SUM(subtotal) r')->groupBy('marketplace_shop_id')
+            ->whereNotIn('status', ['cancelled', 'refunded'])
+            ->selectRaw('marketplace_shop_id, SUM(CAST(subtotal AS SIGNED) - escrow_amount - ?) * 1.0 / SUM(subtotal) r', [self::SHOPEE_ORDER_PROCESSING_FEE])->groupBy('marketplace_shop_id')
             ->pluck('r', 'marketplace_shop_id')->map(fn ($r) => max(0, (float) $r))->all();
     }
 
@@ -260,7 +347,7 @@ class Analytics
     private static function finish(array $c): array
     {
         $c['gross_profit'] = $c['revenue'] - $c['fees'] - $c['cogs'];
-        $c['net_profit'] = $c['gross_profit'] - $c['ads'];
+        $c['net_profit'] = $c['gross_profit'] - $c['ads'] - ($c['opex'] ?? 0);
         $c['margin'] = $c['revenue'] ? round($c['net_profit'] / $c['revenue'] * 100, 1) : 0;
         $c['roas'] = $c['ads'] ? round($c['revenue'] / $c['ads'], 2) : null;
 

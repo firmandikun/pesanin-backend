@@ -15,6 +15,7 @@ use App\Support\Shopee\ShopeeSync;
 use App\Support\Analytics;
 use Illuminate\Support\Carbon;
 use Illuminate\Http\Request;
+use Illuminate\Support\Str;
 use Illuminate\Support\Facades\Crypt;
 use Illuminate\Validation\Rule;
 
@@ -235,12 +236,13 @@ class MarketplaceController extends Controller
         return ['message' => 'Sinkronisasi selesai', 'result' => $result, 'shop' => $shop->fresh()];
     }
 
-    public function transactions(Request $request, MarketplaceShop $shop)
+    /** Transaction rows of a shop for the request's date range, status and search filters. */
+    private function transactionRows(Request $request, MarketplaceShop $shop): array
     {
         $this->own($request, $shop);
         $data = $request->validate([
             'from' => 'nullable|date', 'to' => 'nullable|date', 'search' => 'nullable|string|max:100',
-            'status' => 'nullable|string|max:30', 'page' => 'nullable|integer|min:1', 'per_page' => 'nullable|integer|min:10|max:100',
+            'status' => 'nullable|string|max:30', 'page' => 'nullable|integer|min:1', 'per_page' => 'nullable|integer|min:10|max:1000',
         ]);
         $to = Carbon::parse($data['to'] ?? today())->endOfDay();
         $from = Carbon::parse($data['from'] ?? $to->copy()->subDays(29))->startOfDay();
@@ -250,7 +252,46 @@ class MarketplaceController extends Controller
                 $needle = mb_strtolower($search);
                 return $c->filter(fn ($row) => str_contains(mb_strtolower(($row['order_sn'] ?? '').' '.($row['customer_name'] ?? '').' '.($row['tracking_number'] ?? '')), $needle));
             })->values();
-        $perPage = (int) ($data['per_page'] ?? 20);
+
+        return [$rows, $data, $from, $to];
+    }
+
+    /**
+     * Excel-friendly CSV (semicolon, UTF-8 BOM) of the shop's transactions with one column per Shopee fee line,
+     * like Finkami's Ekspor.
+     */
+    public function exportTransactions(Request $request, MarketplaceShop $shop)
+    {
+        [$rows, , $from, $to] = $this->transactionRows($request, $shop);
+        $feeCols = $rows->flatMap(fn ($r) => collect($r['fee_breakdown'])->pluck('label'))->unique()->values()->all();
+        $head = ['No Pesanan', 'Tanggal', 'Status', 'Produk', 'Variasi', 'Qty', 'Jumlah (harga produk)', ...$feeCols,
+            'Total Biaya', 'Pendapatan Bersih', 'HPP', 'Laba', 'Margin %', 'Penghasilan', 'Resi', 'Kurir'];
+        $statusLabel = ['UNPAID' => 'Belum bayar', 'READY_TO_SHIP' => 'Perlu dikirim', 'PROCESSED' => 'Siap diserahkan', 'RETRY_SHIP' => 'Kirim ulang',
+            'SHIPPED' => 'Dikirim', 'TO_CONFIRM_RECEIVE' => 'Menunggu konfirmasi', 'COMPLETED' => 'Selesai', 'IN_CANCEL' => 'Pembatalan', 'CANCELLED' => 'Dibatalkan', 'TO_RETURN' => 'Retur'];
+        $name = 'transaksi-'.Str::slug($shop->shop_name).'-'.$from->format('Ymd').'-'.$to->format('Ymd').'.csv';
+
+        return response()->streamDownload(function () use ($rows, $head, $feeCols, $statusLabel) {
+            $out = fopen('php://output', 'w');
+            fwrite($out, "\xEF\xBB\xBF");
+            fputcsv($out, $head, ';');
+            foreach ($rows as $r) {
+                $fees = collect($r['fee_breakdown'])->groupBy('label')->map(fn ($g) => $g->sum('amount'));
+                fputcsv($out, [
+                    $r['order_sn'], $r['created_at']->format('Y-m-d H:i'), $statusLabel[$r['status']] ?? $r['status'],
+                    collect($r['items'])->pluck('name')->implode(' | '), collect($r['items'])->pluck('variant')->filter()->implode(' | '),
+                    $r['quantity'], $r['revenue'], ...array_map(fn ($c) => $fees[$c] ?? 0, $feeCols),
+                    -$r['fees'], $r['net_revenue'], $r['cogs'], $r['profit'], $r['margin'],
+                    $r['fee_final'] ? 'Sudah cair' : 'Estimasi', $r['tracking_number'], $r['courier'],
+                ], ';');
+            }
+            fclose($out);
+        }, $name, ['Content-Type' => 'text/csv; charset=UTF-8']);
+    }
+
+    public function transactions(Request $request, MarketplaceShop $shop)
+    {
+        [$rows, $data] = $this->transactionRows($request, $shop);
+        $perPage = (int) ($data['per_page'] ?? 10);
         $page = (int) ($data['page'] ?? 1);
 
         return [
@@ -259,7 +300,7 @@ class MarketplaceController extends Controller
                 'last_page' => max(1, (int) ceil($rows->count() / $perPage)), 'total' => $rows->count(),
             ],
             'summary' => [
-                'gmv' => (int) $rows->sum('gmv'), 'fees' => (int) $rows->sum('fees'),
+                'gmv' => (int) $rows->sum('gmv'), 'revenue' => (int) $rows->sum('revenue'), 'fees' => (int) $rows->sum('fees'),
                 'net_revenue' => (int) $rows->sum('net_revenue'), 'cogs' => (int) $rows->sum('cogs'),
                 'profit' => (int) $rows->sum('profit'), 'missing_cost' => $rows->where('missing_cost', true)->count(),
             ],
@@ -307,7 +348,7 @@ class MarketplaceController extends Controller
         // Paginate by Shopee product (shop + item), not by variation, so a product's variations stay together.
         $groups = (clone $q)->reorder()->select('marketplace_shop_id', 'item_id')->selectRaw('MIN(name) as group_name')
             ->groupBy('marketplace_shop_id', 'item_id')->orderBy('group_name')->orderBy('marketplace_shop_id')
-            ->paginate(min(100, max(1, $request->integer('per_page', 10))));
+            ->paginate(min(1000, max(1, $request->integer('per_page', 10))));
         $rows = $groups->isEmpty() ? collect() : (clone $q)->where(fn ($w) => $groups->each(
             fn ($g) => $w->orWhere(fn ($x) => $x->where('marketplace_shop_id', $g->marketplace_shop_id)->where('item_id', $g->item_id))
         ))->get();

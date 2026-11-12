@@ -103,3 +103,15 @@ Artisan::command('broadcast:send', function () {
     }
 })->purpose('Send queued WhatsApp broadcasts');
 \Illuminate\Support\Facades\Schedule::command('broadcast:send')->everyFifteenSeconds()->withoutOverlapping();
+
+// php artisan pesanin:admin email@domain.com  (--revoke to remove)
+Artisan::command('pesanin:admin {email} {--revoke}', function (string $email) {
+    $user = \App\Models\User::where('email', $email)->first();
+    if (! $user) {
+        $this->error("User {$email} tidak ditemukan.");
+
+        return 1;
+    }
+    $user->forceFill(['is_admin' => ! $this->option('revoke')])->save();
+    $this->info($user->is_admin ? "{$email} sekarang admin Pesanin." : "Akses admin {$email} dicabut.");
+})->purpose('Grant or revoke Pesanin platform admin access');

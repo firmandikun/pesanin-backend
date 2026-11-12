@@ -18,6 +18,8 @@ class AuthController extends Controller
 {
     public function register(Request $request)
     {
+        $site = \App\Models\PlatformSetting::read('site', []);
+        abort_if(($site['registration_open'] ?? true) === false, 403, 'Pendaftaran akun baru sedang ditutup sementara.');
         $data = $request->validate([
             'name' => 'required|string|max:100',
             'store_name' => 'required|string|max:100',
@@ -28,12 +30,13 @@ class AuthController extends Controller
         $data['store_slug'] = $this->uniqueStoreSlug($data['store_name']);
 
         $user = User::create($data);
+        \App\Support\Plans::startTrial($user);
         DefaultTemplates::seed($user);
         ActivityLog::record($user, 'register', 'Akun dibuat');
 
         return response()->json([
             'token' => $user->createToken('web')->plainTextToken,
-            'user' => $user,
+            'user' => $user->fresh(),
         ], 201);
     }
 
@@ -43,6 +46,9 @@ class AuthController extends Controller
         $user = User::where('email', $data['email'])->first();
 
         if ($user && Hash::check($data['password'], $user->password)) {
+            if ($user->suspended_at) {
+                throw ValidationException::withMessages(['email' => 'Akun ini dinonaktifkan. Hubungi tim Pesanin.']);
+            }
             ActivityLog::record($user, 'login', 'Login ke dashboard');
 
             return ['token' => $user->createToken('web')->plainTextToken, 'user' => $user->toArray() + ['member' => null]];
@@ -58,6 +64,45 @@ class AuthController extends Controller
         ActivityLog::record($member->owner, 'login', "Login anggota tim: {$member->name}");
 
         return ['token' => $member->owner->createToken($member->tokenName())->plainTextToken, 'user' => $member->owner->toArray() + ['member' => $this->memberInfo($member)]];
+    }
+
+    /** "Masuk dengan Google": verify the Google ID token, then sign in (or create the store on first use). */
+    public function google(Request $request)
+    {
+        $data = $request->validate(['credential' => 'required|string|max:4096']);
+        $clientId = config('services.google.client_id');
+        abort_unless($clientId, 503, 'Login Google belum diaktifkan.');
+
+        $info = \Illuminate\Support\Facades\Http::timeout(10)->get('https://oauth2.googleapis.com/tokeninfo', ['id_token' => $data['credential']]);
+        $claims = $info->json() ?? [];
+        if ($info->failed() || ($claims['aud'] ?? null) !== $clientId || ! in_array($claims['iss'] ?? '', ['accounts.google.com', 'https://accounts.google.com'], true)
+            || ($claims['email_verified'] ?? 'false') !== 'true' || empty($claims['email']) || empty($claims['sub'])) {
+            throw ValidationException::withMessages(['email' => 'Login Google gagal diverifikasi. Coba lagi.']);
+        }
+
+        $email = strtolower($claims['email']);
+        $user = User::where('google_id', $claims['sub'])->first() ?? User::where('email', $email)->first();
+        $created = false;
+        if (! $user) {
+            $site = \App\Models\PlatformSetting::read('site', []);
+            abort_if(($site['registration_open'] ?? true) === false, 403, 'Pendaftaran akun baru sedang ditutup sementara.');
+            $name = Str::limit($claims['name'] ?? Str::before($email, '@'), 100, '');
+            $store = 'Toko '.Str::limit($claims['given_name'] ?? $name, 90, '');
+            $user = User::create(['name' => $name, 'store_name' => $store, 'store_slug' => $this->uniqueStoreSlug($store), 'email' => $email, 'password' => Str::random(40)]);
+            \App\Support\Plans::startTrial($user);
+            DefaultTemplates::seed($user);
+            ActivityLog::record($user, 'register', 'Akun dibuat lewat Google');
+            $created = true;
+        }
+        if ($user->suspended_at) {
+            throw ValidationException::withMessages(['email' => 'Akun ini dinonaktifkan. Hubungi tim Pesanin.']);
+        }
+        $user->forceFill(['google_id' => $claims['sub'], 'email_verified_at' => $user->email_verified_at ?? now()])->save();
+        if (! $created) {
+            ActivityLog::record($user, 'login', 'Login ke dashboard (Google)');
+        }
+
+        return response()->json(['token' => $user->createToken('web')->plainTextToken, 'user' => $user->fresh()->toArray() + ['member' => null], 'created' => $created], $created ? 201 : 200);
     }
 
     public function me(Request $request)

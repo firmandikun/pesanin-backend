@@ -24,18 +24,13 @@ class BillingController extends Controller
             foreach ($user->subscriptionInvoices()->where('status', 'unpaid')->get() as $inv) {
                 try {
                     $st = $mt->status(\App\Support\Midtrans\Midtrans::invoiceOrderId($inv));
+                    // No transaction yet (payment page not opened, Midtrans answers 404): still waiting, not failed.
+                    if (empty($st['transaction_status'])) {
+                        continue;
+                    }
                     $outcome = \App\Support\Midtrans\Midtrans::outcome($st);
                     if ($outcome === 'paid') {
-                        DB::transaction(function () use ($inv) {
-                            $inv->update(['status' => 'paid', 'paid_at' => now()]);
-                            $inv->user->forceFill([
-                                'plan' => $inv->plan,
-                                'plan_billing' => $inv->billing,
-                                'plan_expires_at' => Carbon::parse($inv->period_end)->endOfDay(),
-                                'plan_auto_renew' => true,
-                            ])->save();
-                        });
-                        ActivityLog::record($inv->user, 'billing.paid', "Pembayaran {$inv->number} diterima (Midtrans)");
+                        Subscriptions::markPaid($inv, 'Midtrans');
                     } elseif ($outcome === 'failed') {
                         $inv->update(['status' => 'cancelled']);
                     }
@@ -52,11 +47,14 @@ class BillingController extends Controller
             'expires_at' => $plan === 'gratis' ? null : $user->plan_expires_at,
             'auto_renew' => (bool) $user->plan_auto_renew,
             'lapsed' => $user->plan !== 'gratis' && $plan === 'gratis',
+            'subscription' => Plans::status($user),
+            'trial_days' => Plans::TRIAL_DAYS,
+            'grace_days' => Plans::GRACE_DAYS,
             'usage' => Plans::usage($user),
-            'plans' => collect(Plans::PLANS)->map(fn ($p, $id) => [
+            'plans' => collect(Plans::all())->map(fn ($p, $id) => [
                 'id' => $id, 'name' => $p['name'], 'rank' => $p['rank'], 'monthly' => $p['monthly'],
                 'yearly' => Plans::price($id, 'yearly'), 'limits' => $p['limits'],
-                'features' => collect(Plans::FEATURES)->filter(fn ($need) => $p['rank'] >= Plans::PLANS[$need]['rank'])->keys()->values(),
+                'features' => collect(Plans::features())->filter(fn ($need) => $p['rank'] >= Plans::all()[$need]['rank'])->keys()->values(),
             ])->values(),
             'tax_percent' => Plans::TAX_PERCENT,
             'methods' => Plans::METHODS,
@@ -69,13 +67,13 @@ class BillingController extends Controller
     {
         $user = $request->user();
         $data = $request->validate([
-            'plan' => ['required', Rule::in(array_keys(array_filter(Plans::PLANS, fn ($p) => $p['monthly'] > 0)))],
+            'plan' => ['required', Rule::in(array_keys(array_filter(Plans::all(), fn ($p) => $p['monthly'] > 0)))],
             'billing' => 'required|in:monthly,yearly',
             'method' => ['required', Rule::in(Plans::METHODS)],
         ]);
 
         $invoice = Subscriptions::createInvoice($user, $data['plan'], $data['billing'], $data['method']);
-        ActivityLog::record($user, 'billing.checkout', "Membuat tagihan {$invoice->number} paket ".Plans::PLANS[$data['plan']]['name']);
+        ActivityLog::record($user, 'billing.checkout', "Membuat tagihan {$invoice->number} paket ".Plans::all()[$data['plan']]['name']);
 
         // Pay through Pesanin's own Midtrans account when configured (.env MIDTRANS_SERVER_KEY).
         if ($mt = \App\Support\Midtrans\Midtrans::platform()) {
@@ -116,6 +114,17 @@ class BillingController extends Controller
         ActivityLog::record($request->user(), 'billing.paid', "Pembayaran {$invoice->number} diterima");
 
         return $invoice->fresh();
+    }
+
+    /** Stay on the free plan once the trial or a paid plan is over (unlocks the app with Gratis limits). */
+    public function chooseFree(Request $request)
+    {
+        $user = $request->user();
+        abort_unless(in_array(Plans::status($user)['status'], ['expired', 'free'], true), 422, 'Paket kamu masih aktif.');
+        $user->forceFill(['plan' => 'gratis', 'plan_billing' => null, 'plan_expires_at' => null, 'plan_auto_renew' => false])->save();
+        ActivityLog::record($user, 'billing.free', 'Memilih paket Gratis');
+
+        return $user->fresh();
     }
 
     public function autoRenew(Request $request)

@@ -18,6 +18,8 @@ class Order extends Model
         return [
             'bump_selected' => 'boolean',
             'is_abandoned' => 'boolean',
+            'escrow_final' => 'boolean',
+            'fee_breakdown' => 'array',
             'tags' => 'array',
             'bump_items' => 'array',
             'custom_fields' => 'array',

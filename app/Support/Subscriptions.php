@@ -30,6 +30,19 @@ class Subscriptions
         });
     }
 
+    /** Payment received: activate the invoice's plan until the end of its period. */
+    public static function markPaid(SubscriptionInvoice $invoice, string $via = ''): void
+    {
+        DB::transaction(function () use ($invoice) {
+            $invoice->update(['status' => 'paid', 'paid_at' => now()]);
+            $invoice->user->forceFill([
+                'plan' => $invoice->plan, 'plan_billing' => $invoice->billing,
+                'plan_expires_at' => \Carbon\Carbon::parse($invoice->period_end)->endOfDay(), 'plan_auto_renew' => true,
+            ])->save();
+        });
+        \App\Models\ActivityLog::record($invoice->user, 'billing.paid', "Pembayaran {$invoice->number} diterima".($via ? " ({$via})" : ''));
+    }
+
     private static function payCode(string $method, int $userId): ?string
     {
         $prefix = ['va_bca' => '39358', 'va_bni' => '8808', 'va_bri' => '26215', 'va_mandiri' => '89608'][$method] ?? null;

@@ -13,7 +13,7 @@ return Application::configure(basePath: dirname(__DIR__))
         health: '/up',
     )
     ->withMiddleware(function (Middleware $middleware): void {
-        $middleware->alias(['member' => \App\Http\Middleware\MemberAccess::class]);
+        $middleware->alias(['member' => \App\Http\Middleware\MemberAccess::class, 'admin' => \App\Http\Middleware\PlatformAdmin::class, 'subscribed' => \App\Http\Middleware\EnsureSubscribed::class]);
     })
     ->withExceptions(function (Exceptions $exceptions): void {
         $exceptions->shouldRenderJsonWhen(
