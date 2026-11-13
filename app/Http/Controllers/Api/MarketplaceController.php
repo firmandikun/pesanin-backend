@@ -144,6 +144,17 @@ class MarketplaceController extends Controller
         if ($shop->is_demo) {
             return;
         }
+        // A detached `php artisan` process, so the request returns at once however PHP is served
+        // (php-fpm, `php artisan serve`, octane…). "After response" work isn't detached under every server
+        // and made the Shopee redirect wait for the whole sync (504 at the proxy).
+        $php = (new \Symfony\Component\Process\PhpExecutableFinder)->find(false);
+        if ($php && function_exists('exec') && ! app()->runningUnitTests()) {
+            $cmd = sprintf('nohup %s %s marketplace:initial-sync %d >> %s 2>&1 &',
+                escapeshellarg($php), escapeshellarg(base_path('artisan')), $shop->id, escapeshellarg(storage_path('logs/initial-sync.log')));
+            @exec($cmd);
+
+            return;
+        }
         $id = $shop->id;
         dispatch(function () use ($id) {
             ignore_user_abort(true);

@@ -163,3 +163,14 @@ Artisan::command('pesanin:reviewer {email=shopee.review@pesaninn.my.id} {--reset
     $this->line('  Password : '.($password ?? '(tidak diubah; pakai --reset untuk membuat password baru)'));
     $this->line('  Paket    : Pro, aktif s/d '.$user->plan_expires_at->toDateString().' (semua fitur terbuka)');
 })->purpose('Create or refresh the trial account given to Shopee for the ISV review');
+
+// First full sync of a newly connected Shopee shop, started in the background by the OAuth callback.
+Artisan::command('marketplace:initial-sync {shop}', function (int $shop) {
+    $s = \App\Models\MarketplaceShop::find($shop);
+    if (! $s || $s->is_demo) {
+        return;
+    }
+    $this->info(now()->toDateTimeString()." sinkron awal toko {$s->id} ({$s->shop_name}) dimulai");
+    (new \App\Support\Shopee\ShopeeSync)->initial($s);
+    $this->info(now()->toDateTimeString()." sinkron awal toko {$s->id} selesai");
+})->purpose('Initial sync (profile, products, orders, ads) of a newly connected Shopee shop');
