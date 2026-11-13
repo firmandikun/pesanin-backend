@@ -98,4 +98,48 @@ class ShopeeBookingTest extends TestCase
         $b->update(['booking_status' => 'READY_TO_SHIP']);
         $this->postJson('/api/labels/shopee/booking-pdf', ['booking_ids' => [$b->id]])->assertStatus(422);
     }
+
+    public function test_orders_from_kilat_stock_are_split_from_seller_stock(): void
+    {
+        $user = User::factory()->create();
+        $shop = $this->shop($user);
+        Http::fake(['*' => Http::response(['response' => []])]);
+        $sync = new ShopeeSync;
+        foreach (['A', 'B'] as $sn) {
+            $sync->upsertOrder($shop, ['order_sn' => $sn, 'order_status' => 'SHIPPED', 'item_list' => [], 'create_time' => time()]);
+        }
+        ShopeeBooking::create(['user_id' => $user->id, 'marketplace_shop_id' => $shop->id, 'booking_sn' => 'BK', 'order_sn' => 'B', 'booking_status' => 'MATCHED']);
+
+        $this->actingAs($user);
+        $sns = fn ($stock) => collect($this->getJson("/api/orders?channel=shopee&shopee_state=shipping&stock={$stock}")->json('orders.data'))->pluck('external_order_sn')->all();
+        $this->assertSame(['A'], $sns('seller'));
+        $this->assertSame(['B'], $sns('kilat'));
+        // A matched reservation is an order now, not a separate Kilat parcel.
+        $this->assertSame(0, $this->getJson('/api/orders?channel=shopee&shopee_state=shipping')->json('bookings.total'));
+    }
+
+    public function test_return_requests_are_synced_and_counted_like_seller_centre(): void
+    {
+        $user = User::factory()->create();
+        $shop = $this->shop($user);
+        Http::fake(function ($req) {
+            parse_str((string) parse_url($req->url(), PHP_URL_QUERY), $q);
+            if (str_contains($req->url(), 'get_return_list')) {
+                $hit = ($q['create_time_to'] ?? 0) >= time() - 5 && ($q['page_no'] ?? '0') === '0';
+
+                return Http::response(['response' => ['more' => false, 'return' => $hit ? [
+                    ['return_sn' => 'R1', 'order_sn' => '261108RK0DQH22', 'status' => 'PROCESSING', 'reason' => 'WRONG_ITEM', 'refund_amount' => 19597, 'user' => ['username' => 'irfan'], 'create_time' => time(), 'return_seller_due_date' => time() + 86400, 'item' => [['name' => 'Cover', 'amount' => 1]]],
+                    ['return_sn' => 'R2', 'order_sn' => 'X', 'status' => 'CLOSED', 'refund_amount' => 1000, 'create_time' => time() - 60],
+                ] : []]]);
+            }
+
+            return Http::response(['response' => []]);
+        });
+
+        $this->assertSame(2, (new ShopeeSync)->returns($shop));
+        $this->actingAs($user);
+        $this->assertSame(1, $this->getJson('/api/orders?channel=shopee&facets=1&per_page=1')->json('attention.returns'));
+        $this->assertSame('R1', $this->getJson('/api/marketplace/returns?filter=open')->json('data.0.return_sn'));
+        $this->assertSame(2, $this->getJson('/api/marketplace/returns')->json('total'));
+    }
 }

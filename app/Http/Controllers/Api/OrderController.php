@@ -41,6 +41,12 @@ class OrderController extends Controller
 
         $extra = [];
         if ($request->query('channel') === 'shopee' && $request->boolean('facets')) {
+            // Pengembalian/Pembatalan badge, as Seller Centre counts it: requests waiting for the seller.
+            $shopFilter = fn ($b) => $b->when($request->query('marketplace_shop_id'), fn ($x, $id) => $x->where('marketplace_shop_id', $id));
+            $extra['attention'] = [
+                'returns' => $shopFilter(\App\Models\ShopeeReturn::where('user_id', $request->user()->id)->whereIn('status', \App\Models\ShopeeReturn::NEEDS_SELLER))->count(),
+                'cancel_requests' => $shopFilter($request->user()->orders()->where('channel', 'shopee')->where('external_status', 'IN_CANCEL'))->count(),
+            ];
             // Jasa Kirim choices for the Shopee page filter.
             $extra['couriers'] = $request->user()->orders()->where('channel', 'shopee')
                 ->when($request->query('marketplace_shop_id'), fn ($b, $id) => $b->where('marketplace_shop_id', $id))
@@ -271,6 +277,8 @@ class OrderController extends Controller
                 'shipping' => $q->whereIn('external_status', ['SHIPPED', 'TO_CONFIRM_RECEIVE', 'TO_RETURN']),
                 'done' => $q->where('external_status', 'COMPLETED'),
                 'cancelled' => $q->where('external_status', 'CANCELLED'),
+                // Pengembalian/Pembatalan → Pembatalan: cancelled orders and buyer cancel requests.
+                'pembatalan' => $q->whereIn('external_status', ['CANCELLED', 'IN_CANCEL']),
                 'unpaid' => $q->where('external_status', 'UNPAID'),
                 default => $q->where('external_status', $state),
             };
@@ -278,6 +286,11 @@ class OrderController extends Controller
         // Shopee page: "Pengiriman Kilat" shows reservations only (they live in shopee_bookings, not here).
         if ($request->query('kind') === 'kilat') {
             $q->whereRaw('1 = 0');
+        }
+        // Dikirim Dari: orders Shopee fulfilled from a "Pengiriman Kilat" reservation vs from the seller's own stock.
+        if (in_array($stock = $request->query('stock'), ['seller', 'kilat'], true)) {
+            $matched = \App\Models\ShopeeBooking::where('user_id', $request->user()->id)->whereNotNull('order_sn')->select('order_sn');
+            $stock === 'kilat' ? $q->whereIn('external_order_sn', $matched) : $q->whereNotIn('external_order_sn', $matched);
         }
         // Jasa Kirim: the option the buyer chose (Hemat Kargo, Reguler…) or the carrier itself.
         if ($c = $request->query('shopee_courier')) {

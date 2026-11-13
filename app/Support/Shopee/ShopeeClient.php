@@ -117,6 +117,14 @@ class ShopeeClient
         ], fn ($v) => $v !== null))['response'] ?? [];
     }
 
+    /** Return / refund requests created in [from, to] (≤ 15 days). page_no starts at 0. */
+    public function returnList(MarketplaceShop $shop, int $from, int $to, int $pageNo = 0): array
+    {
+        return $this->get($shop, '/api/v2/returns/get_return_list', [
+            'page_no' => $pageNo, 'page_size' => 100, 'create_time_from' => $from, 'create_time_to' => $to,
+        ])['response'] ?? [];
+    }
+
     /** @param string[] $bookingSns up to 50 */
     public function bookingDetail(MarketplaceShop $shop, array $bookingSns): array
     {

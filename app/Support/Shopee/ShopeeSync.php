@@ -93,11 +93,13 @@ class ShopeeSync
             $count += $this->pull($shop, $from->timestamp, $to->timestamp, $first ? 'create_time' : 'update_time');
         }
         $count += $this->reconcileOpen($shop);
-        try {
-            $this->bookings($shop);
-        } catch (\Throwable $e) {
-            // Bookings are optional (not every shop/app has them); never fail the order sync for them.
-            \Illuminate\Support\Facades\Log::warning("Shopee bookings {$shop->id}: {$e->getMessage()}");
+        // Bookings and returns are optional modules; never fail the order sync for them.
+        foreach (['bookings', 'returns'] as $extra) {
+            try {
+                $this->{$extra}($shop);
+            } catch (\Throwable $e) {
+                \Illuminate\Support\Facades\Log::warning("Shopee {$extra} {$shop->id}: {$e->getMessage()}");
+            }
         }
         $shop->update(['orders_synced_at' => $end, 'last_error' => null]);
         $this->settle($shop);
@@ -141,10 +143,10 @@ class ShopeeSync
         $open = ['READY_TO_SHIP', 'PROCESSED', 'RETRY_SHIP', 'SHIPPED', 'TO_CONFIRM_RECEIVE'];
         $listed = []; // order_sn => status Shopee reports
         foreach ($listable as $status => $days) {
-            for ($from = now()->subDays($days); $from < now(); $from->addDays(15)) {
+            for ($end = now(), $from = $end->copy()->subDays($days); $from < $end; $from->addDays(15)) {
                 $cursor = '';
                 do {
-                    $page = $this->api->orderList($shop, $from->timestamp, $from->copy()->addDays(15)->min(now())->timestamp, $cursor, 'create_time', $status);
+                    $page = $this->api->orderList($shop, $from->timestamp, $from->copy()->addDays(15)->min($end)->timestamp, $cursor, 'create_time', $status);
                     foreach ($page['order_list'] ?? [] as $o) {
                         $listed[$o['order_sn']] = $o['order_status'] ?? $status;
                     }
@@ -179,21 +181,27 @@ class ShopeeSync
      */
     public function bookings(MarketplaceShop $shop): int
     {
-        $sns = [];
-        foreach ([...\App\Models\ShopeeBooking::OPEN, 'SHIPPED'] as $status) {
-            for ($from = now()->subDays(30); $from < now(); $from->addDays(15)) {
+        // Open reservations (30 days), shipped ones and those matched to a buyer order (60 days: parcels on the way).
+        $windows = ['READY_TO_SHIP' => 30, 'PROCESSED' => 30, 'SHIPPED' => 60, 'MATCHED' => 60];
+        $listed = []; // booking_sn => status Shopee reports
+        foreach ($windows as $status => $days) {
+            for ($end = now(), $from = $end->copy()->subDays($days); $from < $end; $from->addDays(15)) {
                 $cursor = '';
                 do {
-                    $page = $this->api->bookingList($shop, $from->timestamp, $from->copy()->addDays(15)->min(now())->timestamp, $cursor, 'create_time', $status);
-                    array_push($sns, ...array_column($page['booking_list'] ?? [], 'booking_sn'));
+                    $page = $this->api->bookingList($shop, $from->timestamp, $from->copy()->addDays(15)->min($end)->timestamp, $cursor, 'create_time', $status);
+                    foreach ($page['booking_list'] ?? [] as $bk) {
+                        $listed[$bk['booking_sn']] = $bk['booking_status'] ?? $status;
+                    }
                     $cursor = $page['next_cursor'] ?? '';
                 } while (! empty($page['more']));
             }
         }
-        $stale = \App\Models\ShopeeBooking::where('marketplace_shop_id', $shop->id)->whereIn('booking_status', [...\App\Models\ShopeeBooking::OPEN, 'SHIPPED'])
-            ->whereNotIn('booking_sn', $sns ?: [''])->pluck('booking_sn')->all();
+        $local = \App\Models\ShopeeBooking::where('marketplace_shop_id', $shop->id)->pluck('booking_status', 'booking_sn');
+        // New or changed bookings, plus local ones in a listed status that Shopee no longer lists (moved on).
+        $refresh = collect($listed)->filter(fn ($st, $sn) => ($local[$sn] ?? null) !== $st)->keys()->all();
+        $stale = $local->filter(fn ($st, $sn) => isset($windows[$st]) && ! isset($listed[$sn]))->keys()->all();
         $count = 0;
-        foreach (array_chunk(array_values(array_unique([...$sns, ...$stale])), 50) as $chunk) {
+        foreach (array_chunk(array_values(array_unique([...$refresh, ...$stale])), 50) as $chunk) {
             foreach ($this->api->bookingDetail($shop, $chunk) as $d) {
                 $this->upsertBooking($shop, $d);
                 $count++;
@@ -201,6 +209,54 @@ class ShopeeSync
         }
 
         return $count;
+    }
+
+    /**
+     * Return / refund requests (Seller Centre → Pengembalian/Pembatalan), last 60 days.
+     * @return int requests stored
+     */
+    public function returns(MarketplaceShop $shop, int $days = 60): int
+    {
+        $count = 0;
+        for ($end = now(), $from = $end->copy()->subDays($days); $from < $end; $from->addDays(15)) {
+            $pageNo = 0;
+            do {
+                $res = $this->api->returnList($shop, $from->timestamp, $from->copy()->addDays(15)->min($end)->timestamp, $pageNo);
+                foreach ($res['return'] ?? [] as $r) {
+                    $this->upsertReturn($shop, $r);
+                    $count++;
+                }
+                $pageNo++;
+            } while (! empty($res['more']) && $pageNo < 50);
+        }
+
+        return $count;
+    }
+
+    public function upsertReturn(MarketplaceShop $shop, array $r): \App\Models\ShopeeReturn
+    {
+        $due = $r['return_seller_due_date'] ?? $r['due_date'] ?? null;
+
+        return \App\Models\ShopeeReturn::updateOrCreate(
+            ['marketplace_shop_id' => $shop->id, 'return_sn' => (string) $r['return_sn']],
+            [
+                'user_id' => $shop->user_id,
+                'order_sn' => $r['order_sn'] ?? null,
+                'status' => $r['status'] ?? 'REQUESTED',
+                'reason' => $r['reason'] ?? null,
+                'text_reason' => mb_substr((string) ($r['text_reason'] ?? ''), 0, 500) ?: null,
+                'refund_amount' => (int) round($r['refund_amount'] ?? 0),
+                'buyer_username' => $r['user']['username'] ?? null,
+                'tracking_number' => ($r['tracking_number'] ?? '') ?: null,
+                'items' => collect($r['item'] ?? [])->map(fn ($i) => [
+                    'name' => $i['name'] ?? '', 'variant' => ($i['variation_name'] ?? '') ?: null,
+                    'sku' => ($i['variation_sku'] ?? '') ?: (($i['item_sku'] ?? '') ?: null), 'qty' => (int) ($i['amount'] ?? 1),
+                    'image' => $i['images'][0] ?? null,
+                ])->values()->all(),
+                'due_at' => $due ? Carbon::createFromTimestamp($due) : null,
+                'requested_at' => ! empty($r['create_time']) ? Carbon::createFromTimestamp($r['create_time']) : null,
+            ],
+        );
     }
 
     public function upsertBooking(MarketplaceShop $shop, array $d): \App\Models\ShopeeBooking
