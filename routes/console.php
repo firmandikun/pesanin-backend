@@ -116,3 +116,50 @@ Artisan::command('pesanin:admin {email} {--revoke}', function (string $email) {
     $user->forceFill(['is_admin' => ! $this->option('revoke')])->save();
     $this->info($user->is_admin ? "{$email} sekarang admin Pesanin." : "Akses admin {$email} dicabut.");
 })->purpose('Grant or revoke Pesanin platform admin access');
+
+// Shopee ISV application: a ready-to-review seller account for Shopee's reviewers (Pro plan, sample Shopee shop).
+Artisan::command('pesanin:reviewer {email=shopee.review@pesaninn.my.id} {--reset : Set a new password}', function (string $email) {
+    $user = \App\Models\User::where('email', $email)->first();
+    $password = null;
+    if (! $user || $this->option('reset')) {
+        $password = \Illuminate\Support\Str::password(16, symbols: false);
+    }
+    if (! $user) {
+        $user = \App\Models\User::create([
+            'name' => 'Shopee Reviewer', 'store_name' => 'Toko Uji Shopee', 'store_slug' => 'toko-uji-shopee-'.\Illuminate\Support\Str::lower(\Illuminate\Support\Str::random(4)),
+            'email' => $email, 'password' => $password,
+        ]);
+        \App\Support\DefaultTemplates::seed($user);
+    } elseif ($password) {
+        $user->forceFill(['password' => $password])->save();
+    }
+    // Every feature open for a year, no trial lock.
+    $user->forceFill(['plan' => 'pro', 'plan_billing' => 'yearly', 'plan_expires_at' => now()->addYear()->endOfDay(), 'plan_auto_renew' => false, 'suspended_at' => null, 'is_admin' => false])->save();
+    // Sample products (slugs are unique across Pesanin, so they carry the user id) for the catalogue, checkout and Shopee linking.
+    if (! $user->products()->exists()) {
+        $sid = $user->id;
+        $user->products()->create([
+            'name' => 'Toner Lemon 60ml', 'slug' => "toner-lemon-{$sid}", 'category' => 'Kecantikan', 'price' => 129900, 'sale_price' => 49900,
+            'cost_price' => 15000, 'sku' => 'TNR001', 'track_stock' => true, 'stock' => 500, 'weight' => 100,
+            'description' => 'Toner wajah dengan ekstrak lemon untuk kulit cerah dan segar.', 'payment_methods' => ['bank_transfer', 'cod'],
+        ]);
+        $user->products()->create([
+            'name' => 'Eyelash Serum 10ml', 'slug' => "eyelash-serum-{$sid}", 'category' => 'Kecantikan', 'price' => 159900, 'sale_price' => 129900,
+            'cost_price' => 40000, 'sku' => 'SRM010', 'track_stock' => true, 'stock' => 200, 'weight' => 50,
+            'description' => 'Serum penumbuh bulu mata dalam 14 hari.', 'payment_methods' => ['bank_transfer', 'cod', 'epayment'],
+        ]);
+        $user->products()->create([
+            'name' => 'Masker Wajah Organik', 'slug' => "masker-organik-{$sid}", 'category' => 'Kecantikan', 'price' => 89000, 'sale_price' => 69000,
+            'cost_price' => 22000, 'sku' => 'MSK020', 'track_stock' => true, 'stock' => 300, 'weight' => 120,
+            'description' => 'Masker wajah dari bahan organik untuk kulit lembap.', 'payment_methods' => ['bank_transfer', 'cod'],
+        ]);
+    }
+    if (! $user->marketplaceShops()->where('is_demo', true)->exists()) {
+        \App\Support\Shopee\ShopeeDemo::seed($user);
+    }
+    $this->info('Akun uji coba untuk reviewer Shopee siap:');
+    $this->line('  URL      : '.rtrim(config('services.frontend_url') ?: config('app.url'), '/').'/login');
+    $this->line('  Email    : '.$email);
+    $this->line('  Password : '.($password ?? '(tidak diubah; pakai --reset untuk membuat password baru)'));
+    $this->line('  Paket    : Pro, aktif s/d '.$user->plan_expires_at->toDateString().' (semua fitur terbuka)');
+})->purpose('Create or refresh the trial account given to Shopee for the ISV review');
