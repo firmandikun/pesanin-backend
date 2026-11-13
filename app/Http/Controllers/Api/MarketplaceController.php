@@ -87,6 +87,20 @@ class MarketplaceController extends Controller
         return ['shop' => $shop->only(['id', 'shop_id', 'shop_name', 'status'])];
     }
 
+    /** Shopee return / refund requests (Pengembalian Barang/Dana), newest first. */
+    public function returns(Request $request)
+    {
+        $data = $request->validate(['shop_id' => 'nullable|integer', 'filter' => 'nullable|in:open,all', 'search' => 'nullable|string|max:60', 'per_page' => 'nullable|integer|min:1|max:1000']);
+        $q = \App\Models\ShopeeReturn::where('user_id', $request->user()->id)->with('marketplaceShop:id,shop_name')
+            ->when($data['shop_id'] ?? null, fn ($b, $id) => $b->where('marketplace_shop_id', $id))
+            ->when(($data['filter'] ?? 'all') === 'open', fn ($b) => $b->whereIn('status', \App\Models\ShopeeReturn::NEEDS_SELLER))
+            ->when($data['search'] ?? null, fn ($b, $s) => $b->where(fn ($w) => $w->where('return_sn', 'like', "%{$s}%")->orWhere('order_sn', 'like', "%{$s}%")
+                ->orWhere('buyer_username', 'like', "%{$s}%")->orWhere('tracking_number', 'like', "%{$s}%")));
+
+        return $q->orderByRaw('CASE WHEN status IN (\'REQUESTED\', \'PROCESSING\') THEN 0 ELSE 1 END')->latest('requested_at')
+            ->paginate($data['per_page'] ?? 10);
+    }
+
     /** First full sync (products, orders, ads) runs after the response is sent, so the redirect is instant and nothing times out. */
     private static function syncInBackground(MarketplaceShop $shop): void
     {
