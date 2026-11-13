@@ -74,4 +74,28 @@ class ShopeeBookingTest extends TestCase
         $this->assertSame(['B'], $sns('to_ship'));
         $this->assertSame(['C'], $sns('cancelled'));
     }
+
+    public function test_kilat_reservation_awb_can_be_printed(): void
+    {
+        $user = User::factory()->create();
+        $shop = $this->shop($user);
+        $b = ShopeeBooking::create(['user_id' => $user->id, 'marketplace_shop_id' => $shop->id, 'booking_sn' => 'BK1', 'booking_status' => 'PROCESSED', 'shipping_carrier' => 'SPX Hemat', 'tracking_number' => 'SPXID1']);
+        $sent = [];
+        Http::fake(function ($req) use (&$sent) {
+            $sent[] = parse_url($req->url(), PHP_URL_PATH);
+            if (str_contains($req->url(), 'download_booking_shipping_document')) {
+                return Http::response('%PDF-1.4 kilat', 200, ['Content-Type' => 'application/pdf']);
+            }
+
+            return Http::response(['response' => ['result_list' => [['booking_sn' => 'BK1', 'status' => 'READY']]]]);
+        });
+
+        $res = $this->actingAs($user)->post('/api/labels/shopee/booking-pdf', ['booking_ids' => [$b->id]], ['Accept' => 'application/json'])->assertOk();
+        $this->assertSame('%PDF-1.4 kilat', $res->getContent());
+        $this->assertContains('/api/v2/logistics/create_booking_shipping_document', $sent);
+
+        // Not arranged yet → refused with a clear message.
+        $b->update(['booking_status' => 'READY_TO_SHIP']);
+        $this->postJson('/api/labels/shopee/booking-pdf', ['booking_ids' => [$b->id]])->assertStatus(422);
+    }
 }
