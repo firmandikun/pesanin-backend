@@ -108,6 +108,29 @@ class ShopeeClient
         ], fn ($v) => $v !== null))['response'] ?? [];
     }
 
+    /** Shopee "Pengiriman Kilat" reservations (bookings). Same windowing rules as orders (≤ 15 days). */
+    public function bookingList(MarketplaceShop $shop, int $from, int $to, string $cursor = '', string $field = 'create_time', ?string $status = null): array
+    {
+        return $this->get($shop, '/api/v2/order/get_booking_list', array_filter([
+            'time_range_field' => $field, 'time_from' => $from, 'time_to' => $to, 'page_size' => 100, 'cursor' => $cursor,
+            'booking_status' => $status,
+        ], fn ($v) => $v !== null))['response'] ?? [];
+    }
+
+    /** @param string[] $bookingSns up to 50 */
+    public function bookingDetail(MarketplaceShop $shop, array $bookingSns): array
+    {
+        return $this->get($shop, '/api/v2/order/get_booking_detail', [
+            'booking_sn_list' => implode(',', $bookingSns),
+            'response_optional_fields' => 'item_list,shipping_carrier,cancel_by,cancel_reason,fulfillment_flag,pickup_done_time',
+        ])['response']['booking_list'] ?? [];
+    }
+
+    public function bookingTrackingNumber(MarketplaceShop $shop, string $bookingSn): ?string
+    {
+        return $this->get($shop, '/api/v2/logistics/get_booking_tracking_number', ['booking_sn' => $bookingSn])['response']['tracking_number'] ?? null;
+    }
+
     /** @param string[] $orderSns up to 50 */
     public function orderDetail(MarketplaceShop $shop, array $orderSns): array
     {

@@ -39,7 +39,26 @@ class OrderController extends Controller
             ->orderBy(in_array($request->query('sort'), self::SORTABLE, true) ? $request->query('sort') : 'created_at', $request->query('dir') === 'asc' ? 'asc' : 'desc')
             ->paginate(min(1000, max(1, $request->integer('per_page', 10))));
 
-        return ['orders' => $orders, 'stats' => $stats];
+        return ['orders' => $orders, 'stats' => $stats, 'bookings' => $this->bookings($request)];
+    }
+
+    /**
+     * Shopee "Pengiriman Kilat" reservations for the Perlu dikirim / Siap diserahkan tabs. They are listed beside
+     * the orders (Seller Centre counts them in "Perlu Dikirim") but never mixed into order stats or revenue.
+     */
+    private function bookings(Request $request): array
+    {
+        $map = ['to_ship' => 'READY_TO_SHIP', 'processed' => 'PROCESSED'];
+        $status = $map[$request->query('shopee_state')] ?? null;
+        if ($request->query('channel') !== 'shopee' || ! $status) {
+            return ['total' => 0, 'data' => []];
+        }
+        $q = \App\Models\ShopeeBooking::where('user_id', $request->user()->id)->where('booking_status', $status)
+            ->when($request->query('marketplace_shop_id'), fn ($b, $id) => $b->where('marketplace_shop_id', $id))
+            ->when($request->query('search'), fn ($b, $s) => $b->where(fn ($w) => $w->where('booking_sn', 'like', "%{$s}%")->orWhere('tracking_number', 'like', "%{$s}%")));
+        $total = (clone $q)->count();
+
+        return ['total' => $total, 'data' => $request->integer('page', 1) > 1 ? [] : $q->with('marketplaceShop:id,shop_name')->latest('booked_at')->limit(200)->get()];
     }
 
     public function show(Request $request, Order $order)
@@ -229,16 +248,20 @@ class OrderController extends Controller
             $q->where('channel', '!=', 'shopee');
         }
         if ($state = $request->query('shopee_state')) {
-            $q->whereIn('external_status', match ($state) {
-                'to_ship' => ['READY_TO_SHIP'],
+            // Like Seller Centre, a buyer's pending cancel request (IN_CANCEL) stays in "Perlu Dikirim" until the seller answers:
+            // under "Siap diserahkan" once a resi exists, otherwise under "Perlu dikirim".
+            $inCancel = fn ($w, bool $arranged) => $w->where('external_status', 'IN_CANCEL')
+                ->where(fn ($t) => $arranged ? $t->whereNotNull('tracking_number')->where('tracking_number', '!=', '') : $t->whereNull('tracking_number')->orWhere('tracking_number', ''));
+            match ($state) {
+                'to_ship' => $q->where(fn ($w) => $w->where('external_status', 'READY_TO_SHIP')->orWhere(fn ($x) => $inCancel($x, false))),
                 // Already arranged; a failed pickup (RETRY_SHIP) waits for the courier to come back.
-                'processed' => ['PROCESSED', 'RETRY_SHIP'],
-                'shipping' => ['SHIPPED', 'TO_CONFIRM_RECEIVE'],
-                'done' => ['COMPLETED'],
-                'cancelled' => ['CANCELLED', 'IN_CANCEL', 'TO_RETURN'],
-                'unpaid' => ['UNPAID'],
-                default => [$state],
-            });
+                'processed' => $q->where(fn ($w) => $w->whereIn('external_status', ['PROCESSED', 'RETRY_SHIP'])->orWhere(fn ($x) => $inCancel($x, true))),
+                'shipping' => $q->whereIn('external_status', ['SHIPPED', 'TO_CONFIRM_RECEIVE']),
+                'done' => $q->where('external_status', 'COMPLETED'),
+                'cancelled' => $q->whereIn('external_status', ['CANCELLED', 'TO_RETURN']),
+                'unpaid' => $q->where('external_status', 'UNPAID'),
+                default => $q->where('external_status', $state),
+            };
         }
         if ($traffic = $request->query('traffic')) {
             \App\Support\Traffic::scope($q->where('channel', 'website'), $traffic);

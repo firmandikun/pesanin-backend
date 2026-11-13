@@ -1,0 +1,77 @@
+<?php
+
+namespace Tests\Feature;
+
+use App\Models\MarketplaceShop;
+use App\Models\ShopeeBooking;
+use App\Models\User;
+use App\Support\Shopee\ShopeeSync;
+use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Http;
+use Tests\TestCase;
+
+/** "Perlu Dikirim" in Seller Centre = orders + Pengiriman Kilat reservations + buyer cancel requests not yet answered. */
+class ShopeeBookingTest extends TestCase
+{
+    use RefreshDatabase;
+
+    private function shop(User $user): MarketplaceShop
+    {
+        config(['services.shopee.partner_id' => 1, 'services.shopee.partner_key' => 'k']);
+        $shop = new MarketplaceShop(['platform' => 'shopee', 'shop_id' => 1, 'shop_name' => 'T', 'status' => 'active', 'access_token' => 'a', 'refresh_token' => 'r', 'access_expires_at' => now()->addHour(), 'refresh_expires_at' => now()->addDays(30)]);
+        $shop->user_id = $user->id;
+        $shop->save();
+
+        return $shop;
+    }
+
+    public function test_kilat_reservations_are_synced_and_listed_in_siap_diserahkan(): void
+    {
+        $user = User::factory()->create();
+        $shop = $this->shop($user);
+        Http::fake(function ($req) {
+            parse_str((string) parse_url($req->url(), PHP_URL_QUERY), $q);
+            if (str_contains($req->url(), 'get_booking_list')) {
+                $list = ($q['booking_status'] ?? '') === 'PROCESSED' && ($q['time_to'] ?? 0) >= time() - 5 ? [['booking_sn' => '261112AAR7O6YVYR7JU']] : [];
+
+                return Http::response(['response' => ['booking_list' => $list, 'more' => false]]);
+            }
+            if (str_contains($req->url(), 'get_booking_detail')) {
+                return Http::response(['response' => ['booking_list' => [[
+                    'booking_sn' => '261112AAR7O6YVYR7JU', 'booking_status' => 'PROCESSED', 'shipping_carrier' => 'SPX Hemat', 'create_time' => time(),
+                    'item_list' => [['item_name' => 'Cover knalpot', 'model_name' => 'Airblade', 'model_sku' => 'CK-1', 'model_quantity' => 1]],
+                ]]]]);
+            }
+            if (str_contains($req->url(), 'get_booking_tracking_number')) {
+                return Http::response(['response' => ['tracking_number' => 'SPXID066696273523']]);
+            }
+
+            return Http::response(['response' => []]);
+        });
+
+        $this->assertSame(1, (new ShopeeSync)->bookings($shop));
+        $this->assertSame('SPXID066696273523', ShopeeBooking::first()->tracking_number);
+
+        $res = $this->actingAs($user)->getJson('/api/orders?channel=shopee&shopee_state=processed')->assertOk();
+        $this->assertSame(1, $res->json('bookings.total'));
+        $this->assertSame(0, $res->json('stats.total_orders')); // never counted as an order / revenue
+        $this->assertSame(0, $this->getJson('/api/orders?channel=shopee&shopee_state=to_ship')->json('bookings.total'));
+    }
+
+    public function test_pending_cancel_request_stays_in_perlu_dikirim(): void
+    {
+        $user = User::factory()->create();
+        $shop = $this->shop($user);
+        Http::fake(['*' => Http::response(['response' => []])]);
+        $sync = new ShopeeSync;
+        $sync->upsertOrder($shop, ['order_sn' => 'A', 'order_status' => 'IN_CANCEL', 'item_list' => [], 'create_time' => time()])->forceFill(['tracking_number' => 'SPX1'])->save();
+        $sync->upsertOrder($shop, ['order_sn' => 'B', 'order_status' => 'IN_CANCEL', 'item_list' => [], 'create_time' => time()])->forceFill(['tracking_number' => null])->save();
+        $sync->upsertOrder($shop, ['order_sn' => 'C', 'order_status' => 'CANCELLED', 'item_list' => [], 'create_time' => time()]);
+
+        $this->actingAs($user);
+        $sns = fn ($state) => collect($this->getJson("/api/orders?channel=shopee&shopee_state={$state}")->json('orders.data'))->pluck('external_order_sn')->all();
+        $this->assertSame(['A'], $sns('processed'));
+        $this->assertSame(['B'], $sns('to_ship'));
+        $this->assertSame(['C'], $sns('cancelled'));
+    }
+}
