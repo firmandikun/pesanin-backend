@@ -46,21 +46,58 @@ class MarketplaceController extends Controller
         return ['url' => (new ShopeeClient)->authUrl($state)];
     }
 
-    /** Shopee redirects the seller here after they authorise a shop. */
+    /**
+     * A link the account owner can send to whoever holds the Shopee login (often the shop owner on another laptop).
+     * Valid 24 hours; every open creates a fresh Shopee authorisation URL, since Shopee's own link expires in minutes.
+     */
+    public function shareLink(Request $request)
+    {
+        abort_unless(ShopeeClient::configured(), 422, 'Isi SHOPEE_PARTNER_ID dan SHOPEE_PARTNER_KEY di backend/.env terlebih dahulu.');
+        Plans::ensureQuota($request->user(), 'shops');
+        $token = Crypt::encryptString(json_encode(['uid' => $request->user()->id, 'exp' => now()->addDay()->timestamp, 'share' => true]));
+
+        return ['url' => rtrim(config('app.url'), '/').'/api/shopee/authorize?t='.urlencode($token), 'expires_at' => now()->addDay()];
+    }
+
+    /** Public: opens Shopee's authorisation page for the account in a share link. */
+    public function authorizeShared(Request $request)
+    {
+        $done = rtrim(config('services.frontend_url'), '/').'/shopee-terhubung';
+        try {
+            $t = json_decode(Crypt::decryptString((string) $request->query('t')), true);
+            if (! $t || empty($t['share']) || $t['exp'] < time() || ! ($user = User::find($t['uid']))) {
+                return redirect($done.'?error='.urlencode('Link sudah kedaluwarsa. Minta link baru ke pemilik akun Pesanin.'));
+            }
+        } catch (\Throwable) {
+            return redirect($done.'?error='.urlencode('Link tidak valid. Minta link baru ke pemilik akun Pesanin.'));
+        }
+        $limit = Plans::all()[Plans::current($user)]['limits']['shops'];
+        if ($limit !== null && Plans::usage($user)['shops'] >= $limit) {
+            return redirect($done.'?error='.urlencode('Batas toko di paket akun Pesanin ini sudah tercapai.'));
+        }
+        $state = Crypt::encryptString(json_encode(['uid' => $user->id, 'exp' => now()->addMinutes(15)->timestamp]));
+
+        return redirect((new ShopeeClient)->authUrl($state));
+    }
+
+    /**
+     * Shopee redirects here after a shop is authorised. The connection is saved before any page loads, so the
+     * landing page is public: whoever logged in to Shopee (maybe on someone else's laptop) needs no Pesanin login.
+     */
     public function callback(Request $request)
     {
-        $front = rtrim(config('services.frontend_url'), '/').'/marketplace/shops';
+        $done = rtrim(config('services.frontend_url'), '/').'/shopee-terhubung';
         try {
             $shop = $this->completeAuth((string) $request->query('state'), (int) $request->query('shop_id'), (string) $request->query('code'));
             $user = $shop->user;
             ActivityLog::record($user, 'marketplace.connect', "Menghubungkan toko Shopee {$shop->shop_name}");
             self::syncInBackground($shop);
 
-            return redirect($front.'?connected='.$shop->id);
+            return redirect($done.'?'.http_build_query(['id' => $shop->id, 'shop' => $shop->shop_name, 'store' => $user->store_name]));
         } catch (\Throwable $e) {
             report($e);
 
-            return redirect($front.'?error='.urlencode($e instanceof ShopeeException ? $e->getMessage() : 'Gagal menghubungkan toko Shopee.'));
+            return redirect($done.'?error='.urlencode($e instanceof ShopeeException ? $e->getMessage() : 'Gagal menghubungkan toko Shopee. Ulangi dari Pesanin.'));
         }
     }
 

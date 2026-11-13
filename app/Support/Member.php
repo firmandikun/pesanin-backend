@@ -19,7 +19,7 @@ class Member
         '#^PUT me(/password)?$#', '#^\w+ (billing|integrations|banned-devices|activity-logs|balance)(/|$)#',
         '#^\w+ r/(team|domains|notification-accounts)(/|$)#', '#^PUT user-settings$#',
         '#^(POST|DELETE) meta-ads(/(connect|token))?$#', '#^(POST|DELETE) meta-chat(/connect)?$#',
-        '#^POST marketplace/shopee/(connect|complete|demo)$#', '#^DELETE marketplace/shops/#', '#^\w+ whatsapp/connect(/|$)#',
+        '#^POST marketplace/shopee/(connect|complete|demo|share-link)$#', '#^DELETE marketplace/shops/#', '#^\w+ whatsapp/connect(/|$)#',
     ];
 
     /** Every member can load the app shell. */
