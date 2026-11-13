@@ -61,7 +61,10 @@ class ShopeeClient
     /** Verify a Live Push call: Authorization = HMAC-SHA256(url|body, partner_key). */
     public function verifyPush(string $url, string $body, ?string $authorization): bool
     {
-        return $authorization !== null && hash_equals(hash_hmac('sha256', $url.'|'.$body, $this->partnerKey), $authorization);
+        // Live Push is signed with its own "Live Push Partner Key" (console → Push Mechanism); fall back to the API partner key.
+        $key = (string) (config('services.shopee.push_key') ?: $this->partnerKey);
+
+        return $authorization !== null && $key !== '' && hash_equals(hash_hmac('sha256', $url.'|'.$body, $key), $authorization);
     }
 
     // ── Shop-level API ──────────────────────────────────────────────
