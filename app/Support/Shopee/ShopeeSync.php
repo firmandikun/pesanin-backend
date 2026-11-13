@@ -128,10 +128,14 @@ class ShopeeSync
      */
     public function reconcileOpen(MarketplaceShop $shop): int
     {
+        // RETRY_SHIP can be returned by order detail, but Shopee rejects it as an
+        // order_status filter on get_order_list. Keep it in the local stale set so
+        // those orders are refreshed by detail, without breaking reconciliation.
+        $listable = ['READY_TO_SHIP', 'PROCESSED'];
         $open = ['READY_TO_SHIP', 'PROCESSED', 'RETRY_SHIP'];
         $seen = [];
         $count = 0;
-        foreach ($open as $status) {
+        foreach ($listable as $status) {
             for ($from = now()->subDays(30); $from < now(); $from->addDays(15)) {
                 $count += $this->pull($shop, $from->timestamp, $from->copy()->addDays(15)->min(now())->timestamp, 'create_time', $status, $seen);
             }

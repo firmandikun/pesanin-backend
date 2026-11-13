@@ -26,9 +26,11 @@ class ShopeeReconcileTest extends TestCase
         // Locally still "Siap diserahkan", but Shopee has shipped it since.
         $sync->upsertOrder($shop, ['order_sn' => 'OLD', 'order_status' => 'PROCESSED', 'item_list' => [], 'create_time' => time() - 86400]);
 
-        Http::fake(function ($req) {
+        $requestedStatuses = [];
+        Http::fake(function ($req) use (&$requestedStatuses) {
             parse_str((string) parse_url($req->url(), PHP_URL_QUERY), $q);
             if (str_contains($req->url(), 'get_order_list')) {
+                $requestedStatuses[] = $q['order_status'] ?? null;
                 $list = ($q['order_status'] ?? '') === 'PROCESSED' && ($q['time_to'] ?? 0) >= time() - 5 ? [['order_sn' => 'NEW']] : [];
 
                 return Http::response(['response' => ['order_list' => $list, 'more' => false]]);
@@ -48,5 +50,6 @@ class ShopeeReconcileTest extends TestCase
 
         $this->assertSame('PROCESSED', Order::where('external_order_sn', 'NEW')->value('external_status'));
         $this->assertSame('SHIPPED', Order::where('external_order_sn', 'OLD')->value('external_status'));
+        $this->assertNotContains('RETRY_SHIP', $requestedStatuses);
     }
 }
