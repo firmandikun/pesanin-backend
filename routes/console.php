@@ -174,3 +174,17 @@ Artisan::command('marketplace:initial-sync {shop}', function (int $shop) {
     (new \App\Support\Shopee\ShopeeSync)->initial($s);
     $this->info(now()->toDateTimeString()." sinkron awal toko {$s->id} selesai");
 })->purpose('Initial sync (profile, products, orders, ads) of a newly connected Shopee shop');
+
+// Pull older Shopee orders for a date range a report asked for (started in the background by ShopeeBackfill).
+Artisan::command('marketplace:backfill {shop} {from}', function (int $shop, string $from) {
+    $s = \App\Models\MarketplaceShop::find($shop);
+    if (! $s || $s->is_demo) {
+        return;
+    }
+    try {
+        $n = (new \App\Support\Shopee\ShopeeSync)->backfill($s, \Illuminate\Support\Carbon::parse($from));
+        $this->info(now()->toDateTimeString()." backfill toko {$s->id} sejak {$from}: {$n} pesanan");
+    } finally {
+        \Illuminate\Support\Facades\Cache::forget("shopee:backfill:{$s->id}");
+    }
+})->purpose('Backfill older Shopee orders for a report date range');

@@ -377,7 +377,8 @@ class MarketplaceController extends Controller
 
     public function transactions(Request $request, MarketplaceShop $shop)
     {
-        [$rows, $data] = $this->transactionRows($request, $shop);
+        [$rows, $data, $from] = $this->transactionRows($request, $shop);
+        $backfilling = \App\Support\Shopee\ShopeeBackfill::ensureShop($shop, $from);
         $perPage = (int) ($data['per_page'] ?? 10);
         $page = (int) ($data['page'] ?? 1);
 
@@ -391,6 +392,7 @@ class MarketplaceController extends Controller
                 'net_revenue' => (int) $rows->sum('net_revenue'), 'cogs' => (int) $rows->sum('cogs'),
                 'profit' => (int) $rows->sum('profit'), 'missing_cost' => $rows->where('missing_cost', true)->count(),
             ],
+            'backfilling' => $backfilling,
         ];
     }
 

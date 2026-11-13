@@ -102,8 +102,40 @@ class ShopeeSync
                 \Illuminate\Support\Facades\Log::warning("Shopee {$extra} {$shop->id}: {$e->getMessage()}");
             }
         }
-        $shop->update(['orders_synced_at' => $end, 'last_error' => null]);
+        $update = ['orders_synced_at' => $end, 'last_error' => null];
+        if ($first) {
+            $update['orders_backfilled_from'] = $start->toDateString();
+        }
+        $shop->update($update);
         $this->settle($shop);
+
+        return $count;
+    }
+
+    /**
+     * Pull older orders by create_time so a report for a past period matches Seller Centre. Only the range the
+     * shop has not backfilled yet is fetched; upsert dedupes. @return int orders upserted.
+     */
+    public function backfill(MarketplaceShop $shop, Carbon $from): int
+    {
+        @set_time_limit(0);
+        $from = $from->copy()->startOfDay();
+        // Shopee keeps about 2 years of orders; never ask earlier. (Orders can predate when the shop was connected,
+        // so we must NOT clamp by the Pesanin record's created_at.)
+        $floor = now()->subYears(2)->startOfDay();
+        if ($from->lt($floor)) {
+            $from = $floor;
+        }
+        $covered = $shop->orders_backfilled_from?->copy()->startOfDay() ?? now()->subDays(15)->startOfDay();
+        if ($from->gte($covered)) {
+            return 0;
+        }
+        $count = 0;
+        for ($w = $from->copy(); $w < $covered; $w->addDays(15)) {
+            $count += $this->pull($shop, $w->timestamp, $w->copy()->addDays(15)->min($covered)->timestamp, 'create_time');
+        }
+        $shop->update(['orders_backfilled_from' => $from->toDateString()]);
+        $this->settle($shop, 200);
 
         return $count;
     }

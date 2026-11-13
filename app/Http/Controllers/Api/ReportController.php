@@ -146,6 +146,7 @@ class ReportController extends Controller
                 'gross' => $daily->sum('gross'),
                 'net' => $daily->sum('net'),
             ],
+            'backfilling' => $this->backfilling($request, $from),
         ];
     }
 
@@ -168,6 +169,7 @@ class ReportController extends Controller
                 ->groupBy('products.name')->orderByDesc('total')->limit(10)->get(),
             'abandoned' => $request->user()->orders()->where('is_abandoned', true)->whereBetween('created_at', [$from, $to])->count(),
             'views' => (int) $request->user()->products()->sum('views'),
+            'backfilling' => $this->backfilling($request, $from),
         ];
     }
 
@@ -177,12 +179,26 @@ class ReportController extends Controller
         $data = $request->validate(['channel' => 'nullable|in:website,manual,shopee', 'shop_id' => 'nullable|integer']);
 
         return \App\Support\Analytics::profit($request->user(), $from, $to, $data['channel'] ?? null, $data['shop_id'] ?? null)
-            + ['from' => $from->toDateString(), 'to' => $to->toDateString()];
+            + ['from' => $from->toDateString(), 'to' => $to->toDateString(), 'backfilling' => $this->backfilling($request, $from)];
     }
 
     public function research(Request $request)
     {
         return ['products' => \App\Support\Analytics::research($request->user())];
+    }
+
+    /**
+     * Start a Shopee backfill when the report reaches earlier than the shops have synced, and tell the frontend
+     * so it can show "memperbarui data…" and refresh. Website/manual-only reports never need it.
+     */
+    private function backfilling(Request $request, Carbon $from): bool
+    {
+        $channel = $request->query('channel');
+        if ($channel && $channel !== 'shopee') {
+            return false;
+        }
+
+        return \App\Support\Shopee\ShopeeBackfill::ensure($request->user(), $from);
     }
 
     private function range(Request $request): array
