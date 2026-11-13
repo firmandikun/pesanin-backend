@@ -11,6 +11,7 @@ use App\Models\ShopeeAdCampaign;
 use App\Models\ShopeeAdStat;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Str;
 
 /** Pulls a connected Shopee shop's listings, orders, fees and ad spend into Pesanin. */
 class ShopeeSync
@@ -376,35 +377,55 @@ class ShopeeSync
         $addr = $d['recipient_address'] ?? [];
         $subtotal = $items->sum(fn ($i) => $i['qty'] * $i['price']);
 
-        $order = Order::firstOrNew(['marketplace_shop_id' => $shop->id, 'external_order_sn' => $d['order_sn']]);
-        $order->user_id = $shop->user_id;
-        $order->fill([
-            'code' => $order->code ?? self::orderCode($shop, $d['order_sn']),
-            'channel' => 'shopee', 'source' => 'marketplace', 'external_status' => $d['order_status'] ?? null,
-            'items' => $items->all(), 'product_id' => $items->firstWhere('product_id')['product_id'] ?? null,
-            'customer_name' => $addr['name'] ?? ($d['buyer_username'] ?? null), 'phone' => $addr['phone'] ?? null,
-            'address' => $addr['full_address'] ?? null, 'province' => $addr['state'] ?? null, 'city' => $addr['city'] ?? null,
-            'district' => $addr['district'] ?? null, 'postal_code' => $addr['zipcode'] ?? null,
-            'variant' => $items->count() > 1 ? $items->count().' produk' : ($items[0]['variant'] ?? null),
-            'quantity' => $items->sum('qty'), 'unit_price' => $items[0]['price'] ?? 0, 'subtotal' => $subtotal,
-            'shipping_cost' => (int) round($d['actual_shipping_fee'] ?? $d['estimated_shipping_fee'] ?? 0),
-            'total' => (int) round($d['total_amount'] ?? $subtotal),
-            'payment_method' => 'marketplace', 'payment_status' => ! empty($d['pay_time']) || ! empty($d['cod']) ? 'paid' : 'unpaid',
-            'status' => $status, 'shipping_status' => $shipping, 'courier' => $d['shipping_carrier'] ?? null,
-            'paid_at' => ! empty($d['pay_time']) ? Carbon::createFromTimestamp($d['pay_time']) : null,
-            // Shown like Seller Centre: buyer's payment method and the shipping option they chose at checkout.
-            'payment_channel' => ($d['payment_method'] ?? '') ?: ($order->payment_channel ?? ''), // '' = asked, none given (no re-backfill)
-            'courier_service' => ($d['checkout_shipping_carrier'] ?? '') ?: $order->courier_service,
-            'custom_fields' => array_filter([
-                'buyer_username' => $d['buyer_username'] ?? null,
-                'ship_by' => ! empty($d['ship_by_date']) ? Carbon::createFromTimestamp($d['ship_by_date'])->toIso8601String() : null,
-                'cancel_reason' => ($d['cancel_reason'] ?? '') ?: (($d['buyer_cancel_reason'] ?? '') ?: null),
-            ]) + (array) ($order->custom_fields ?? []),
-        ]);
-        if (! $order->exists && ! empty($d['create_time'])) {
-            $order->created_at = Carbon::createFromTimestamp($d['create_time']);
+        $build = function () use ($shop, $d, $items, $addr, $subtotal, $status, $shipping) {
+            $order = Order::firstOrNew(['marketplace_shop_id' => $shop->id, 'external_order_sn' => $d['order_sn']]);
+            $order->user_id = $shop->user_id;
+            $order->fill([
+                'code' => $order->code ?? self::orderCode($shop, $d['order_sn']),
+                'channel' => 'shopee', 'source' => 'marketplace', 'external_status' => $d['order_status'] ?? null,
+                'items' => $items->all(), 'product_id' => $items->firstWhere('product_id')['product_id'] ?? null,
+                'customer_name' => $addr['name'] ?? ($d['buyer_username'] ?? null), 'phone' => $addr['phone'] ?? null,
+                'address' => $addr['full_address'] ?? null, 'province' => $addr['state'] ?? null, 'city' => $addr['city'] ?? null,
+                'district' => $addr['district'] ?? null, 'postal_code' => $addr['zipcode'] ?? null,
+                'variant' => $items->count() > 1 ? $items->count().' produk' : ($items[0]['variant'] ?? null),
+                'quantity' => $items->sum('qty'), 'unit_price' => $items[0]['price'] ?? 0, 'subtotal' => $subtotal,
+                'shipping_cost' => (int) round($d['actual_shipping_fee'] ?? $d['estimated_shipping_fee'] ?? 0),
+                'total' => (int) round($d['total_amount'] ?? $subtotal),
+                'payment_method' => 'marketplace', 'payment_status' => ! empty($d['pay_time']) || ! empty($d['cod']) ? 'paid' : 'unpaid',
+                'status' => $status, 'shipping_status' => $shipping, 'courier' => $d['shipping_carrier'] ?? null,
+                'paid_at' => ! empty($d['pay_time']) ? Carbon::createFromTimestamp($d['pay_time']) : null,
+                // Shown like Seller Centre: buyer's payment method and the shipping option they chose at checkout.
+                'payment_channel' => ($d['payment_method'] ?? '') ?: ($order->payment_channel ?? ''), // '' = asked, none given (no re-backfill)
+                'courier_service' => ($d['checkout_shipping_carrier'] ?? '') ?: $order->courier_service,
+                'custom_fields' => array_filter([
+                    'buyer_username' => $d['buyer_username'] ?? null,
+                    'ship_by' => ! empty($d['ship_by_date']) ? Carbon::createFromTimestamp($d['ship_by_date'])->toIso8601String() : null,
+                    'cancel_reason' => ($d['cancel_reason'] ?? '') ?: (($d['buyer_cancel_reason'] ?? '') ?: null),
+                ]) + (array) ($order->custom_fields ?? []),
+            ]);
+            if (! $order->exists && ! empty($d['create_time'])) {
+                $order->created_at = Carbon::createFromTimestamp($d['create_time']);
+            }
+
+            return $order;
+        };
+        // Two syncs (background, manual, 30s poll) can insert the same order at once, and the same Shopee shop may
+        // live in another account: on a unique-key clash re-read the row, or give the new row a free code.
+        $order = $build();
+        for ($try = 0; ; $try++) {
+            try {
+                $order->save();
+                break;
+            } catch (\Illuminate\Database\UniqueConstraintViolationException $e) {
+                if ($try >= 2) {
+                    throw $e;
+                }
+                $order = $build();
+                if (! $order->exists) {
+                    $order->code = 'SP'.$d['order_sn'].'-'.$shop->id.($try ? '-'.Str::lower(Str::random(4)) : '');
+                }
+            }
         }
-        $order->save();
 
         // Tracking numbers are issued asynchronously after the shipment is arranged.
         if (! $order->tracking_number && in_array($d['order_status'] ?? '', ['PROCESSED', 'SHIPPED', 'TO_CONFIRM_RECEIVE', 'COMPLETED'], true)) {
