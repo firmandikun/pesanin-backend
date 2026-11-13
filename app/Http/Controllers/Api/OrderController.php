@@ -39,7 +39,15 @@ class OrderController extends Controller
             ->orderBy(in_array($request->query('sort'), self::SORTABLE, true) ? $request->query('sort') : 'created_at', $request->query('dir') === 'asc' ? 'asc' : 'desc')
             ->paginate(min(1000, max(1, $request->integer('per_page', 10))));
 
-        return ['orders' => $orders, 'stats' => $stats, 'bookings' => $this->bookings($request)];
+        $extra = [];
+        if ($request->query('channel') === 'shopee' && $request->boolean('facets')) {
+            // Jasa Kirim choices for the Shopee page filter.
+            $extra['couriers'] = $request->user()->orders()->where('channel', 'shopee')
+                ->when($request->query('marketplace_shop_id'), fn ($b, $id) => $b->where('marketplace_shop_id', $id))
+                ->selectRaw("COALESCE(NULLIF(courier_service, ''), courier) as c")->distinct()->pluck('c')->filter()->sort()->values();
+        }
+
+        return ['orders' => $orders, 'stats' => $stats, 'bookings' => $this->bookings($request)] + $extra;
     }
 
     /**
@@ -48,12 +56,13 @@ class OrderController extends Controller
      */
     private function bookings(Request $request): array
     {
-        $map = ['to_ship' => 'READY_TO_SHIP', 'processed' => 'PROCESSED', 'shipping' => 'SHIPPED'];
-        $status = $map[$request->query('shopee_state')] ?? null;
-        if ($request->query('channel') !== 'shopee' || ! $status) {
+        $map = ['to_ship' => ['READY_TO_SHIP'], 'processed' => ['PROCESSED'], 'perlu_kirim' => ['READY_TO_SHIP', 'PROCESSED'], 'shipping' => ['SHIPPED'], '' => null];
+        $state = (string) $request->query('shopee_state', '');
+        if ($request->query('channel') !== 'shopee' || ! array_key_exists($state, $map) || $request->query('kind') === 'order') {
             return ['total' => 0, 'data' => []];
         }
-        $q = \App\Models\ShopeeBooking::where('user_id', $request->user()->id)->where('booking_status', $status)
+        $q = \App\Models\ShopeeBooking::where('user_id', $request->user()->id)->when($map[$state], fn ($b, $st) => $b->whereIn('booking_status', $st))
+            ->when($request->query('shopee_courier'), fn ($b, $c) => $b->where('shipping_carrier', $c))
             ->when($request->query('marketplace_shop_id'), fn ($b, $id) => $b->where('marketplace_shop_id', $id))
             ->when($request->query('search'), fn ($b, $s) => $b->where(fn ($w) => $w->where('booking_sn', 'like', "%{$s}%")->orWhere('tracking_number', 'like', "%{$s}%")));
         $total = (clone $q)->count();
@@ -254,6 +263,8 @@ class OrderController extends Controller
                 ->where(fn ($t) => $arranged ? $t->whereNotNull('tracking_number')->where('tracking_number', '!=', '') : $t->whereNull('tracking_number')->orWhere('tracking_number', ''));
             match ($state) {
                 'to_ship' => $q->where(fn ($w) => $w->where('external_status', 'READY_TO_SHIP')->orWhere(fn ($x) => $inCancel($x, false))),
+                // Seller Centre's "Perlu Dikirim" tab: both of the above.
+                'perlu_kirim' => $q->whereIn('external_status', ['READY_TO_SHIP', 'PROCESSED', 'RETRY_SHIP', 'IN_CANCEL']),
                 // Already arranged; a failed pickup (RETRY_SHIP) waits for the courier to come back.
                 'processed' => $q->where(fn ($w) => $w->whereIn('external_status', ['PROCESSED', 'RETRY_SHIP'])->orWhere(fn ($x) => $inCancel($x, true))),
                 // Seller Centre keeps a parcel being returned (TO_RETURN) under "Dikirim" too.
@@ -263,6 +274,14 @@ class OrderController extends Controller
                 'unpaid' => $q->where('external_status', 'UNPAID'),
                 default => $q->where('external_status', $state),
             };
+        }
+        // Shopee page: "Pengiriman Kilat" shows reservations only (they live in shopee_bookings, not here).
+        if ($request->query('kind') === 'kilat') {
+            $q->whereRaw('1 = 0');
+        }
+        // Jasa Kirim: the option the buyer chose (Hemat Kargo, Reguler…) or the carrier itself.
+        if ($c = $request->query('shopee_courier')) {
+            $q->where(fn ($w) => $w->where('courier_service', $c)->orWhere('courier', $c));
         }
         if ($traffic = $request->query('traffic')) {
             \App\Support\Traffic::scope($q->where('channel', 'website'), $traffic);
@@ -281,7 +300,9 @@ class OrderController extends Controller
                 ->orWhere('phone', 'like', "%{$s}%")
                 ->orWhere('code', 'like', "%{$s}%")
                 ->orWhere('tracking_number', 'like', "%{$s}%")
-                ->orWhere('external_order_sn', 'like', "%{$s}%"));
+                ->orWhere('external_order_sn', 'like', "%{$s}%")
+                // Shopee: product name / SKU in the items, and the buyer's username.
+                ->orWhere(fn ($w) => $w->where('channel', 'shopee')->where(fn ($x) => $x->where('items', 'like', "%{$s}%")->orWhere('custom_fields', 'like', "%{$s}%"))));
         }
 
         return $q;

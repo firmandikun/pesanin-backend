@@ -159,8 +159,11 @@ class ShopeeSync
         // Local open orders Shopee no longer lists under an open status moved on (delivered, cancelled, …).
         $stale = Order::where('marketplace_shop_id', $shop->id)->whereIn('external_status', $open)
             ->whereNotIn('external_order_sn', array_keys($listed) ?: [''])->pluck('external_order_sn')->filter()->all();
+        // Open orders synced before buyer/payment/deadline details were stored: fill them in once.
+        $backfill = Order::where('marketplace_shop_id', $shop->id)->whereIn('external_status', $open)
+            ->whereNull('payment_channel')->limit(500)->pluck('external_order_sn')->filter()->all();
         $count = 0;
-        foreach (array_chunk(array_values(array_unique([...$refresh, ...$stale])), 50) as $chunk) {
+        foreach (array_chunk(array_values(array_unique([...$refresh, ...$stale, ...$backfill])), 50) as $chunk) {
             foreach ($this->api->orderDetail($shop, $chunk) as $detail) {
                 $this->upsertOrder($shop, $detail);
                 $count++;
@@ -322,6 +325,14 @@ class ShopeeSync
             'payment_method' => 'marketplace', 'payment_status' => ! empty($d['pay_time']) || ! empty($d['cod']) ? 'paid' : 'unpaid',
             'status' => $status, 'shipping_status' => $shipping, 'courier' => $d['shipping_carrier'] ?? null,
             'paid_at' => ! empty($d['pay_time']) ? Carbon::createFromTimestamp($d['pay_time']) : null,
+            // Shown like Seller Centre: buyer's payment method and the shipping option they chose at checkout.
+            'payment_channel' => ($d['payment_method'] ?? '') ?: ($order->payment_channel ?? ''), // '' = asked, none given (no re-backfill)
+            'courier_service' => ($d['checkout_shipping_carrier'] ?? '') ?: $order->courier_service,
+            'custom_fields' => array_filter([
+                'buyer_username' => $d['buyer_username'] ?? null,
+                'ship_by' => ! empty($d['ship_by_date']) ? Carbon::createFromTimestamp($d['ship_by_date'])->toIso8601String() : null,
+                'cancel_reason' => ($d['cancel_reason'] ?? '') ?: (($d['buyer_cancel_reason'] ?? '') ?: null),
+            ]) + (array) ($order->custom_fields ?? []),
         ]);
         if (! $order->exists && ! empty($d['create_time'])) {
             $order->created_at = Carbon::createFromTimestamp($d['create_time']);
