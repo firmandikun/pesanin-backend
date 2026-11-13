@@ -54,6 +54,7 @@ class MarketplaceController extends Controller
             $shop = $this->completeAuth((string) $request->query('state'), (int) $request->query('shop_id'), (string) $request->query('code'));
             $user = $shop->user;
             ActivityLog::record($user, 'marketplace.connect', "Menghubungkan toko Shopee {$shop->shop_name}");
+            self::syncInBackground($shop);
 
             return redirect($front.'?connected='.$shop->id);
         } catch (\Throwable $e) {
@@ -81,8 +82,24 @@ class MarketplaceController extends Controller
             abort(422, 'Kode otorisasi tidak valid atau sudah kedaluwarsa (berlaku 10 menit). Ulangi Hubungkan toko.');
         }
         ActivityLog::record($request->user(), 'marketplace.connect', "Menghubungkan toko Shopee {$shop->shop_name}");
+        self::syncInBackground($shop);
 
         return ['shop' => $shop->only(['id', 'shop_id', 'shop_name', 'status'])];
+    }
+
+    /** First full sync (products, orders, ads) runs after the response is sent, so the redirect is instant and nothing times out. */
+    private static function syncInBackground(MarketplaceShop $shop): void
+    {
+        if ($shop->is_demo) {
+            return;
+        }
+        $id = $shop->id;
+        dispatch(function () use ($id) {
+            ignore_user_abort(true);
+            if ($s = MarketplaceShop::find($id)) {
+                (new ShopeeSync)->initial($s);
+            }
+        })->afterResponse();
     }
 
     /** Exchange Shopee's one-time code for tokens and save the shop for the user in the signed state. */
@@ -211,6 +228,9 @@ class MarketplaceController extends Controller
         if ($shop->is_demo) {
             return ['message' => 'Toko contoh tidak perlu disinkronkan.', 'result' => []];
         }
+        // A full pull can take minutes on a busy shop; keep going even if the browser or proxy gives up waiting.
+        ignore_user_abort(true);
+        @set_time_limit(0);
         $sync = new ShopeeSync;
         $result = [];
         try {

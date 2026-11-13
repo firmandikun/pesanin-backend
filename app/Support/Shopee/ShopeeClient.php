@@ -61,7 +61,10 @@ class ShopeeClient
     /** Verify a Live Push call: Authorization = HMAC-SHA256(url|body, partner_key). */
     public function verifyPush(string $url, string $body, ?string $authorization): bool
     {
-        return $authorization !== null && hash_equals(hash_hmac('sha256', $url.'|'.$body, $this->partnerKey), $authorization);
+        // Live Push is signed with its own "Live Push Partner Key" (console → Push Mechanism); fall back to the API partner key.
+        $key = (string) (config('services.shopee.push_key') ?: $this->partnerKey);
+
+        return $authorization !== null && $key !== '' && hash_equals(hash_hmac('sha256', $url.'|'.$body, $key), $authorization);
     }
 
     // ── Shop-level API ──────────────────────────────────────────────
@@ -97,11 +100,12 @@ class ShopeeClient
         ]);
     }
 
-    public function orderList(MarketplaceShop $shop, int $from, int $to, string $cursor = '', string $field = 'create_time'): array
+    public function orderList(MarketplaceShop $shop, int $from, int $to, string $cursor = '', string $field = 'create_time', ?string $status = null): array
     {
-        return $this->get($shop, '/api/v2/order/get_order_list', [
+        return $this->get($shop, '/api/v2/order/get_order_list', array_filter([
             'time_range_field' => $field, 'time_from' => $from, 'time_to' => $to, 'page_size' => 100, 'cursor' => $cursor,
-        ])['response'] ?? [];
+            'order_status' => $status,
+        ], fn ($v) => $v !== null))['response'] ?? [];
     }
 
     /** @param string[] $orderSns up to 50 */

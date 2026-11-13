@@ -76,31 +76,92 @@ class ShopeeSync
         return count($rows);
     }
 
-    /** @return int orders upserted. Shopee limits each list call to a 15-day window. */
+    /**
+     * @return int orders upserted. Shopee limits each list call to a 15-day window.
+     * First run pulls the last $days by create_time; later runs pull everything *changed* since the last run
+     * (update_time), so status changes of older orders are not missed. Open orders are then reconciled.
+     */
     public function orders(MarketplaceShop $shop, int $days = 15): int
     {
+        @set_time_limit(0);
         $count = 0;
         $end = now();
-        $start = $shop->orders_synced_at ? $shop->orders_synced_at->copy()->subDay() : now()->subDays($days);
+        $first = ! $shop->orders_synced_at;
+        $start = $first ? now()->subDays($days) : $shop->orders_synced_at->copy()->subHour();
         for ($from = $start->copy(); $from < $end; $from->addDays(15)) {
             $to = $from->copy()->addDays(15)->min($end);
-            $cursor = '';
-            do {
-                $page = $this->api->orderList($shop, $from->timestamp, $to->timestamp, $cursor);
-                $sns = array_column($page['order_list'] ?? [], 'order_sn');
-                foreach (array_chunk($sns, 50) as $chunk) {
-                    foreach ($this->api->orderDetail($shop, $chunk) as $detail) {
-                        $this->upsertOrder($shop, $detail);
-                        $count++;
-                    }
-                }
-                $cursor = $page['next_cursor'] ?? '';
-            } while (! empty($page['more']));
+            $count += $this->pull($shop, $from->timestamp, $to->timestamp, $first ? 'create_time' : 'update_time');
         }
+        $count += $this->reconcileOpen($shop);
         $shop->update(['orders_synced_at' => $end, 'last_error' => null]);
         $this->settle($shop);
 
         return $count;
+    }
+
+    /** List orders in one window (optionally one status) and upsert their details. */
+    private function pull(MarketplaceShop $shop, int $from, int $to, string $field = 'create_time', ?string $status = null, ?array &$seen = null): int
+    {
+        $count = 0;
+        $cursor = '';
+        do {
+            $page = $this->api->orderList($shop, $from, $to, $cursor, $field, $status);
+            $sns = array_column($page['order_list'] ?? [], 'order_sn');
+            if ($seen !== null) {
+                array_push($seen, ...$sns);
+            }
+            foreach (array_chunk($sns, 50) as $chunk) {
+                foreach ($this->api->orderDetail($shop, $chunk) as $detail) {
+                    $this->upsertOrder($shop, $detail);
+                    $count++;
+                }
+            }
+            $cursor = $page['next_cursor'] ?? '';
+        } while (! empty($page['more']));
+
+        return $count;
+    }
+
+    /**
+     * Make "Perlu dikirim / Siap diserahkan" match Seller Centre: pull every open order Shopee lists (last 30 days),
+     * then refresh local open orders Shopee no longer lists (they moved on to shipped, cancelled, …).
+     */
+    public function reconcileOpen(MarketplaceShop $shop): int
+    {
+        $open = ['READY_TO_SHIP', 'PROCESSED', 'RETRY_SHIP'];
+        $seen = [];
+        $count = 0;
+        foreach ($open as $status) {
+            for ($from = now()->subDays(30); $from < now(); $from->addDays(15)) {
+                $count += $this->pull($shop, $from->timestamp, $from->copy()->addDays(15)->min(now())->timestamp, 'create_time', $status, $seen);
+            }
+        }
+        $stale = Order::where('marketplace_shop_id', $shop->id)->whereIn('external_status', $open)
+            ->whereNotIn('external_order_sn', $seen ?: [''])->pluck('external_order_sn')->filter()->all();
+        foreach (array_chunk($stale, 50) as $chunk) {
+            foreach ($this->api->orderDetail($shop, $chunk) as $detail) {
+                $this->upsertOrder($shop, $detail);
+                $count++;
+            }
+        }
+
+        return $count;
+    }
+
+    /** Everything after connecting a shop: profile, listings, orders and ad spend. Never throws. */
+    public function initial(MarketplaceShop $shop): void
+    {
+        @set_time_limit(0);
+        foreach (['shopInfo', 'products', 'orders', 'ads'] as $step) {
+            try {
+                $this->{$step}($shop);
+            } catch (\Throwable $e) {
+                \Illuminate\Support\Facades\Log::warning("Shopee initial sync {$shop->id} {$step}: {$e->getMessage()}");
+                if ($step !== 'ads') {
+                    $shop->update(['last_error' => mb_substr($e->getMessage(), 0, 250)]);
+                }
+            }
+        }
     }
 
     /**
