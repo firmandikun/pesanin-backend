@@ -104,7 +104,7 @@ class ShopeeClient
     {
         return $this->get($shop, '/api/v2/order/get_order_list', array_filter([
             'time_range_field' => $field, 'time_from' => $from, 'time_to' => $to, 'page_size' => 100, 'cursor' => $cursor,
-            'order_status' => $status,
+            'order_status' => $status, 'response_optional_fields' => 'order_status',
         ], fn ($v) => $v !== null))['response'] ?? [];
     }
 

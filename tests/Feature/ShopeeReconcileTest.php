@@ -52,4 +52,40 @@ class ShopeeReconcileTest extends TestCase
         $this->assertSame('SHIPPED', Order::where('external_order_sn', 'OLD')->value('external_status'));
         $this->assertNotContains('RETRY_SHIP', $requestedStatuses);
     }
+
+    public function test_old_parcels_still_on_the_way_are_pulled_and_returns_stay_in_dikirim(): void
+    {
+        config(['services.shopee.partner_id' => 1, 'services.shopee.partner_key' => 'k']);
+        $user = User::factory()->create();
+        $shop = new MarketplaceShop(['platform' => 'shopee', 'shop_id' => 1, 'shop_name' => 'T', 'status' => 'active', 'access_token' => 'a', 'refresh_token' => 'r', 'access_expires_at' => now()->addHour(), 'refresh_expires_at' => now()->addDays(30)]);
+        $shop->user_id = $user->id;
+        $shop->save();
+        $sync = new ShopeeSync;
+        $sync->upsertOrder($shop, ['order_sn' => 'RET', 'order_status' => 'TO_RETURN', 'item_list' => [], 'create_time' => time()]);
+        $oldest = null;
+        Http::fake(function ($req) use (&$oldest) {
+            parse_str((string) parse_url($req->url(), PHP_URL_QUERY), $q);
+            if (str_contains($req->url(), 'get_order_list')) {
+                if (($q['order_status'] ?? '') === 'SHIPPED') {
+                    $oldest = min($oldest ?? PHP_INT_MAX, (int) $q['time_from']);
+                }
+                // A 25-day-old parcel, outside the first 15-day sync, still on its way.
+                $hit = ($q['order_status'] ?? '') === 'SHIPPED' && $q['time_from'] <= time() - 25 * 86400 && $q['time_to'] >= time() - 25 * 86400;
+
+                return Http::response(['response' => ['order_list' => $hit ? [['order_sn' => 'OLDSHIP', 'order_status' => 'SHIPPED']] : [], 'more' => false]]);
+            }
+            if (str_contains($req->url(), 'get_order_detail')) {
+                return Http::response(['response' => ['order_list' => array_map(fn ($sn) => ['order_sn' => $sn, 'order_status' => $sn === 'RET' ? 'TO_RETURN' : 'SHIPPED', 'item_list' => [], 'create_time' => time() - 25 * 86400], explode(',', $q['order_sn_list']))]]);
+            }
+
+            return Http::response(['response' => []]);
+        });
+
+        $sync->reconcileOpen($shop);
+
+        $this->assertLessThanOrEqual(time() - 59 * 86400, $oldest);
+        $sns = collect($this->actingAs($user)->getJson('/api/orders?channel=shopee&shopee_state=shipping')->json('orders.data'))->pluck('external_order_sn')->sort()->values()->all();
+        $this->assertSame(['OLDSHIP', 'RET'], $sns);
+        $this->assertSame([], $this->getJson('/api/orders?channel=shopee&shopee_state=cancelled')->json('orders.data'));
+    }
 }

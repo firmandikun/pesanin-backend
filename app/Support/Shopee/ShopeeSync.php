@@ -134,21 +134,33 @@ class ShopeeSync
      */
     public function reconcileOpen(MarketplaceShop $shop): int
     {
-        // RETRY_SHIP can be returned by order detail, but Shopee rejects it as an
-        // order_status filter on get_order_list. Keep it in the local stale set so
-        // those orders are refreshed by detail, without breaking reconciliation.
-        $listable = ['READY_TO_SHIP', 'PROCESSED'];
-        $open = ['READY_TO_SHIP', 'PROCESSED', 'RETRY_SHIP'];
-        $seen = [];
-        $count = 0;
-        foreach ($listable as $status) {
-            for ($from = now()->subDays(30); $from < now(); $from->addDays(15)) {
-                $count += $this->pull($shop, $from->timestamp, $from->copy()->addDays(15)->min(now())->timestamp, 'create_time', $status, $seen);
+        // Statuses Shopee accepts as a get_order_list filter, and how far back to look. Parcels still on the way
+        // can be weeks old, so "Dikirim" looks back further than the to-ship tabs.
+        // RETRY_SHIP / TO_CONFIRM_RECEIVE / TO_RETURN are not accepted as filters; local ones are refreshed by detail.
+        $listable = ['READY_TO_SHIP' => 30, 'PROCESSED' => 30, 'SHIPPED' => 60];
+        $open = ['READY_TO_SHIP', 'PROCESSED', 'RETRY_SHIP', 'SHIPPED', 'TO_CONFIRM_RECEIVE'];
+        $listed = []; // order_sn => status Shopee reports
+        foreach ($listable as $status => $days) {
+            for ($from = now()->subDays($days); $from < now(); $from->addDays(15)) {
+                $cursor = '';
+                do {
+                    $page = $this->api->orderList($shop, $from->timestamp, $from->copy()->addDays(15)->min(now())->timestamp, $cursor, 'create_time', $status);
+                    foreach ($page['order_list'] ?? [] as $o) {
+                        $listed[$o['order_sn']] = $o['order_status'] ?? $status;
+                    }
+                    $cursor = $page['next_cursor'] ?? '';
+                } while (! empty($page['more']));
             }
         }
+        $local = Order::where('marketplace_shop_id', $shop->id)->whereNotNull('external_order_sn')
+            ->whereIn('external_order_sn', array_keys($listed) ?: [''])->pluck('external_status', 'external_order_sn');
+        // Missing locally, or local status differs from Shopee's.
+        $refresh = collect($listed)->filter(fn ($st, $sn) => ($local[$sn] ?? null) !== $st)->keys()->all();
+        // Local open orders Shopee no longer lists under an open status moved on (delivered, cancelled, …).
         $stale = Order::where('marketplace_shop_id', $shop->id)->whereIn('external_status', $open)
-            ->whereNotIn('external_order_sn', $seen ?: [''])->pluck('external_order_sn')->filter()->all();
-        foreach (array_chunk($stale, 50) as $chunk) {
+            ->whereNotIn('external_order_sn', array_keys($listed) ?: [''])->pluck('external_order_sn')->filter()->all();
+        $count = 0;
+        foreach (array_chunk(array_values(array_unique([...$refresh, ...$stale])), 50) as $chunk) {
             foreach ($this->api->orderDetail($shop, $chunk) as $detail) {
                 $this->upsertOrder($shop, $detail);
                 $count++;
@@ -165,7 +177,7 @@ class ShopeeSync
     public function bookings(MarketplaceShop $shop): int
     {
         $sns = [];
-        foreach (\App\Models\ShopeeBooking::OPEN as $status) {
+        foreach ([...\App\Models\ShopeeBooking::OPEN, 'SHIPPED'] as $status) {
             for ($from = now()->subDays(30); $from < now(); $from->addDays(15)) {
                 $cursor = '';
                 do {
@@ -175,7 +187,7 @@ class ShopeeSync
                 } while (! empty($page['more']));
             }
         }
-        $stale = \App\Models\ShopeeBooking::where('marketplace_shop_id', $shop->id)->whereIn('booking_status', \App\Models\ShopeeBooking::OPEN)
+        $stale = \App\Models\ShopeeBooking::where('marketplace_shop_id', $shop->id)->whereIn('booking_status', [...\App\Models\ShopeeBooking::OPEN, 'SHIPPED'])
             ->whereNotIn('booking_sn', $sns ?: [''])->pluck('booking_sn')->all();
         $count = 0;
         foreach (array_chunk(array_values(array_unique([...$sns, ...$stale])), 50) as $chunk) {
