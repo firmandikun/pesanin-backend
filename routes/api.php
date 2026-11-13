@@ -22,6 +22,7 @@ Route::post('/auth/google', [AuthController::class, 'google'])->middleware('thro
 // Public checkout pages
 // Shopee: OAuth return and Live Push (called by Shopee, not by the app).
 Route::get('/shopee/callback', [MarketplaceController::class, 'callback']);
+Route::get('/shopee/authorize', [MarketplaceController::class, 'authorizeShared'])->middleware('throttle:30,1');
 Route::get('/whatsapp/webhook', [\App\Http\Controllers\Api\WhatsAppChatController::class, 'verifyApp']);
 Route::post('/whatsapp/webhook', [\App\Http\Controllers\Api\WhatsAppChatController::class, 'receiveApp'])->middleware('throttle:1200,1');
 Route::get('/whatsapp/webhook/{token}', [\App\Http\Controllers\Api\WhatsAppChatController::class, 'verify']);
@@ -95,6 +96,7 @@ Route::middleware(['auth:sanctum', 'member', 'subscribed'])->group(function () {
 
     Route::get('/marketplace/shops', [MarketplaceController::class, 'shops']);
     Route::post('/marketplace/shopee/connect', [MarketplaceController::class, 'connect']);
+    Route::post('/marketplace/shopee/share-link', [MarketplaceController::class, 'shareLink']);
     Route::post('/marketplace/shopee/complete', [MarketplaceController::class, 'completeFromUrl']);
     Route::post('/marketplace/shopee/demo', [MarketplaceController::class, 'demo']);
     Route::post('/marketplace/shops/{shop}/sync', [MarketplaceController::class, 'sync'])->middleware('throttle:10,1');

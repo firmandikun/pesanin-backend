@@ -88,4 +88,49 @@ class ShopeeReconcileTest extends TestCase
         $this->assertSame(['OLDSHIP', 'RET'], $sns);
         $this->assertSame([], $this->getJson('/api/orders?channel=shopee&shopee_state=cancelled')->json('orders.data'));
     }
+
+    public function test_same_shopee_shop_in_two_accounts_does_not_collide(): void
+    {
+        config(['services.shopee.partner_id' => 1, 'services.shopee.partner_key' => 'k']);
+        Http::fake(['*' => Http::response(['response' => []])]);
+        $make = function () {
+            $u = User::factory()->create();
+            $shop = new MarketplaceShop(['platform' => 'shopee', 'shop_id' => 51988029, 'shop_name' => 'M storeku', 'status' => 'active', 'access_token' => 'a', 'refresh_token' => 'r', 'access_expires_at' => now()->addHour(), 'refresh_expires_at' => now()->addDays(30)]);
+            $shop->user_id = $u->id;
+            $shop->save();
+
+            return $shop;
+        };
+        [$a, $b] = [$make(), $make()];
+        $detail = ['order_sn' => '2611137P07CAXU', 'order_status' => 'SHIPPED', 'item_list' => [], 'create_time' => time()];
+        $sync = new ShopeeSync;
+
+        $first = $sync->upsertOrder($a, $detail);
+        $second = $sync->upsertOrder($b, $detail);
+        $this->assertSame('SP2611137P07CAXU', $first->code);
+        $this->assertSame('SP2611137P07CAXU-'.$b->id, $second->code);
+        // Re-syncing keeps each account's code.
+        $this->assertSame($second->code, $sync->upsertOrder($b, $detail)->code);
+        $this->assertSame(2, Order::count());
+    }
+
+    public function test_a_code_taken_meanwhile_does_not_break_the_sync(): void
+    {
+        config(['services.shopee.partner_id' => 1, 'services.shopee.partner_key' => 'k']);
+        Http::fake(['*' => Http::response(['response' => []])]);
+        $user = User::factory()->create();
+        $shop = new MarketplaceShop(['platform' => 'shopee', 'shop_id' => 9, 'shop_name' => 'T', 'status' => 'active', 'access_token' => 'a', 'refresh_token' => 'r', 'access_expires_at' => now()->addHour(), 'refresh_expires_at' => now()->addDays(30)]);
+        $shop->user_id = $user->id;
+        $shop->save();
+        // Another row grabs the code after orderCode() looked (simulated by a manual order using it).
+        Order::creating(function ($o) {
+            if ($o->code === 'SPRACE1' && ! Order::where('code', 'SPRACE1')->exists()) {
+                \Illuminate\Support\Facades\DB::table('orders')->insert(['user_id' => $o->user_id, 'code' => 'SPRACE1', 'customer_name' => 'x', 'phone' => '0', 'quantity' => 1, 'unit_price' => 0, 'subtotal' => 0, 'total' => 0, 'payment_status' => 'paid', 'status' => 'pending', 'shipping_status' => 'not_shipped', 'source' => 'manual', 'channel' => 'manual', 'created_at' => now(), 'updated_at' => now()]);
+            }
+        });
+
+        $order = (new ShopeeSync)->upsertOrder($shop, ['order_sn' => 'RACE1', 'order_status' => 'SHIPPED', 'item_list' => [], 'create_time' => time()]);
+        $this->assertSame('SPRACE1-'.$shop->id, $order->code);
+        $this->assertTrue($order->exists);
+    }
 }
