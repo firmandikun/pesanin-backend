@@ -344,6 +344,17 @@ class ShopeeSync
         return $detail ? $this->upsertOrder($shop, $detail) : null;
     }
 
+    /**
+     * Order codes are unique across Pesanin. The same Shopee shop can be connected to more than one account
+     * (e.g. reconnected under another login), so a code already taken gets the shop record's id appended.
+     */
+    public static function orderCode(MarketplaceShop $shop, string $orderSn): string
+    {
+        $code = 'SP'.$orderSn;
+
+        return Order::where('code', $code)->exists() ? $code.'-'.$shop->id : $code;
+    }
+
     public function upsertOrder(MarketplaceShop $shop, array $d): Order
     {
         $listings = MarketplaceListing::where('marketplace_shop_id', $shop->id)->get()->keyBy(fn ($l) => $l->item_id.':'.$l->model_id);
@@ -368,7 +379,7 @@ class ShopeeSync
         $order = Order::firstOrNew(['marketplace_shop_id' => $shop->id, 'external_order_sn' => $d['order_sn']]);
         $order->user_id = $shop->user_id;
         $order->fill([
-            'code' => $order->code ?? 'SP'.$d['order_sn'],
+            'code' => $order->code ?? self::orderCode($shop, $d['order_sn']),
             'channel' => 'shopee', 'source' => 'marketplace', 'external_status' => $d['order_status'] ?? null,
             'items' => $items->all(), 'product_id' => $items->firstWhere('product_id')['product_id'] ?? null,
             'customer_name' => $addr['name'] ?? ($d['buyer_username'] ?? null), 'phone' => $addr['phone'] ?? null,

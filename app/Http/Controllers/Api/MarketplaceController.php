@@ -302,6 +302,11 @@ class MarketplaceController extends Controller
         } catch (ShopeeException $e) {
             $shop->update(['last_error' => $e->getMessage()]);
             abort(422, 'Sinkronisasi gagal: '.$e->getMessage());
+        } catch (\Throwable $e) {
+            // Unexpected (database, timeout…): keep what was synced so far, log it, and tell the seller plainly.
+            report($e);
+            $shop->update(['last_error' => 'Sinkronisasi terhenti: '.mb_substr($e->getMessage(), 0, 200)]);
+            abort(422, 'Sinkronisasi terhenti karena kesalahan di server Pesanin. Data yang sudah masuk tetap tersimpan; coba Sinkronkan lagi. Kalau berulang, hubungi tim Pesanin.');
         }
 
         return ['message' => 'Sinkronisasi selesai', 'result' => $result, 'shop' => $shop->fresh()];
