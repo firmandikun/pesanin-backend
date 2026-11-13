@@ -46,7 +46,8 @@ Artisan::command('marketplace:sync {--what=orders}', function () {
 \Illuminate\Support\Facades\Schedule::command('marketplace:sync --what=recent')->everyThirtySeconds()->withoutOverlapping();
 \Illuminate\Support\Facades\Schedule::command('marketplace:sync --what=orders')->hourly()->withoutOverlapping();
 \Illuminate\Support\Facades\Schedule::command('marketplace:sync --what=products')->dailyAt('02:00');
-\Illuminate\Support\Facades\Schedule::command('marketplace:sync --what=ads')->dailyAt('06:00');
+// Ad spend for today keeps changing, so refresh it through the day.
+\Illuminate\Support\Facades\Schedule::command('marketplace:sync --what=ads')->everyThreeHours()->withoutOverlapping();
 
 // Replace the demo seller's sample orders/ads with a small, readable dataset (real Shopee shops are kept).
 Artisan::command('webpush:vapid', function () {

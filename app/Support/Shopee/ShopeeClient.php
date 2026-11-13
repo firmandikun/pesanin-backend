@@ -100,11 +100,12 @@ class ShopeeClient
         ]);
     }
 
-    public function orderList(MarketplaceShop $shop, int $from, int $to, string $cursor = '', string $field = 'create_time'): array
+    public function orderList(MarketplaceShop $shop, int $from, int $to, string $cursor = '', string $field = 'create_time', ?string $status = null): array
     {
-        return $this->get($shop, '/api/v2/order/get_order_list', [
+        return $this->get($shop, '/api/v2/order/get_order_list', array_filter([
             'time_range_field' => $field, 'time_from' => $from, 'time_to' => $to, 'page_size' => 100, 'cursor' => $cursor,
-        ])['response'] ?? [];
+            'order_status' => $status,
+        ], fn ($v) => $v !== null))['response'] ?? [];
     }
 
     /** @param string[] $orderSns up to 50 */
