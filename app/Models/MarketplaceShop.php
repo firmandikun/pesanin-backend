@@ -22,6 +22,7 @@ class MarketplaceShop extends Model
             'refresh_expires_at' => 'datetime',
             'products_synced_at' => 'datetime',
             'orders_synced_at' => 'datetime',
+            'orders_backfilled_from' => 'date',
             'is_demo' => 'boolean',
             'ads_ppn' => 'float',
         ];
