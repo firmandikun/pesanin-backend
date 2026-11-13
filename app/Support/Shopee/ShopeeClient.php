@@ -104,7 +104,7 @@ class ShopeeClient
     {
         return $this->get($shop, '/api/v2/order/get_order_list', array_filter([
             'time_range_field' => $field, 'time_from' => $from, 'time_to' => $to, 'page_size' => 100, 'cursor' => $cursor,
-            'order_status' => $status,
+            'order_status' => $status, 'response_optional_fields' => 'order_status',
         ], fn ($v) => $v !== null))['response'] ?? [];
     }
 
@@ -136,7 +136,7 @@ class ShopeeClient
     {
         return $this->get($shop, '/api/v2/order/get_order_detail', [
             'order_sn_list' => implode(',', $orderSns),
-            'response_optional_fields' => 'buyer_username,recipient_address,item_list,total_amount,shipping_carrier,payment_method,estimated_shipping_fee,actual_shipping_fee,pay_time,package_list,cod',
+            'response_optional_fields' => 'buyer_username,recipient_address,item_list,total_amount,shipping_carrier,checkout_shipping_carrier,payment_method,estimated_shipping_fee,actual_shipping_fee,pay_time,package_list,cod,cancel_reason,buyer_cancel_reason',
         ])['response']['order_list'] ?? [];
     }
 
@@ -190,6 +190,38 @@ class ShopeeClient
         $res = $this->request($shop, 'POST', '/api/v2/logistics/download_shipping_document', [
             'shipping_document_type' => 'THERMAL_AIR_WAYBILL',
             'order_list' => array_map(fn ($sn) => ['order_sn' => $sn], $orderSns),
+        ], raw: true);
+        if (! is_string($res)) {
+            throw new ShopeeException('Dokumen resi belum siap, coba beberapa saat lagi.');
+        }
+
+        return $res;
+    }
+
+    /** @param array<string, string|null> $bookings booking_sn => tracking number. Same flow as orders, booking endpoints. */
+    public function createBookingShippingDocument(MarketplaceShop $shop, array $bookings): array
+    {
+        return $this->post($shop, '/api/v2/logistics/create_booking_shipping_document', [
+            'booking_list' => array_map(
+                fn ($sn) => array_filter(['booking_sn' => (string) $sn, 'tracking_number' => $bookings[$sn], 'shipping_document_type' => 'THERMAL_AIR_WAYBILL']),
+                array_keys($bookings),
+            ),
+        ])['response']['result_list'] ?? [];
+    }
+
+    public function bookingShippingDocumentResult(MarketplaceShop $shop, array $bookingSns): array
+    {
+        return $this->post($shop, '/api/v2/logistics/get_booking_shipping_document_result', [
+            'booking_list' => array_map(fn ($sn) => ['booking_sn' => $sn, 'shipping_document_type' => 'THERMAL_AIR_WAYBILL'], $bookingSns),
+        ])['response']['result_list'] ?? [];
+    }
+
+    /** PDF bytes of the reservations' air waybills. */
+    public function downloadBookingShippingDocument(MarketplaceShop $shop, array $bookingSns): string
+    {
+        $res = $this->request($shop, 'POST', '/api/v2/logistics/download_booking_shipping_document', [
+            'shipping_document_type' => 'THERMAL_AIR_WAYBILL',
+            'booking_list' => array_map(fn ($sn) => ['booking_sn' => $sn], $bookingSns),
         ], raw: true);
         if (! is_string($res)) {
             throw new ShopeeException('Dokumen resi belum siap, coba beberapa saat lagi.');

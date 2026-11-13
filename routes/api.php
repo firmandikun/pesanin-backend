@@ -169,6 +169,7 @@ Route::middleware(['auth:sanctum', 'member', 'subscribed'])->group(function () {
     Route::post('/labels/shopee/ship', [LabelController::class, 'shopeeShip']);
     Route::post('/labels/shopee/refresh', [LabelController::class, 'shopeeRefresh']);
     Route::post('/labels/shopee/pdf', [LabelController::class, 'shopeePdf']);
+    Route::post('/labels/shopee/booking-pdf', [LabelController::class, 'shopeeBookingPdf']);
 
     Route::get('/categories', [ProductController::class, 'categories']);
     Route::post('/uploads', [ProductController::class, 'upload']);

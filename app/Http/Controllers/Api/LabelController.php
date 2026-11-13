@@ -231,6 +231,43 @@ class LabelController extends Controller
         return response($pdf, 200, ['Content-Type' => 'application/pdf', 'Content-Disposition' => 'inline; filename="resi-shopee.pdf"']);
     }
 
+    /** Air waybills for "Pengiriman Kilat" reservations (Shopee bookings), same flow as orders. */
+    public function shopeeBookingPdf(Request $request)
+    {
+        $data = $request->validate(['booking_ids' => 'required|array|min:1|max:50', 'booking_ids.*' => 'integer']);
+        $bookings = \App\Models\ShopeeBooking::where('user_id', $request->user()->id)->whereIn('id', $data['booking_ids'])->with('marketplaceShop')->get();
+        abort_if($bookings->isEmpty(), 422, 'Pilih reservasi Pengiriman Kilat.');
+        abort_if($bookings->pluck('marketplace_shop_id')->unique()->count() > 1, 422, 'Cetak resi per toko: pilih reservasi dari satu toko saja.');
+        abort_if($bookings->pluck('shipping_carrier')->unique()->count() > 1, 422, 'Shopee hanya bisa menggabungkan resi dari ekspedisi yang sama. Unduh per ekspedisi.');
+        $notReady = $bookings->where('booking_status', '!=', 'PROCESSED');
+        abort_if($notReady->isNotEmpty(), 422, 'Resi hanya bisa dicetak untuk reservasi yang sudah diproses: '.$notReady->pluck('booking_sn')->implode(', '));
+        $shop = $bookings->first()->marketplaceShop;
+
+        $api = new ShopeeClient;
+        foreach ($bookings->whereNull('tracking_number') as $b) {
+            try {
+                $b->update(['tracking_number' => $api->bookingTrackingNumber($shop, $b->booking_sn) ?: null]);
+            } catch (ShopeeException) {
+            }
+        }
+        abort_if($bookings->contains(fn ($b) => ! $b->tracking_number), 422, 'Sebagian reservasi belum punya nomor resi dari Shopee. Coba lagi dalam beberapa saat.');
+        $sns = $bookings->pluck('booking_sn')->all();
+        try {
+            $api->createBookingShippingDocument($shop, $bookings->pluck('tracking_number', 'booking_sn')->all());
+            for ($i = 0; $i < 6; $i++) {
+                if (! collect($api->bookingShippingDocumentResult($shop, $sns))->where('status', 'PROCESSING')->count()) {
+                    break;
+                }
+                usleep(800_000);
+            }
+            $pdf = $api->downloadBookingShippingDocument($shop, $sns);
+        } catch (ShopeeException $e) {
+            abort(422, 'Resi Pengiriman Kilat belum bisa dicetak: '.$e->getMessage());
+        }
+
+        return response($pdf, 200, ['Content-Type' => 'application/pdf', 'Content-Disposition' => 'inline; filename="resi-kilat.pdf"']);
+    }
+
     private function shopeeOrders(Request $request, array $ids)
     {
         return $request->user()->orders()->whereIn('id', $ids)->where('channel', 'shopee')->whereNotNull('external_order_sn')->with('marketplaceShop')->get();
