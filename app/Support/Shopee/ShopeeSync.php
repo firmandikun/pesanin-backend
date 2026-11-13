@@ -93,6 +93,12 @@ class ShopeeSync
             $count += $this->pull($shop, $from->timestamp, $to->timestamp, $first ? 'create_time' : 'update_time');
         }
         $count += $this->reconcileOpen($shop);
+        try {
+            $this->bookings($shop);
+        } catch (\Throwable $e) {
+            // Bookings are optional (not every shop/app has them); never fail the order sync for them.
+            \Illuminate\Support\Facades\Log::warning("Shopee bookings {$shop->id}: {$e->getMessage()}");
+        }
         $shop->update(['orders_synced_at' => $end, 'last_error' => null]);
         $this->settle($shop);
 
@@ -150,6 +156,61 @@ class ShopeeSync
         }
 
         return $count;
+    }
+
+    /**
+     * "Pengiriman Kilat" reservations: pull the open ones Shopee lists (last 30 days), refresh local open ones it
+     * no longer lists, and fetch the tracking number once a booking is arranged. @return int bookings stored
+     */
+    public function bookings(MarketplaceShop $shop): int
+    {
+        $sns = [];
+        foreach (\App\Models\ShopeeBooking::OPEN as $status) {
+            for ($from = now()->subDays(30); $from < now(); $from->addDays(15)) {
+                $cursor = '';
+                do {
+                    $page = $this->api->bookingList($shop, $from->timestamp, $from->copy()->addDays(15)->min(now())->timestamp, $cursor, 'create_time', $status);
+                    array_push($sns, ...array_column($page['booking_list'] ?? [], 'booking_sn'));
+                    $cursor = $page['next_cursor'] ?? '';
+                } while (! empty($page['more']));
+            }
+        }
+        $stale = \App\Models\ShopeeBooking::where('marketplace_shop_id', $shop->id)->whereIn('booking_status', \App\Models\ShopeeBooking::OPEN)
+            ->whereNotIn('booking_sn', $sns ?: [''])->pluck('booking_sn')->all();
+        $count = 0;
+        foreach (array_chunk(array_values(array_unique([...$sns, ...$stale])), 50) as $chunk) {
+            foreach ($this->api->bookingDetail($shop, $chunk) as $d) {
+                $this->upsertBooking($shop, $d);
+                $count++;
+            }
+        }
+
+        return $count;
+    }
+
+    public function upsertBooking(MarketplaceShop $shop, array $d): \App\Models\ShopeeBooking
+    {
+        $booking = \App\Models\ShopeeBooking::firstOrNew(['marketplace_shop_id' => $shop->id, 'booking_sn' => $d['booking_sn']]);
+        $booking->fill([
+            'user_id' => $shop->user_id,
+            'order_sn' => ($d['order_sn'] ?? '') ?: null,
+            'booking_status' => $d['booking_status'] ?? 'READY_TO_SHIP',
+            'shipping_carrier' => $d['shipping_carrier'] ?? $booking->shipping_carrier,
+            'items' => collect($d['item_list'] ?? [])->map(fn ($i) => [
+                'name' => $i['item_name'] ?? '', 'variant' => ($i['model_name'] ?? '') ?: null,
+                'sku' => ($i['model_sku'] ?? '') ?: (($i['item_sku'] ?? '') ?: null), 'qty' => (int) ($i['model_quantity'] ?? $i['model_quantity_purchased'] ?? 1),
+            ])->values()->all() ?: $booking->items,
+            'booked_at' => ! empty($d['create_time']) ? Carbon::createFromTimestamp($d['create_time']) : $booking->booked_at,
+        ]);
+        if (! $booking->tracking_number && $booking->booking_status !== 'READY_TO_SHIP' && $booking->booking_status !== 'CANCELLED') {
+            try {
+                $booking->tracking_number = $this->api->bookingTrackingNumber($shop, $booking->booking_sn) ?: null;
+            } catch (\Throwable) {
+            }
+        }
+        $booking->save();
+
+        return $booking;
     }
 
     /** Everything after connecting a shop: profile, listings, orders and ad spend. Never throws. */
