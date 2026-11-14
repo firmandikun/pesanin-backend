@@ -244,11 +244,9 @@ class OrderController extends Controller
             default => $q->active(),
         };
 
-        if ($from = $request->query('from')) {
-            $q->where('created_at', '>=', Carbon::parse($from)->startOfDay());
-        }
-        if ($to = $request->query('to')) {
-            $q->where('created_at', '<=', Carbon::parse($to)->endOfDay());
+        if ($request->query('from') || $request->query('to')) {
+            [$rf, $rt] = \App\Support\Dates::range($request->query('from'), $request->query('to'));
+            $q->whereBetween('created_at', [$rf, $rt]);
         }
         if ($type = $request->query('type')) {
             // Marketplace orders are always physical goods, even before their items are linked to a product.
@@ -277,7 +275,7 @@ class OrderController extends Controller
                 'shipping' => $q->whereIn('external_status', ['SHIPPED', 'TO_CONFIRM_RECEIVE', 'TO_RETURN']),
                 // "Selesai" defaults to orders completed today (sent done=all to see every completed order).
                 'done' => $q->where('external_status', 'COMPLETED')
-                    ->when($request->query('done') !== 'all', fn ($w) => $w->whereDate('completed_at', today())),
+                    ->when($request->query('done') !== 'all', fn ($w) => $w->whereBetween('completed_at', \App\Support\Dates::today())),
                 'cancelled' => $q->where('external_status', 'CANCELLED'),
                 // Pengembalian/Pembatalan → Pembatalan: cancelled orders and buyer cancel requests.
                 'pembatalan' => $q->whereIn('external_status', ['CANCELLED', 'IN_CANCEL']),
