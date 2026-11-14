@@ -675,7 +675,9 @@ class ShopeeSync
     public function ads(MarketplaceShop $shop, int $days = 29): int
     {
         $days = min($days, 29);
-        $rows = $this->api->adsDailyPerformance($shop, now()->subDays($days)->format('d-m-Y'), now()->format('d-m-Y'));
+        // Shopee's ad dates are local (WIB) days; in UTC "now" is still yesterday before 07:00 WIB, and today was missed.
+        $today = now(\App\Support\Dates::TZ);
+        $rows = $this->api->adsDailyPerformance($shop, $today->copy()->subDays($days)->format('d-m-Y'), $today->format('d-m-Y'));
         foreach ($rows as $r) {
             AdSpend::updateOrCreate(
                 ['user_id' => $shop->user_id, 'platform' => 'shopee_ads', 'marketplace_shop_id' => $shop->id, 'spent_on' => Carbon::createFromFormat('d-m-Y', $r['date'])->toDateString(), 'synced' => true],
@@ -716,8 +718,25 @@ class ShopeeSync
                 ],
             );
         }
-        $from = now()->subDays(min($days, 29))->format('d-m-Y');
-        foreach ($this->api->adCampaignDailyPerformance($shop, array_keys($byId), $from, now()->format('d-m-Y')) as $c) {
+        // Promoted products not yet in Pesanin's product list: fetch them now so the ads page shows name and photo.
+        $promoted = collect($byId)->pluck('item_ids')->flatten()->unique()->values();
+        $missing = $promoted->diff(MarketplaceListing::where('marketplace_shop_id', $shop->id)->whereIn('item_id', $promoted)->pluck('item_id')->map(fn ($id) => (int) $id))->values();
+        if ($missing->isNotEmpty()) {
+            $skuMap = Product::where('user_id', $shop->user_id)->whereNotNull('sku')->pluck('id', 'sku')->all();
+            foreach ($missing->chunk(50) as $chunk) {
+                try {
+                    foreach ($this->api->itemBaseInfo($shop, $chunk->all()) as $item) {
+                        $this->upsertItem($shop, $item, $skuMap);
+                    }
+                } catch (\Throwable) {
+                    // deleted items stay "Produk {id}"
+                }
+            }
+        }
+
+        $today = now(\App\Support\Dates::TZ);
+        $from = $today->copy()->subDays(min($days, 29))->format('d-m-Y');
+        foreach ($this->api->adCampaignDailyPerformance($shop, array_keys($byId), $from, $today->format('d-m-Y')) as $c) {
             $campaign = $byId[(int) $c['campaign_id']] ?? null;
             foreach ($campaign ? ($c['metrics_list'] ?? []) : [] as $m) {
                 ShopeeAdStat::updateOrCreate(

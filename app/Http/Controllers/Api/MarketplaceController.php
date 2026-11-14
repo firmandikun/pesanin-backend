@@ -222,9 +222,12 @@ class MarketplaceController extends Controller
     /** Iklan Shopee: spend & results per campaign and per promoted product for a date range. */
     public function ads(Request $request)
     {
-        $data = $request->validate(['from' => 'nullable|date', 'to' => 'nullable|date', 'shop' => 'nullable|integer']);
-        $from = \Illuminate\Support\Carbon::parse($data['from'] ?? now()->subDays(29))->toDateString();
-        $to = \Illuminate\Support\Carbon::parse($data['to'] ?? now())->toDateString();
+        $data = $request->validate(['from' => 'nullable|date', 'to' => 'nullable|date', 'shop' => 'nullable|integer', 'all' => 'nullable|boolean']);
+        $today = now(\App\Support\Dates::TZ)->toDateString();
+        $from = \Illuminate\Support\Carbon::parse($data['from'] ?? $today)->toDateString();
+        $to = \Illuminate\Support\Carbon::parse($data['to'] ?? $today)->toDateString();
+        // The lists show running ads only unless ?all=1; totals always cover every ad, like Seller Centre.
+        $activeOnly = ! $request->boolean('all');
         $u = $request->user();
         $shopIds = $u->marketplaceShops()->when($data['shop'] ?? null, fn ($q, $id) => $q->whereKey($id))->pluck('id');
 
@@ -246,6 +249,10 @@ class MarketplaceController extends Controller
         $campaignRows = $campaigns->map(fn ($c) => ['id' => $c->id, 'campaign_id' => $c->campaign_id, 'name' => $c->name ?: "Kampanye {$c->campaign_id}", 'status' => $c->status, 'ad_type' => $c->ad_type, 'bidding_method' => $c->bidding_method, 'budget' => $c->budget,
             'items' => collect($c->item_ids ?? [])->map(fn ($id) => $listings[$id] ?? ['item_id' => $id, 'name' => "Produk {$id}", 'image' => null, 'product_id' => null])->values()] + $row($c))
             ->sortByDesc('expense')->values();
+        $allCampaignRows = $campaignRows;
+        if ($activeOnly) {
+            $campaignRows = $campaignRows->where('status', 'ongoing')->values();
+        }
 
         // Per product: a campaign promoting several products is split evenly between them.
         $products = $campaignRows->flatMap(fn ($c) => collect($c['items'])->map(fn ($it) => ['item' => $it, 'share' => 1 / max(1, count($c['items'])), 'c' => $c]))
@@ -261,7 +268,9 @@ class MarketplaceController extends Controller
 
         return [
             'from' => $from, 'to' => $to,
-            'total' => ['expense' => (int) (clone $daily)->sum('amount')] + collect(['gmv', 'clicks', 'impressions', 'orders'])->mapWithKeys(fn ($k) => [$k => $campaignRows->sum($k)])->all(),
+            'total' => ['expense' => (int) (clone $daily)->sum('amount')] + collect(['gmv', 'clicks', 'impressions', 'orders'])->mapWithKeys(fn ($k) => [$k => $allCampaignRows->sum($k)])->all(),
+            'active_only' => $activeOnly,
+            'counts' => ['campaigns' => $allCampaignRows->count(), 'active' => $allCampaignRows->where('status', 'ongoing')->count()],
             'daily' => (clone $daily)->selectRaw('spent_on as date, SUM(amount) as expense')->groupBy('spent_on')->orderBy('spent_on')->get(),
             'campaigns' => $campaignRows, 'products' => $products,
             // Sandbox shops are topped up via Shopee Console → Test Account → Login Seller Center.

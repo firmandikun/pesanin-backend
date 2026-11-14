@@ -29,13 +29,19 @@ class ShopeeAdsTest extends TestCase
             $l->user_id = $user->id;
             $l->save();
         }
-        $d = fn ($n) => now()->subDays($n)->format('d-m-Y');
+        // 06:30 WIB = 23:30 UTC of the previous day: the case where the sync used to stop at "yesterday".
+        $this->travelTo(\Illuminate\Support\Carbon::parse('2026-11-15 06:30', 'Asia/Jakarta'));
+        $d = fn ($n) => now('Asia/Jakarta')->subDays($n)->format('d-m-Y');
         Http::fake([
+            // Promoted item 333 isn't in Pesanin's product list yet: the ads sync fetches it.
+            '*get_item_base_info*' => Http::response(['response' => ['item_list' => [['item_id' => 333, 'item_name' => 'Masker', 'item_status' => 'NORMAL', 'has_model' => false,
+                'price_info' => [['current_price' => 20000]], 'stock_info_v2' => ['summary_info' => ['total_available_stock' => 5]], 'image' => ['image_url_list' => ['http://img/m.jpg']]]]]]),
             '*get_total_balance*' => Http::response(['response' => ['data_timestamp' => time(), 'total_balance' => 125000.5]]),
             '*get_all_cpc_ads_daily_performance*' => Http::response(['response' => [['date' => $d(1), 'expense' => 15000], ['date' => $d(0), 'expense' => 5000]]]),
-            '*get_product_level_campaign_id_list*' => Http::response(['response' => ['has_next_page' => false, 'campaign_list' => [['campaign_id' => 501, 'ad_type' => 'manual'], ['campaign_id' => 502, 'ad_type' => 'auto']]]]),
+            '*get_product_level_campaign_id_list*' => Http::response(['response' => ['has_next_page' => false, 'campaign_list' => [['campaign_id' => 501, 'ad_type' => 'manual'], ['campaign_id' => 502, 'ad_type' => 'auto'], ['campaign_id' => 503, 'ad_type' => 'manual']]]]),
             '*get_product_level_campaign_setting_info*' => Http::response(['response' => ['campaign_list' => [
                 ['campaign_id' => 501, 'common_info' => ['ad_type' => 'manual', 'ad_name' => 'Iklan Serum', 'campaign_status' => 'ongoing', 'bidding_method' => 'auto', 'campaign_budget' => 50000, 'item_id_list' => [111]]],
+                ['campaign_id' => 503, 'common_info' => ['ad_type' => 'manual', 'ad_name' => 'Iklan Masker', 'campaign_status' => 'ongoing', 'item_id_list' => [333]]],
                 ['campaign_id' => 502, 'common_info' => ['ad_type' => 'auto', 'ad_name' => 'Iklan Otomatis', 'campaign_status' => 'paused', 'item_id_list' => []], 'auto_product_ads_info' => [['product_name' => 'Serum', 'status' => 'ongoing', 'item_id' => 111], ['product_name' => 'Toner', 'status' => 'ongoing', 'item_id' => 222]]],
             ]]]),
             '*get_product_campaign_daily_performance*' => Http::response(['response' => [['shop_id' => 9, 'region' => 'ID', 'campaign_list' => [
@@ -47,13 +53,26 @@ class ShopeeAdsTest extends TestCase
         (new ShopeeSync)->ads($shop);
         (new ShopeeSync)->ads($shop); // idempotent
 
-        $r = $this->getJson('/api/marketplace/ads')->assertOk()->json();
+        // The sync asked Shopee up to today in WIB (15-11), not the UTC date (14-11).
+        Http::assertSent(fn ($req) => str_contains($req->url(), 'get_all_cpc_ads_daily_performance') && str_contains($req->url(), 'end_date=15-11-2026'));
+        $range = 'from='.now('Asia/Jakarta')->subDay()->toDateString().'&to='.now('Asia/Jakarta')->toDateString();
+
+        // Default: running ads only in the lists; the totals still cover every ad.
+        $active = $this->getJson("/api/marketplace/ads?{$range}")->assertOk()->json();
+        $this->assertSame(20000, $active['total']['expense']);
+        $this->assertSame(80000, $active['total']['gmv']);
+        $this->assertSame(['campaigns' => 3, 'active' => 2], $active['counts']);
+        $this->assertEqualsCanonicalizing(['Iklan Serum', 'Iklan Masker'], array_column($active['campaigns'], 'name'));
+        $this->assertEqualsCanonicalizing(['Serum', 'Masker'], array_column($active['products'], 'name'));
+        $this->assertSame('http://img/m.jpg', collect($active['products'])->firstWhere('name', 'Masker')['image']);
+
+        $r = $this->getJson("/api/marketplace/ads?{$range}&all=1")->assertOk()->json();
         $this->assertSame(20000, $r['total']['expense']);
         $this->assertSame(80000, $r['total']['gmv']);
-        $this->assertSame(['Iklan Serum', 'Iklan Otomatis'], array_column($r['campaigns'], 'name'));
+        $this->assertSame(['Iklan Serum', 'Iklan Otomatis', 'Iklan Masker'], array_column($r['campaigns'], 'name'));
         $this->assertSame(['Serum', 'Toner'], array_column($r['campaigns'][1]['items'], 'name'));
         // Serum: 10000 own + half of 10000 shared = 15000; Toner: 5000.
-        $this->assertSame([['Serum', 15000, true], ['Toner', 5000, true]], array_map(fn ($p) => [$p['name'], $p['expense'], $p['shared']], $r['products']));
+        $this->assertSame([['Serum', 15000, true], ['Toner', 5000, true], ['Masker', 0, false]], array_map(fn ($p) => [$p['name'], $p['expense'], $p['shared']], $r['products']));
         $this->assertCount(2, $r['daily']);
         $this->assertSame(['amount' => 125001, 'shops' => 1], array_intersect_key($r['balance'], ['amount' => 0, 'shops' => 0]));
         $this->assertFalse($r['balance']['stale']);
