@@ -53,6 +53,27 @@ class ShopeeReconcileTest extends TestCase
         $this->assertNotContains('RETRY_SHIP', $requestedStatuses);
     }
 
+    /** Shopee-fulfilled orders are flagged so the UI hides manual "Atur Pengiriman". */
+    public function test_fulfilled_by_shopee_orders_are_flagged_auto_ship(): void
+    {
+        config(['services.shopee.partner_id' => 1, 'services.shopee.partner_key' => 'k']);
+        $user = User::factory()->create();
+        $shop = new MarketplaceShop(['platform' => 'shopee', 'shop_id' => 1, 'shop_name' => 'T', 'status' => 'active', 'access_token' => 'a', 'refresh_token' => 'r', 'access_expires_at' => now()->addHour(), 'refresh_expires_at' => now()->addDays(30)]);
+        $shop->user_id = $user->id;
+        $shop->save();
+        $sync = new ShopeeSync;
+
+        $sync->upsertOrder($shop, ['order_sn' => 'AF', 'order_status' => 'READY_TO_SHIP', 'fulfillment_flag' => 'fulfilled_by_shopee', 'item_list' => [], 'create_time' => time()]);
+        $this->assertTrue((bool) Order::where('external_order_sn', 'AF')->value('shopee_auto_ship'));
+
+        $sync->upsertOrder($shop, ['order_sn' => 'SELF', 'order_status' => 'READY_TO_SHIP', 'fulfillment_flag' => 'fulfilled_by_local_seller', 'item_list' => [], 'create_time' => time()]);
+        $this->assertFalse((bool) Order::where('external_order_sn', 'SELF')->value('shopee_auto_ship'));
+
+        // A later sync without the flag must not clear a flag that was already set.
+        $sync->upsertOrder($shop, ['order_sn' => 'AF', 'order_status' => 'READY_TO_SHIP', 'item_list' => [], 'create_time' => time()]);
+        $this->assertTrue((bool) Order::where('external_order_sn', 'AF')->value('shopee_auto_ship'));
+    }
+
     /** An open order synced before item SKUs existed gets its detail refreshed so the AWB can print SKU Induk/Variasi. */
     public function test_open_orders_without_item_sku_are_refreshed(): void
     {

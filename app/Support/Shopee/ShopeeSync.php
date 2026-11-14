@@ -423,6 +423,9 @@ class ShopeeSync
             $order->fill([
                 'code' => $order->code ?? self::orderCode($shop, $d['order_sn']),
                 'channel' => 'shopee', 'source' => 'marketplace', 'external_status' => $d['order_status'] ?? null,
+                // Shopee-fulfilled / Advance Fulfilment orders are shipped by Shopee; the seller must not arrange
+                // them manually. Never clear a flag a failed manual-arrange already set.
+                'shopee_auto_ship' => ($d['fulfillment_flag'] ?? '') === 'fulfilled_by_shopee' || (bool) ($order->shopee_auto_ship ?? false),
                 'items' => $items->all(), 'product_id' => $items->firstWhere('product_id')['product_id'] ?? null,
                 'customer_name' => $addr['name'] ?? ($d['buyer_username'] ?? null), 'phone' => $addr['phone'] ?? null,
                 'address' => $addr['full_address'] ?? null, 'province' => $addr['state'] ?? null, 'city' => $addr['city'] ?? null,
