@@ -9,7 +9,7 @@ use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Http;
 use Tests\TestCase;
 
-/** Saldo page: Shopee balance comes from Shopee's payment API; Pesanin's own balance leaves Shopee orders out. */
+/** Marketplace → Saldo: Shopee balance from Shopee's payment API with totals; Pesanin's own Saldo leaves Shopee out. */
 class ShopeeWalletBalanceTest extends TestCase
 {
     use RefreshDatabase;
@@ -44,9 +44,12 @@ class ShopeeWalletBalanceTest extends TestCase
         });
 
         $res = $this->actingAs($user)->getJson('/api/balance')->assertOk()->json();
-
         $this->assertSame(150000, $res['available']); // the Shopee order is not in Pesanin's balance
-        $w = $res['shopee'][0];
+        $this->assertArrayNotHasKey('shopee', $res); // Shopee money lives on Marketplace → Saldo
+
+        $mp = $this->getJson('/api/marketplace/balance')->assertOk()->json();
+        $this->assertSame(['balance' => 950000, 'pending' => 420001, 'released' => 8000000], $mp['totals']);
+        $w = $mp['shops'][0];
         $this->assertSame('M storeku', $w['shop_name']);
         $this->assertSame(950000, $w['balance']); // current_balance of the newest wallet transaction
         $this->assertSame(420001, $w['pending']);

@@ -127,6 +127,26 @@ class MarketplaceController extends Controller
     }
 
     /** Shopee return / refund requests (Pengembalian Barang/Dana), newest first. */
+    /**
+     * Marketplace → Saldo: each Shopee shop's seller balance from Shopee's payment API, plus the totals across shops.
+     * A total is null when no shop returned that figure. ?fresh=1 skips the short cache.
+     */
+    public function balance(Request $request)
+    {
+        $wallets = $request->user()->marketplaceShops()->where('platform', 'shopee')->where('status', 'active')->where('is_demo', false)->get()
+            ->map(fn ($shop) => \App\Support\Shopee\ShopeeWallet::summary($shop, $request->boolean('fresh')))->values();
+        $total = function (string $key) use ($wallets) {
+            $values = $wallets->pluck($key)->filter(fn ($v) => $v !== null);
+
+            return $values->isEmpty() ? null : (int) $values->sum();
+        };
+
+        return [
+            'shops' => $wallets,
+            'totals' => ['balance' => $total('balance'), 'pending' => $total('pending'), 'released' => $total('released')],
+        ];
+    }
+
     public function returns(Request $request)
     {
         $data = $request->validate(['shop_id' => 'nullable|integer', 'filter' => 'nullable|in:open,all', 'search' => 'nullable|string|max:60', 'per_page' => 'nullable|integer|min:1|max:1000']);
