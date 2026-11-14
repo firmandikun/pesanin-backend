@@ -55,7 +55,7 @@ function redrawItemTable(page, items, fonts, skus) {
   const numbers = body.filter((i) => i.transform[4] < x.name && /^\d+$/.test(i.str.trim()));
   if (!numbers.length) return false;
 
-  const cells = numbers.map((n) => ({ y: n.transform[5], no: n.str.trim(), sku: [], qty: [] }));
+  const cells = numbers.map((n) => ({ y: n.transform[5], no: n.str.trim(), name: [], sku: [], vname: [], qty: [] }));
   for (const it of body) {
     if (numbers.includes(it)) continue;
     const y = it.transform[5];
@@ -68,7 +68,8 @@ function redrawItemTable(page, items, fonts, skus) {
     chars.forEach((c, k) => {
       const mid = cx + (widths[k] * scale) / 2;
       cx += widths[k] * scale;
-      const col = mid >= x.qty ? "qty" : mid >= x.variant ? null : mid >= x.sku ? "sku" : null;
+      // Product and variant names are only printed when the item has no SKU.
+      const col = mid >= x.qty ? "qty" : mid >= x.variant ? "vname" : mid >= x.sku ? "sku" : mid >= x.name ? "name" : null;
       if (col) row[col].push([y, c]);
     });
   }
@@ -82,7 +83,8 @@ function redrawItemTable(page, items, fonts, skus) {
     }
     return lines.map((l) => l.trim()).filter(Boolean).reduce((acc, l) => (acc && !acc.endsWith("-") ? `${acc} ${l}` : acc + l), "");
   };
-  const rows = cells.map((c) => ({ no: c.no, sku: join(c.sku) || "-", qty: join(c.qty) || "1" }));
+  const withName = (n, v) => (n ? (v ? `${n} (${v})` : n) : "");
+  const rows = cells.map((c) => ({ no: c.no, sku: join(c.sku) || "-", qty: join(c.qty) || "1", label: withName(join(c.name), join(c.vname)) }));
 
   const { width: pw } = page.getSize();
   const top = hy + size + 1.5;
@@ -91,7 +93,9 @@ function redrawItemTable(page, items, fonts, skus) {
   page.drawRectangle({ x: 1.5, y: bottom, width: pw - 3, height: top - bottom, color: rgb(1, 1, 1) });
 
   const own = Array.isArray(skus) && skus.length === rows.length && rows.length > 0;
-  const body2 = rows.map((r, i) => ({ no: r.no, sku: own ? (skus[i] || "-") : r.sku, qty: r.qty }));
+  // No SKU at all → "Nama Produk (Variasi)" (from Pesanin's order, else as printed on Shopee's label).
+  const has = (s) => !!s && s !== "-";
+  const body2 = rows.map((r, i) => ({ no: r.no, sku: own && has(skus[i]) ? skus[i] : has(r.sku) ? r.sku : r.label || "-", qty: r.qty }));
 
   const left = hash.transform[4];
   const right = pw - left;

@@ -103,6 +103,22 @@ class AwbSchedule
             ->whereNotNull('tracking_number')->where('tracking_number', '!=', '')->when($onlyNew, fn ($q) => $q->whereNull('awb_printed_at'))
             ->whereHas('marketplaceShop', $notDemo)->with('marketplaceShop')->orderBy('id')->limit(self::MAX)->get();
 
+        // Re-read order status from Shopee: parcels already handed over are dropped (their label can't be printed
+        // again) and move to "Dikirim" instead of failing the whole document.
+        $sync = new ShopeeSync;
+        foreach ($orders->groupBy('marketplace_shop_id') as $group) {
+            foreach ($group->chunk(50) as $chunk) {
+                try {
+                    foreach ((new \App\Support\Shopee\ShopeeClient)->orderDetail($chunk->first()->marketplaceShop, $chunk->pluck('external_order_sn')->all()) as $d) {
+                        $sync->upsertOrder($chunk->first()->marketplaceShop, $d);
+                    }
+                } catch (ShopeeException) {
+                }
+            }
+        }
+        $orders = $orders->map(fn ($o) => $o->fresh(['marketplaceShop']))
+            ->filter(fn ($o) => in_array($o->external_status, ['PROCESSED', 'RETRY_SHIP'], true))->values();
+
         if ($orders->isEmpty() && $bookings->isEmpty()) {
             $tg->sendMessage($chat, "{$label}: tidak ada resi Shopee ".($onlyNew ? 'baru ' : '').'untuk dicetak.');
 
@@ -188,10 +204,19 @@ class AwbSchedule
         return [$parts, $doneOrders, $doneBookings, $failed];
     }
 
-    /** Label SKU per item: the variation SKU, else the product SKU. */
+    /** Label SKU per item: the variation SKU, else the product SKU, else "Nama Produk (Variasi)". */
     private static function skus(?array $items): array
     {
-        return collect($items ?? [])->map(fn ($i) => ($i['model_sku'] ?? null) ?: (($i['item_sku'] ?? null) ?: (($i['sku'] ?? null) ?: '-')))->values()->all();
+        return collect($items ?? [])->map(function ($i) {
+            $sku = ($i['model_sku'] ?? null) ?: (($i['item_sku'] ?? null) ?: ($i['sku'] ?? null));
+            if ($sku) {
+                return $sku;
+            }
+            $name = trim((string) ($i['name'] ?? ''));
+            $variant = trim((string) ($i['variant'] ?? ''));
+
+            return $name ? ($variant ? "{$name} ({$variant})" : $name) : '-';
+        })->values()->all();
     }
 
     /** Merge + post-process with the Node script (scripts/awb). False when Node or the script isn't available. */

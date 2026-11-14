@@ -25,7 +25,8 @@ return [
 
     'allowed_headers' => ['*'],
 
-    'exposed_headers' => [],
+    // Order numbers skipped by a bulk AWB print (already shipped), read by the frontend.
+    'exposed_headers' => ['X-Awb-Skipped'],
 
     'max_age' => 0,
 

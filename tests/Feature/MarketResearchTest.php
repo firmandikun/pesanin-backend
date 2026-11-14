@@ -54,6 +54,13 @@ class MarketResearchTest extends TestCase
         $this->assertSame(50, $res['summary']['mall_share']);
         $this->assertSame(['Mall', null], array_column($res['items'], 'shop_type'));
         $this->assertSame(5.0, (float) $res['items'][0]['commission']);
+        // Product analysis: price bands, sweet spot, market concentration, commission range.
+        $a = $res['analysis'];
+        $this->assertSame(2, count($a['price_bands']));
+        $this->assertSame(['min' => 37500, 'max' => 45000, 'products' => 1, 'sold' => 1200, 'sold_share' => 60], $a['best_band']);
+        $this->assertSame(100, $a['top3_share']);
+        $this->assertSame(40, $a['non_mall_share']);
+        $this->assertSame([5, 5, 10], [(int) $a['commission']['min'], (int) $a['commission']['median'], (int) $a['commission']['max']]);
         Http::assertSent(function ($r) {
             preg_match('/Credential=(\d+), Timestamp=(\d+), Signature=([a-f0-9]{64})/', $r->header('Authorization')[0], $m);
 

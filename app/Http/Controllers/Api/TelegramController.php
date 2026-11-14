@@ -37,7 +37,7 @@ class TelegramController extends Controller
         $user = $request->user();
         $i = $user->integrations()->where('provider', 'telegram')->first()
             ?? new UserIntegration(['user_id' => $user->id, 'provider' => 'telegram', 'webhook_token' => Str::random(40)]);
-        $settings = ['bot_username' => $me['username'] ?? null, 'bot_id' => $me['id'] ?? null];
+        $settings = ['bot_username' => $me['username'] ?? null, 'bot_name' => $me['first_name'] ?? null, 'bot_id' => $me['id'] ?? null];
         try {
             if ($chat = $client->latestChat()) {
                 $settings += ['chat_id' => $chat['id'], 'chat_name' => $chat['name']];
@@ -54,11 +54,18 @@ class TelegramController extends Controller
     {
         $i = $this->integration($request);
         try {
-            $chat = (new TelegramClient($i->key('bot_token')))->latestChat();
+            $client = new TelegramClient($i->key('bot_token'));
+            // Bots connected before the display name was stored: fetch it now so the seller can find the right chat.
+            if (empty($i->settings['bot_name'])) {
+                $i->settings = array_merge($i->settings ?? [], ['bot_name' => $client->me()['first_name'] ?? null]);
+                $i->save();
+            }
+            $chat = $client->latestChat();
         } catch (RuntimeException $e) {
             abort(422, 'Telegram: '.$e->getMessage());
         }
-        abort_unless($chat, 422, 'Belum ada pesan ke bot. Buka @'.($i->settings['bot_username'] ?? 'bot').' di Telegram, tekan Start (atau kirim /start), lalu coba lagi.');
+        $bot = '@'.($i->settings['bot_username'] ?? 'bot').(! empty($i->settings['bot_name']) ? ' (nama di Telegram: "'.$i->settings['bot_name'].'")' : '');
+        abort_unless($chat, 422, "Belum ada pesan ke bot {$bot}. Buka t.me/".($i->settings['bot_username'] ?? '').', kirim /start, lalu coba lagi.');
         $i->update(['settings' => array_merge($i->settings ?? [], ['chat_id' => $chat['id'], 'chat_name' => $chat['name']])]);
 
         return $this->present($i);
@@ -118,6 +125,7 @@ class TelegramController extends Controller
         return [
             'connected' => (bool) $i,
             'bot_username' => $i?->settings['bot_username'] ?? null,
+            'bot_name' => $i?->settings['bot_name'] ?? null,
             'chat_name' => $i?->settings['chat_name'] ?? null,
             'ready' => (bool) ($i && ! empty($i->settings['chat_id'])),
         ];
