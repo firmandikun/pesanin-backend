@@ -199,8 +199,13 @@ class ShopeeSync
         // Open orders synced before buyer/payment/deadline details were stored: fill them in once.
         $backfill = Order::where('marketplace_shop_id', $shop->id)->whereIn('external_status', $open)
             ->whereNull('payment_channel')->limit(500)->pluck('external_order_sn')->filter()->all();
+        // Open orders synced before item SKUs (induk/variasi) were stored in the items JSON: refresh them once so
+        // the AWB label can print SKU Induk / SKU Variasi. New rows always carry the "item_sku" key, so its absence
+        // marks a stale row; a refresh that finds no SKU writes "item_sku":null and won't be picked up again.
+        $skuBackfill = Order::where('marketplace_shop_id', $shop->id)->whereIn('external_status', $open)
+            ->where('items', 'not like', '%"item_sku"%')->limit(500)->pluck('external_order_sn')->filter()->all();
         $count = 0;
-        foreach (array_chunk(array_values(array_unique([...$refresh, ...$stale, ...$backfill])), 50) as $chunk) {
+        foreach (array_chunk(array_values(array_unique([...$refresh, ...$stale, ...$backfill, ...$skuBackfill])), 50) as $chunk) {
             foreach ($this->api->orderDetail($shop, $chunk) as $detail) {
                 $this->upsertOrder($shop, $detail);
                 $count++;
