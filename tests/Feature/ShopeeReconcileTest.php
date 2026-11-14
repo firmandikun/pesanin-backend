@@ -84,9 +84,10 @@ class ShopeeReconcileTest extends TestCase
         $shop->save();
         $sync = new ShopeeSync;
         $sync->upsertOrder($shop, ['order_sn' => 'SKUO', 'order_status' => 'PROCESSED', 'item_list' => [], 'create_time' => time() - 3600]);
-        // Simulate a legacy row: items JSON has no "item_sku" key, and payment_channel is already filled.
+        // Simulate a row synced while the SKU was still empty: the "item_sku" key is present but null, which the
+        // backfill must still catch. payment_channel is already filled so the generic backfill won't claim it.
         Order::where('external_order_sn', 'SKUO')->update([
-            'items' => [['item_id' => 1, 'model_id' => 2, 'name' => 'X', 'sku' => 'VAR-1', 'qty' => 1, 'price' => 1000]],
+            'items' => [['item_id' => 1, 'model_id' => 2, 'name' => 'X', 'sku' => 'VAR-1', 'item_sku' => null, 'model_sku' => 'VAR-1', 'qty' => 1, 'price' => 1000]],
             'payment_channel' => 'Shopee',
         ]);
 
