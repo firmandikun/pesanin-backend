@@ -26,7 +26,7 @@ class MarketplaceController extends Controller
     {
         $user = $request->user();
         $shops = $user->marketplaceShops()
-            ->withCount(['listings', 'orders', 'orders as orders_today_count' => fn ($q) => $q->whereBetween('created_at', \App\Support\Dates::today())])
+            ->withCount(['listings', 'orders', 'orders as orders_today_count' => fn ($q) => $q->whereBetween('created_at', \App\Support\Dates::today())->where('external_status', '!=', 'CANCELLED')])
             ->latest()->get();
 
         return [
