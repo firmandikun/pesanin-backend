@@ -426,6 +426,11 @@ class ShopeeSync
                 'payment_method' => 'marketplace', 'payment_status' => ! empty($d['pay_time']) || ! empty($d['cod']) ? 'paid' : 'unpaid',
                 'status' => $status, 'shipping_status' => $shipping, 'courier' => $d['shipping_carrier'] ?? null,
                 'paid_at' => ! empty($d['pay_time']) ? Carbon::createFromTimestamp($d['pay_time']) : null,
+                // When the order is completed, Shopee's update_time is (close to) the completion time; used by the
+                // "Selesai" tab to show orders completed today.
+                'completed_at' => ($d['order_status'] ?? '') === 'COMPLETED'
+                    ? (! empty($d['update_time']) ? Carbon::createFromTimestamp($d['update_time']) : ($order->completed_at ?? now()))
+                    : $order->completed_at,
                 // Shown like Seller Centre: buyer's payment method and the shipping option they chose at checkout.
                 'payment_channel' => ($d['payment_method'] ?? '') ?: ($order->payment_channel ?? ''), // '' = asked, none given (no re-backfill)
                 'courier_service' => ($d['checkout_shipping_carrier'] ?? '') ?: $order->courier_service,
