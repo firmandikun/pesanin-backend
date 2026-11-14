@@ -53,6 +53,47 @@ class ShopeeReconcileTest extends TestCase
         $this->assertNotContains('RETRY_SHIP', $requestedStatuses);
     }
 
+    /** An open order synced before item SKUs existed gets its detail refreshed so the AWB can print SKU Induk/Variasi. */
+    public function test_open_orders_without_item_sku_are_refreshed(): void
+    {
+        config(['services.shopee.partner_id' => 1, 'services.shopee.partner_key' => 'k']);
+        $user = User::factory()->create();
+        $shop = new MarketplaceShop(['platform' => 'shopee', 'shop_id' => 1, 'shop_name' => 'T', 'status' => 'active', 'access_token' => 'a', 'refresh_token' => 'r', 'access_expires_at' => now()->addHour(), 'refresh_expires_at' => now()->addDays(30)]);
+        $shop->user_id = $user->id;
+        $shop->save();
+        $sync = new ShopeeSync;
+        $sync->upsertOrder($shop, ['order_sn' => 'SKUO', 'order_status' => 'PROCESSED', 'item_list' => [], 'create_time' => time() - 3600]);
+        // Simulate a legacy row: items JSON has no "item_sku" key, and payment_channel is already filled.
+        Order::where('external_order_sn', 'SKUO')->update([
+            'items' => [['item_id' => 1, 'model_id' => 2, 'name' => 'X', 'sku' => 'VAR-1', 'qty' => 1, 'price' => 1000]],
+            'payment_channel' => 'Shopee',
+        ]);
+
+        Http::fake(function ($req) {
+            parse_str((string) parse_url($req->url(), PHP_URL_QUERY), $q);
+            // Keep it listed under its current status so it is neither "refresh" (status unchanged) nor "stale".
+            if (str_contains($req->url(), 'get_order_list')) {
+                $list = ($q['order_status'] ?? '') === 'PROCESSED' ? [['order_sn' => 'SKUO', 'order_status' => 'PROCESSED']] : [];
+
+                return Http::response(['response' => ['order_list' => $list, 'more' => false]]);
+            }
+            if (str_contains($req->url(), 'get_order_detail')) {
+                return Http::response(['response' => ['order_list' => array_map(fn ($sn) => [
+                    'order_sn' => $sn, 'order_status' => 'PROCESSED', 'create_time' => time() - 3600, 'payment_method' => 'COD',
+                    'item_list' => [['item_id' => 1, 'model_id' => 2, 'item_name' => 'X', 'item_sku' => 'INDUK-1', 'model_sku' => 'VAR-1', 'model_quantity_purchased' => 1]],
+                ], explode(',', $q['order_sn_list']))]]);
+            }
+
+            return Http::response(['response' => []]);
+        });
+
+        $sync->reconcileOpen($shop);
+
+        $items = Order::where('external_order_sn', 'SKUO')->value('items');
+        $this->assertSame('INDUK-1', $items[0]['item_sku']);
+        $this->assertSame('VAR-1', $items[0]['model_sku']);
+    }
+
     public function test_old_parcels_still_on_the_way_are_pulled_and_returns_stay_in_dikirim(): void
     {
         config(['services.shopee.partner_id' => 1, 'services.shopee.partner_key' => 'k']);
