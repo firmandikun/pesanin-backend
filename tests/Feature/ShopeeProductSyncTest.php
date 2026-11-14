@@ -4,6 +4,7 @@ namespace Tests\Feature;
 
 use App\Models\MarketplaceListing;
 use App\Models\MarketplaceShop;
+use App\Models\Order;
 use App\Models\User;
 use App\Support\Shopee\ShopeeSync;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -65,5 +66,25 @@ class ShopeeProductSyncTest extends TestCase
         $this->assertSame('VAR-MERAH', $rows[0]->sku);
         $this->assertSame('INDUK-1', $rows[1]->item_sku);
         $this->assertSame('VAR-BIRU', $rows[1]->sku);
+    }
+
+    /** When Shopee's order snapshot has no SKU, the item takes the SKU from the matched product listing. */
+    public function test_order_item_falls_back_to_listing_sku(): void
+    {
+        $user = User::factory()->create();
+        $shop = $this->shop($user);
+        MarketplaceListing::create([
+            'user_id' => $user->id, 'marketplace_shop_id' => $shop->id, 'item_id' => 777, 'model_id' => 9,
+            'name' => 'Kaos', 'item_sku' => 'INDUK-1', 'sku' => 'VAR-BIRU', 'price' => 50000, 'stock' => 3, 'status' => 'NORMAL',
+        ]);
+
+        // Shopee returns the order item with empty item_sku/model_sku.
+        (new ShopeeSync)->upsertOrder($shop, ['order_sn' => 'O1', 'order_status' => 'READY_TO_SHIP', 'create_time' => time(), 'item_list' => [
+            ['item_id' => 777, 'model_id' => 9, 'item_name' => 'Kaos', 'item_sku' => '', 'model_sku' => '', 'model_quantity_purchased' => 1],
+        ]]);
+
+        $items = Order::where('external_order_sn', 'O1')->value('items');
+        $this->assertSame('INDUK-1', $items[0]['item_sku']);
+        $this->assertSame('VAR-BIRU', $items[0]['model_sku']);
     }
 }
