@@ -31,7 +31,8 @@ class FeatureController extends Controller
     public function balance(Request $request)
     {
         [$from, $to] = $this->range($request, 0);
-        $orders = $request->user()->orders()->active();
+        // Pesanin's own balance: web checkout + manual orders only. Shopee money sits in the Shopee wallet (below).
+        $orders = $request->user()->orders()->active()->where('channel', '!=', 'shopee');
         $paid = (clone $orders)->where('payment_status', 'paid');
         $cod = (clone $paid)->where('payment_method', 'cod');
         $inRange = fn ($q) => $q->whereBetween('paid_at', [$from, $to]);
@@ -39,7 +40,12 @@ class FeatureController extends Controller
         $available = (int) (clone $paid)->sum('total') - (int) (clone $paid)->sum('cod_fee');
         $pending = (int) (clone $orders)->where('payment_method', 'cod')->where('payment_status', 'unpaid')->where('shipping_status', '!=', 'not_shipped')->sum('total');
 
+        // Shopee seller balance per connected shop, straight from Shopee's payment API (?fresh=1 skips the 2-min cache).
+        $shopee = $request->user()->marketplaceShops()->where('platform', 'shopee')->where('status', 'active')->where('is_demo', false)->get()
+            ->map(fn ($shop) => \App\Support\Shopee\ShopeeWallet::summary($shop, $request->boolean('fresh')))->values();
+
         return [
+            'shopee' => $shopee,
             'available' => $available,
             'withdrawing' => 0,
             'pending' => $pending,

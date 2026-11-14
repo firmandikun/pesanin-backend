@@ -148,6 +148,22 @@ class ShopeeClient
         ])['response']['order_list'] ?? [];
     }
 
+    /** Seller wallet transactions; each carries the wallet's `current_balance` right after it. Range ≤ 15 days. */
+    public function walletTransactions(MarketplaceShop $shop, int $pageSize = 20, ?int $from = null, ?int $to = null): array
+    {
+        $params = array_filter(['page_no' => 0, 'page_size' => $pageSize, 'create_time_from' => $from, 'create_time_to' => $to], fn ($v) => $v !== null);
+
+        return $this->get($shop, '/api/v2/payment/get_wallet_transaction_list', $params)['response']['transaction_list'] ?? [];
+    }
+
+    /** Seller Centre's "Income Overview": pending_amount (not yet released) and released_amount. */
+    public function incomeOverview(MarketplaceShop $shop): array
+    {
+        $r = $this->get($shop, '/api/v2/payment/get_income_overview');
+
+        return $r['response']['total_income'] ?? $r['total_income'] ?? [];
+    }
+
     public function escrowDetail(MarketplaceShop $shop, string $orderSn): array
     {
         return $this->get($shop, '/api/v2/payment/get_escrow_detail', ['order_sn' => $orderSn])['response'] ?? [];
