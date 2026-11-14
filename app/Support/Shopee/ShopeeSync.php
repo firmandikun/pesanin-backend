@@ -48,6 +48,8 @@ class ShopeeSync
     private function upsertItem(MarketplaceShop $shop, array $item, array $skuMap): int
     {
         $image = $item['image']['image_url_list'][0] ?? null;
+        // Parent (item-level) SKU, shown as "SKU Induk". Variation rows carry it alongside their own model SKU.
+        $itemSku = ($item['item_sku'] ?? '') ?: null;
         $rows = [];
         if (! empty($item['has_model'])) {
             $models = $this->api->modelList($shop, $item['item_id']);
@@ -57,14 +59,14 @@ class ShopeeSync
                 $rows[] = [$m['model_id'], $name ?: null, $m['model_sku'] ?? null, $m['price_info'][0]['current_price'] ?? 0, $m['stock_info_v2']['summary_info']['total_available_stock'] ?? 0];
             }
         } else {
-            $rows[] = [0, null, $item['item_sku'] ?? null, $item['price_info'][0]['current_price'] ?? 0, $item['stock_info_v2']['summary_info']['total_available_stock'] ?? 0];
+            $rows[] = [0, null, $itemSku, $item['price_info'][0]['current_price'] ?? 0, $item['stock_info_v2']['summary_info']['total_available_stock'] ?? 0];
         }
 
         foreach ($rows as [$modelId, $modelName, $sku, $price, $stock]) {
             $listing = MarketplaceListing::firstOrNew(['marketplace_shop_id' => $shop->id, 'item_id' => $item['item_id'], 'model_id' => $modelId]);
             $listing->user_id = $shop->user_id;
             $listing->fill([
-                'name' => $item['item_name'], 'model_name' => $modelName, 'sku' => $sku ?: null,
+                'name' => $item['item_name'], 'model_name' => $modelName, 'sku' => $sku ?: null, 'item_sku' => $itemSku,
                 'price' => (int) round($price), 'stock' => (int) $stock, 'status' => $item['item_status'] ?? 'NORMAL', 'image' => $image,
             ]);
             // Auto-link to a Pesanin product when the SKU matches, unless the seller already mapped it.
