@@ -193,6 +193,13 @@ Route::middleware(['auth:sanctum', 'member', 'subscribed'])->group(function () {
     Route::get('/integrations', [\App\Http\Controllers\Api\IntegrationController::class, 'index']);
     Route::put('/integrations/{provider}', [\App\Http\Controllers\Api\IntegrationController::class, 'save']);
     Route::delete('/integrations/{provider}', [\App\Http\Controllers\Api\IntegrationController::class, 'destroy']);
+    // Telegram bot for the scheduled Shopee AWB PDF.
+    Route::get('/telegram', [\App\Http\Controllers\Api\TelegramController::class, 'show']);
+    Route::put('/telegram', [\App\Http\Controllers\Api\TelegramController::class, 'save'])->middleware('throttle:10,1');
+    Route::post('/telegram/detect', [\App\Http\Controllers\Api\TelegramController::class, 'detect'])->middleware('throttle:10,1');
+    Route::post('/telegram/test', [\App\Http\Controllers\Api\TelegramController::class, 'test'])->middleware('throttle:10,1');
+    Route::post('/telegram/send-awb', [\App\Http\Controllers\Api\TelegramController::class, 'sendNow'])->middleware('throttle:5,1');
+    Route::delete('/telegram', [\App\Http\Controllers\Api\TelegramController::class, 'destroy']);
     Route::post('/orders/biteship-ship', [\App\Http\Controllers\Api\IntegrationController::class, 'ship']);
     Route::get('/notifications', [\App\Http\Controllers\Api\NotificationController::class, 'index']);
     Route::post('/notifications/read', [\App\Http\Controllers\Api\NotificationController::class, 'read']);
