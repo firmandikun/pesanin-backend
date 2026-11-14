@@ -144,7 +144,7 @@ class ShopeeClient
     {
         return $this->get($shop, '/api/v2/order/get_order_detail', [
             'order_sn_list' => implode(',', $orderSns),
-            'response_optional_fields' => 'buyer_username,recipient_address,item_list,total_amount,shipping_carrier,checkout_shipping_carrier,payment_method,estimated_shipping_fee,actual_shipping_fee,pay_time,package_list,cod,cancel_reason,buyer_cancel_reason',
+            'response_optional_fields' => 'buyer_username,recipient_address,item_list,total_amount,shipping_carrier,checkout_shipping_carrier,payment_method,estimated_shipping_fee,actual_shipping_fee,pay_time,package_list,cod,cancel_reason,buyer_cancel_reason,fulfillment_flag',
         ])['response']['order_list'] ?? [];
     }
 

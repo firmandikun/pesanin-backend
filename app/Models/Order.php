@@ -18,6 +18,7 @@ class Order extends Model
         return [
             'bump_selected' => 'boolean',
             'is_abandoned' => 'boolean',
+            'shopee_auto_ship' => 'boolean',
             'escrow_final' => 'boolean',
             'fee_breakdown' => 'array',
             'tags' => 'array',

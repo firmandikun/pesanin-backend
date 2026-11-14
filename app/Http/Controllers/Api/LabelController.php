@@ -132,6 +132,11 @@ class LabelController extends Controller
                 (new ShopeeSync)->order($shop, $order->external_order_sn);
                 $done[] = $order->code;
             } catch (ShopeeException $e) {
+                // Shopee rejects manual arranging for Advance Fulfilment / Shopee-fulfilled orders; remember so the
+                // UI stops offering "Atur Pengiriman" for it (Shopee issues the AWB automatically).
+                if (preg_match('/manually arrange|advance fulfil/i', $e->getMessage())) {
+                    $order->update(['shopee_auto_ship' => true]);
+                }
                 $failed[] = ['code' => $order->code, 'error' => $e->getMessage()];
             }
         }
