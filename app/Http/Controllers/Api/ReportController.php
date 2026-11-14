@@ -39,7 +39,7 @@ class ReportController extends Controller
 
         return [
             'days' => $days,
-            'range' => ['from' => $from->toDateString(), 'to' => $to->toDateString()],
+            'range' => ['from' => \App\Support\Dates::day($from), 'to' => \App\Support\Dates::day($to)],
             // Back-compat with the old dashboard fields.
             'pending_orders' => (clone $web)->where('status', 'pending')->count(),
             'awaiting_payment_confirmation' => (clone $web)->where('payment_method', 'bank_transfer')->where('payment_status', 'unpaid')->whereNotIn('status', ['cancelled'])->count(),
@@ -50,7 +50,7 @@ class ReportController extends Controller
                 // "Telah diproses", each = orders + Pengiriman Kilat reservations (those live in shopee_bookings).
                 'shopee_to_ship' => $shopeeTab('to_ship', 'READY_TO_SHIP'),
                 'shopee_to_print' => $shopeeTab('processed', 'PROCESSED'),
-                'abandoned_today' => $user->orders()->where('is_abandoned', true)->whereNull('archived_at')->whereDate('created_at', today())->count(),
+                'abandoned_today' => $user->orders()->where('is_abandoned', true)->whereNull('archived_at')->whereBetween('created_at', \App\Support\Dates::today())->count(),
             ],
             'summary' => $pick($now['summary']),
             'previous' => $pick($prev),
@@ -64,8 +64,8 @@ class ReportController extends Controller
                 'margin' => $p['revenue'] ? round($p['gross'] / $p['revenue'] * 100) : null,
             ])->values(),
             'today' => [
-                'orders' => (clone $orders)->whereDate('created_at', today())->count(),
-                'revenue' => (int) (clone $orders)->whereDate('created_at', today())->sum('total'),
+                'orders' => (clone $orders)->whereBetween('created_at', \App\Support\Dates::today())->count(),
+                'revenue' => (int) (clone $orders)->whereBetween('created_at', \App\Support\Dates::today())->sum('total'),
             ],
             'onboarding' => [
                 'product' => $user->products()->exists(),
@@ -87,7 +87,8 @@ class ReportController extends Controller
             ->whereBetween('created_at', [$from, $to])
             ->when($request->query('product_id'), fn ($q, $v) => $q->where('product_id', $v));
         $rows = (clone $base)
-            ->selectRaw("DATE(created_at) as date, COUNT(*) as orders,
+            // Group by the WIB day (created_at is UTC).
+            ->selectRaw(\App\Support\Dates::sqlDay('created_at')." as date, COUNT(*) as orders,
                 SUM(payment_status = 'paid') as paid_orders,
                 SUM(quantity) as items,
                 SUM(total) as gross,
@@ -126,11 +127,11 @@ class ReportController extends Controller
                 ];
             })->sortByDesc('gross')->values();
 
-        $daily = collect(CarbonPeriod::create($from, $to))->map(function (Carbon $d) use ($rows) {
-            $r = $rows->get($d->toDateString());
+        $daily = collect(\App\Support\Dates::days($from, $to))->map(function (string $day) use ($rows) {
+            $r = $rows->get($day);
 
             return [
-                'date' => $d->toDateString(),
+                'date' => $day,
                 'orders' => (int) ($r->orders ?? 0),
                 'paid_orders' => (int) ($r->paid_orders ?? 0),
                 'items' => (int) ($r->items ?? 0),
@@ -182,7 +183,7 @@ class ReportController extends Controller
         $data = $request->validate(['channel' => 'nullable|in:website,manual,shopee', 'shop_id' => 'nullable|integer']);
 
         return \App\Support\Analytics::profit($request->user(), $from, $to, $data['channel'] ?? null, $data['shop_id'] ?? null)
-            + ['from' => $from->toDateString(), 'to' => $to->toDateString(), 'backfilling' => $this->backfilling($request, $from)];
+            + ['from' => \App\Support\Dates::day($from), 'to' => \App\Support\Dates::day($to), 'backfilling' => $this->backfilling($request, $from)];
     }
 
     public function research(Request $request)
