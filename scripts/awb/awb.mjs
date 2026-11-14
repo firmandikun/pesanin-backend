@@ -2,7 +2,7 @@
 //
 //   node awb.mjs <job.json>
 //
-// job.json: { "output": "/abs/out.pdf", "parts": [ { "pdf": "/abs/in.pdf", "orders": [ { "sns": ["2611149ABC"], "skus": ["SKU-1"] } ] } ] }
+// job.json: { "output": "/abs/out.pdf", "parts": [ { "pdf": "/abs/in.pdf", "orders": [ { "sns": ["2611149ABC"], "items": [ { "sku": "SKU-1", "name": "Kaos", "variant": "Hitam,XL" } ] } ] } ] }
 //
 // Every part's pages are copied into one merged PDF. On each page the product names are hidden and Shopee's item
 // table is redrawn as "# | SKU | Qty" (qty > 1 circled). The page's order is found by the order / reservation
@@ -38,7 +38,7 @@ function wrap(text, font, size, max) {
 }
 
 /** Redraw Shopee's "# | Nama Produk | SKU | Variasi | Qty" as "# | SKU | Qty". Returns false when not recognised. */
-function redrawItemTable(page, items, fonts, skus) {
+function redrawItemTable(page, items, fonts, own) {
   const name = items.find((i) => HEADER.test(i.str.trim()));
   if (!name) return false;
   const hy = name.transform[5];
@@ -83,8 +83,7 @@ function redrawItemTable(page, items, fonts, skus) {
     }
     return lines.map((l) => l.trim()).filter(Boolean).reduce((acc, l) => (acc && !acc.endsWith("-") ? `${acc} ${l}` : acc + l), "");
   };
-  const withName = (n, v) => (n ? (v ? `${n} (${v})` : n) : "");
-  const rows = cells.map((c) => ({ no: c.no, sku: join(c.sku) || "-", qty: join(c.qty) || "1", label: withName(join(c.name), join(c.vname)) }));
+  const rows = cells.map((c) => ({ no: c.no, sku: join(c.sku) || "-", qty: join(c.qty) || "1", name: join(c.name), vname: join(c.vname) }));
 
   const { width: pw } = page.getSize();
   const top = hy + size + 1.5;
@@ -92,28 +91,36 @@ function redrawItemTable(page, items, fonts, skus) {
   const bottom = stop ? stop.transform[5] + (stop.height || size) * 0.8 : lowest - size * 0.4;
   page.drawRectangle({ x: 1.5, y: bottom, width: pw - 3, height: top - bottom, color: rgb(1, 1, 1) });
 
-  const own = Array.isArray(skus) && skus.length === rows.length && rows.length > 0;
-  // No SKU at all → "Nama Produk (Variasi)" (from Pesanin's order, else as printed on Shopee's label).
-  const has = (s) => !!s && s !== "-";
-  const body2 = rows.map((r, i) => ({ no: r.no, sku: own && has(skus[i]) ? skus[i] : has(r.sku) ? r.sku : r.label || "-", qty: r.qty }));
+  // Every item has a SKU → "# | SKU | Qty". Any item without one → "# | Nama Produk | Variasi | Qty" (an item that
+  // does have a SKU shows it in the first column). Pesanin's own data first, else what Shopee printed. Same as awbTable.ts.
+  const mine = Array.isArray(own) && own.length === rows.length && rows.length > 0;
+  const has = (s) => !!s && String(s).trim() !== "" && String(s).trim() !== "-";
+  const info = rows.map((r, i) => {
+    const d = mine ? own[i] : null;
+    return { sku: d ? (has(d.sku) ? d.sku : "") : has(r.sku) ? r.sku : "", name: ((d && d.name) || r.name || "").trim(), variant: ((d ? d.variant : r.vname) || "").trim() };
+  });
+  const allSku = info.every((x) => x.sku);
+  const heads = allSku ? ["SKU"] : [info.some((x) => x.sku) ? "SKU / Nama Produk" : "Nama Produk", "Variasi"];
+  const body2 = rows.map((r, i) => ({ no: r.no, qty: r.qty, cells: allSku ? [info[i].sku] : [info[i].sku || info[i].name || "-", info[i].sku ? "-" : info[i].variant || "-"] }));
 
   const left = hash.transform[4];
   const right = pw - left;
   const qtyX = right - 18;
-  const skuX = left + 14;
+  const colX = allSku ? [left + 14] : [left + 14, left + 14 + (qtyX - left - 14) * 0.66];
+  const widthFor = (k) => (k + 1 < colX.length ? colX[k + 1] : qtyX) - colX[k] - 6;
   const ink = rgb(0, 0, 0), rule = rgb(0.6, 0.6, 0.6);
   const line = (yy) => page.drawLine({ start: { x: left, y: yy }, end: { x: right, y: yy }, thickness: 0.5, color: rule });
   const lh = size * 1.18;
 
   let y = hy;
   page.drawText("#", { x: left, y, size, font: fonts.bold, color: ink });
-  page.drawText("SKU", { x: skuX, y, size, font: fonts.bold, color: ink });
+  heads.forEach((t, k) => page.drawText(t, { x: colX[k], y, size, font: fonts.bold, color: ink }));
   page.drawText("Qty", { x: qtyX, y, size, font: fonts.bold, color: ink });
   y -= size * 0.32;
   line(y);
   body2.forEach((r, i) => {
-    const lines = wrap(r.sku, fonts.bold, size, qtyX - skuX - 6);
-    const n = Math.max(1, lines.length);
+    const cols = r.cells.map((c, k) => wrap(c, fonts.bold, size, widthFor(k)));
+    const n = Math.max(1, ...cols.map((l) => l.length));
     const first = y - size * 1.0;
     if (first - (n - 1) * lh < bottom) return;
     page.drawText(r.no, { x: left, y: first, size, font: fonts.regular, color: ink });
@@ -123,7 +130,7 @@ function redrawItemTable(page, items, fonts, skus) {
       const tw = safeWidth(fonts.bold, q, size);
       page.drawEllipse({ x: qtyX + tw / 2, y: first + size * 0.33, xScale: tw / 2 + 4, yScale: size * 0.72, borderColor: ink, borderWidth: 1.1 });
     }
-    lines.forEach((ln, j) => page.drawText(ln, { x: skuX, y: first - j * lh, size, font: fonts.bold, color: ink }));
+    cols.forEach((col, k) => col.forEach((ln, j) => page.drawText(ln, { x: colX[k], y: first - j * lh, size, font: fonts.bold, color: ink })));
     y = first - (n - 1) * lh - size * 0.32;
     if (i < body2.length - 1) line(y);
   });
@@ -158,7 +165,7 @@ async function processPart(merged, part) {
     const items = (await (await doc.getPage(i + 1)).getTextContent()).items.filter((it) => "str" in it);
     const text = items.map((it) => it.str).join("").replace(/\s+/g, "").toUpperCase();
     const match = keyed.find(([sn]) => text.includes(sn))?.[1] ?? (orders.length === doc.numPages ? orders[i] : undefined);
-    if (!redrawItemTable(out.getPage(i), items, fonts, match?.skus)) coverNames(out.getPage(i), items);
+    if (!redrawItemTable(out.getPage(i), items, fonts, match?.items)) coverNames(out.getPage(i), items);
   }
   const pages = await merged.copyPages(out, out.getPageIndices());
   pages.forEach((p) => merged.addPage(p));

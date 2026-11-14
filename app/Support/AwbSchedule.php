@@ -181,7 +181,7 @@ class AwbSchedule
                 try {
                     $path = "{$dir}/p".count($parts).'.pdf';
                     file_put_contents($path, $awb->orders($chunk->first()->marketplaceShop, $chunk->values()));
-                    $parts[] = ['pdf' => $path, 'orders' => $chunk->map(fn ($o) => ['sns' => [$o->external_order_sn], 'skus' => self::skus($o->items)])->values()->all()];
+                    $parts[] = ['pdf' => $path, 'orders' => $chunk->map(fn ($o) => ['sns' => [$o->external_order_sn], 'items' => self::itemRows($o->items)])->values()->all()];
                     array_push($doneOrders, ...$chunk->pluck('id')->all());
                 } catch (ShopeeException $e) {
                     $failed[] = $chunk->pluck('external_order_sn')->implode(', ').' ('.$e->getMessage().')';
@@ -193,7 +193,7 @@ class AwbSchedule
                 try {
                     $path = "{$dir}/p".count($parts).'.pdf';
                     file_put_contents($path, $awb->bookings($chunk->first()->marketplaceShop, $chunk->values()));
-                    $parts[] = ['pdf' => $path, 'orders' => $chunk->map(fn ($b) => ['sns' => array_values(array_filter([$b->booking_sn, $b->order_sn])), 'skus' => self::skus($b->items)])->values()->all()];
+                    $parts[] = ['pdf' => $path, 'orders' => $chunk->map(fn ($b) => ['sns' => array_values(array_filter([$b->booking_sn, $b->order_sn])), 'items' => self::itemRows($b->items)])->values()->all()];
                     array_push($doneBookings, ...$chunk->pluck('id')->all());
                 } catch (ShopeeException $e) {
                     $failed[] = $chunk->pluck('booking_sn')->implode(', ').' ('.$e->getMessage().')';
@@ -204,19 +204,19 @@ class AwbSchedule
         return [$parts, $doneOrders, $doneBookings, $failed];
     }
 
-    /** Label SKU per item: the variation SKU, else the product SKU, else "Nama Produk (Variasi)". */
-    private static function skus(?array $items): array
+    /**
+     * Label rows per item: the SKU (variation SKU, else product SKU) plus the product and variation names, which the
+     * label prints instead when the item has no SKU.
+     *
+     * @return list<array{sku:string, name:string, variant:string}>
+     */
+    private static function itemRows(?array $items): array
     {
-        return collect($items ?? [])->map(function ($i) {
-            $sku = ($i['model_sku'] ?? null) ?: (($i['item_sku'] ?? null) ?: ($i['sku'] ?? null));
-            if ($sku) {
-                return $sku;
-            }
-            $name = trim((string) ($i['name'] ?? ''));
-            $variant = trim((string) ($i['variant'] ?? ''));
-
-            return $name ? ($variant ? "{$name} ({$variant})" : $name) : '-';
-        })->values()->all();
+        return collect($items ?? [])->map(fn ($i) => [
+            'sku' => (string) (($i['model_sku'] ?? null) ?: (($i['item_sku'] ?? null) ?: ($i['sku'] ?? ''))),
+            'name' => trim((string) ($i['name'] ?? '')),
+            'variant' => trim((string) ($i['variant'] ?? '')),
+        ])->values()->all();
     }
 
     /** Merge + post-process with the Node script (scripts/awb). False when Node or the script isn't available. */
