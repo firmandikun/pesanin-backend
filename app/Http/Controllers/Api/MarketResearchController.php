@@ -55,7 +55,7 @@ class MarketResearchController extends Controller
         $items = collect($res['items']);
         $prices = $items->pluck('price_min')->filter()->sort()->values();
 
-        return $res + ['summary' => [
+        return $res + ['analysis' => $this->analyze($items)] + ['summary' => [
             'count' => $items->count(),
             'sold' => $items->sum('sold'),
             'revenue_estimate' => $items->sum('revenue_estimate'),
@@ -66,6 +66,48 @@ class MarketResearchController extends Controller
             'mall_share' => $items->count() ? (int) round($items->where('shop_type', 'Mall')->count() / $items->count() * 100) : 0,
             'top_shops' => $items->groupBy('shop')->map(fn ($g, $shop) => ['shop' => $shop, 'products' => $g->count(), 'sold' => $g->sum('sold')])->sortByDesc('sold')->take(5)->values(),
         ]];
+    }
+
+    /**
+     * Deeper product analysis over the top-products page: at what price band the sales concentrate ("sweet spot"),
+     * how concentrated the market is (top-3 shops), how much comes from non-Mall shops (room for newcomers), and
+     * the commission range. Computed from the same items the summary uses.
+     */
+    private function analyze(\Illuminate\Support\Collection $items): array
+    {
+        $totalSold = (int) $items->sum('sold');
+        $share = fn (int $sold) => $totalSold > 0 ? (int) round($sold / $totalSold * 100) : 0;
+
+        // Price bands: up to 5 even-width bands across the observed price range.
+        $priced = $items->filter(fn ($i) => ($i['price_min'] ?? 0) > 0)->values();
+        $bands = [];
+        if ($priced->count() >= 2) {
+            $min = (int) $priced->min('price_min');
+            $max = (int) $priced->max('price_min');
+            if ($max > $min) {
+                $n = min(5, $priced->count());
+                $width = ($max - $min) / $n;
+                for ($b = 0; $b < $n; $b++) {
+                    $lo = $min + $b * $width;
+                    $hi = $min + ($b + 1) * $width;
+                    $last = $b === $n - 1;
+                    $in = $priced->filter(fn ($i) => $i['price_min'] >= $lo && ($last ? $i['price_min'] <= $hi : $i['price_min'] < $hi));
+                    $bands[] = ['min' => (int) round($lo), 'max' => (int) round($hi),
+                        'products' => $in->count(), 'sold' => (int) $in->sum('sold'), 'sold_share' => $share((int) $in->sum('sold'))];
+                }
+            }
+        }
+        $byShop = $items->whereNotNull('shop')->groupBy('shop')->map->sum('sold')->sortDesc();
+        $comm = $items->pluck('commission')->filter(fn ($c) => $c > 0)->sort()->values();
+
+        return [
+            'price_bands' => $bands,
+            'best_band' => collect($bands)->sortByDesc('sold')->first(),
+            'shops' => $byShop->count(),
+            'top3_share' => $share((int) $byShop->take(3)->sum()),
+            'non_mall_share' => $share((int) $items->where('shop_type', '!=', 'Mall')->sum('sold')),
+            'commission' => $comm->count() ? ['min' => $comm->first(), 'median' => $comm[(int) floor(($comm->count() - 1) / 2)], 'max' => $comm->last()] : null,
+        ];
     }
 
     public function trends(Request $request)
