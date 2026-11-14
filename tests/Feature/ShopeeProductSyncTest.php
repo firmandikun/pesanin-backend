@@ -68,6 +68,25 @@ class ShopeeProductSyncTest extends TestCase
         $this->assertSame('VAR-BIRU', $rows[1]->sku);
     }
 
+    /** Orders synced before the product had a SKU still get SKU Induk/Variasi in the list (filled at read time). */
+    public function test_order_list_fills_skus_from_listing_at_read_time(): void
+    {
+        $user = User::factory()->create();
+        $shop = $this->shop($user);
+        (new ShopeeSync)->upsertOrder($shop, ['order_sn' => 'OLD', 'order_status' => 'PROCESSED', 'create_time' => time(), 'item_list' => [
+            ['item_id' => 777, 'model_id' => 9, 'item_name' => 'Kaos', 'model_quantity_purchased' => 1],
+        ]]);
+        // The product gets its SKUs only afterwards.
+        MarketplaceListing::create([
+            'user_id' => $user->id, 'marketplace_shop_id' => $shop->id, 'item_id' => 777, 'model_id' => 9,
+            'name' => 'Kaos', 'item_sku' => 'INDUK-1', 'sku' => 'VAR-BIRU', 'price' => 50000, 'stock' => 3, 'status' => 'NORMAL',
+        ]);
+
+        $item = $this->actingAs($user)->getJson('/api/orders?channel=shopee')->assertOk()->json('orders.data.0.items.0');
+        $this->assertSame('INDUK-1', $item['item_sku']);
+        $this->assertSame('VAR-BIRU', $item['model_sku']);
+    }
+
     /** When Shopee's order snapshot has no SKU, the item takes the SKU from the matched product listing. */
     public function test_order_item_falls_back_to_listing_sku(): void
     {

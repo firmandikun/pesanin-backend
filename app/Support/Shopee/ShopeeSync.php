@@ -414,6 +414,41 @@ class ShopeeSync
         return Order::where('code', $code)->exists() ? $code.'-'.$shop->id : $code;
     }
 
+    /**
+     * Read-time: fill empty item_sku / model_sku on order items from the current product listings, so the list and
+     * the printed label show SKU Induk / SKU Variasi even for orders synced before the product had a SKU.
+     */
+    public static function withListingSkus(iterable $orders): void
+    {
+        $orders = collect($orders);
+        $shopIds = $orders->pluck('marketplace_shop_id')->filter()->unique()->values();
+        if ($shopIds->isEmpty()) {
+            return;
+        }
+        $listings = MarketplaceListing::whereIn('marketplace_shop_id', $shopIds)->get(['marketplace_shop_id', 'item_id', 'model_id', 'sku', 'item_sku'])
+            ->keyBy(fn ($l) => $l->marketplace_shop_id.':'.$l->item_id.':'.$l->model_id);
+        foreach ($orders as $o) {
+            if (! is_array($o->items) || ! $o->items) {
+                continue;
+            }
+            $o->items = collect($o->items)->map(function ($i) use ($listings, $o) {
+                if (! isset($i['item_id'])) {
+                    return $i;
+                }
+                $modelId = (int) ($i['model_id'] ?? 0);
+                $l = $listings[$o->marketplace_shop_id.':'.$i['item_id'].':'.$modelId] ?? $listings[$o->marketplace_shop_id.':'.$i['item_id'].':0'] ?? null;
+                if (! $l) {
+                    return $i;
+                }
+                $i['item_sku'] = ($i['item_sku'] ?? null) ?: $l->item_sku;
+                $i['model_sku'] = ($i['model_sku'] ?? null) ?: ($modelId ? $l->sku : null);
+                $i['sku'] = ($i['sku'] ?? null) ?: ($i['model_sku'] ?: $i['item_sku']);
+
+                return $i;
+            })->all();
+        }
+    }
+
     public function upsertOrder(MarketplaceShop $shop, array $d): Order
     {
         $listings = MarketplaceListing::where('marketplace_shop_id', $shop->id)->get()->keyBy(fn ($l) => $l->item_id.':'.$l->model_id);
