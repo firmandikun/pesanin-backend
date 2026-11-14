@@ -38,6 +38,9 @@ class OrderController extends Controller
         $orders = $query->with(['product:id,name,type', 'marketplaceShop:id,shop_name,is_demo'])
             ->orderBy(in_array($request->query('sort'), self::SORTABLE, true) ? $request->query('sort') : 'created_at', $request->query('dir') === 'asc' ? 'asc' : 'desc')
             ->paginate(min(1000, max(1, $request->integer('per_page', 10))));
+        if ($request->query('channel') === 'shopee') {
+            \App\Support\Shopee\ShopeeSync::withListingSkus($orders->getCollection());
+        }
 
         $extra = [];
         if ($request->query('channel') === 'shopee' && $request->boolean('facets')) {
