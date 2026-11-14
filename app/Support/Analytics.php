@@ -115,7 +115,9 @@ class Analytics
         $shops = MarketplaceShop::where('user_id', $user->id)->get()->keyBy('id');
 
         // Shopee Ads belong to the Shopee channel (per shop); Meta/TikTok/Google drive website & landing traffic.
-        $ads = AdSpend::where('user_id', $user->id)->whereBetween('spent_on', [$from->toDateString(), $to->toDateString()])
+        // spent_on is a WIB date; $from/$to are UTC moments, so compare WIB days (a UTC "today" also caught yesterday).
+        [$fromDay, $toDay] = [Dates::day($from), Dates::day($to)];
+        $ads = AdSpend::where('user_id', $user->id)->whereBetween('spent_on', [$fromDay, $toDay])
             ->when($channel === 'shopee' || $shopId, fn ($q) => $q->where('platform', 'shopee_ads'))
             ->when($channel && $channel !== 'shopee', fn ($q) => $q->where('platform', '!=', 'shopee_ads'))
             ->when($shopId, fn ($q) => $q->where('marketplace_shop_id', $shopId))
@@ -126,7 +128,7 @@ class Analytics
         // Biaya operasional (Pengeluaran) cut profit; a shop's costs belong to the Shopee channel,
         // business-wide costs (no shop) only show up in the overall figure.
         $opex = Expense::where('user_id', $user->id)->where('category', 'operational')
-            ->whereBetween('spent_on', [$from->toDateString(), $to->toDateString()])
+            ->whereBetween('spent_on', [$fromDay, $toDay])
             ->when($shopId, fn ($q) => $q->where('marketplace_shop_id', $shopId))
             ->when(! $shopId && $channel === 'shopee', fn ($q) => $q->whereNotNull('marketplace_shop_id'))
             ->when($channel && $channel !== 'shopee', fn ($q) => $q->whereNull('marketplace_shop_id'))
@@ -159,11 +161,11 @@ class Analytics
         $byChannel = collect($byChannel)->map(fn ($c) => self::finish($c))->sortByDesc('revenue')->values();
 
         $daily = [];
-        for ($d = $from->copy()->startOfDay(); $d <= $to; $d->addDay()) {
-            $daily[$d->toDateString()] = ['date' => $d->toDateString(), 'revenue' => 0, 'net' => 0, 'ads' => 0, 'opex' => 0];
+        foreach (Dates::days($from, $to) as $day) {
+            $daily[$day] = ['date' => $day, 'revenue' => 0, 'net' => 0, 'ads' => 0, 'opex' => 0];
         }
         foreach ($rows as $r) {
-            $k = $r['order']->created_at->toDateString();
+            $k = Dates::day($r['order']->created_at);
             if (isset($daily[$k])) {
                 $daily[$k]['revenue'] += $r['revenue'];
                 $daily[$k]['net'] += $r['revenue'] - $r['fees'] - $r['cogs'];
