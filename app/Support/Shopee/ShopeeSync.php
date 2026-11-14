@@ -242,11 +242,11 @@ class ShopeeSync
         // New or changed bookings, plus local ones in a listed status that Shopee no longer lists (moved on).
         $refresh = collect($listed)->filter(fn ($st, $sn) => ($local[$sn] ?? null) !== $st)->keys()->all();
         $stale = $local->filter(fn ($st, $sn) => isset($windows[$st]) && ! isset($listed[$sn]))->keys()->all();
-        // Open reservations synced before item image/SKU were stored (items JSON has no "image" key): refresh once so
-        // the Pengiriman Kilat rows show the product thumbnail and SKU.
+        // Open reservations synced before item image/SKU were stored (items JSON has no "item_sku" key, which was the
+        // last field added): refresh once so the Pengiriman Kilat rows and the printed label show thumbnail and SKU.
         $enrich = \App\Models\ShopeeBooking::where('marketplace_shop_id', $shop->id)
             ->whereIn('booking_status', ['READY_TO_SHIP', 'PROCESSED'])
-            ->where('items', 'not like', '%"image"%')->limit(500)->pluck('booking_sn')->all();
+            ->where('items', 'not like', '%"item_sku"%')->limit(500)->pluck('booking_sn')->all();
         $count = 0;
         foreach (array_chunk(array_values(array_unique([...$refresh, ...$stale, ...$enrich])), 50) as $chunk) {
             foreach ($this->api->bookingDetail($shop, $chunk) as $d) {
