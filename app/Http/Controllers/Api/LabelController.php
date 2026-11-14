@@ -138,8 +138,6 @@ class LabelController extends Controller
         $data = $request->validate(['order_ids' => 'required|array|min:1|max:50', 'order_ids.*' => 'integer']);
         $orders = $this->shopeeOrders($request, $data['order_ids']);
         abort_if($orders->isEmpty(), 422, 'Pilih pesanan Shopee.');
-        $locked = $orders->filter(fn ($o) => ! in_array($o->external_status, ['PROCESSED', 'READY_TO_SHIP', 'RETRY_SHIP'], true));
-        abort_if($locked->isNotEmpty(), 422, 'Resi tidak bisa dicetak lagi untuk pesanan yang sudah dalam pengiriman: '.$locked->pluck('external_order_sn')->implode(', '));
         abort_if($orders->pluck('marketplace_shop_id')->unique()->count() > 1, 422, 'Cetak resi Shopee per toko: pilih pesanan dari satu toko saja.');
         // Shopee only batches air waybills of the same logistics channel.
         abort_if($orders->pluck('courier')->unique()->count() > 1, 422, 'Shopee hanya bisa menggabungkan resi dari ekspedisi yang sama. Unduh per ekspedisi.');
@@ -148,6 +146,19 @@ class LabelController extends Controller
 
         $api = new ShopeeClient;
         $sync = new ShopeeSync;
+        // Re-read the status from Shopee first: parcels already handed over are skipped (their label can't be printed
+        // again) and move to "Dikirim"; the rest still print instead of failing the whole batch.
+        try {
+            foreach ($api->orderDetail($shop, $orders->pluck('external_order_sn')->all()) as $d) {
+                $sync->upsertOrder($shop, $d);
+            }
+            $orders = $orders->map(fn ($o) => $o->fresh(['marketplaceShop']));
+        } catch (ShopeeException) {
+            // Shopee unreachable: decide on the stored status.
+        }
+        $locked = $orders->filter(fn ($o) => ! in_array($o->external_status, ['PROCESSED', 'READY_TO_SHIP', 'RETRY_SHIP'], true));
+        $orders = $orders->reject(fn ($o) => $locked->contains('id', $o->id))->values();
+        abort_if($orders->isEmpty(), 422, 'Semua pesanan terpilih sudah dalam pengiriman, jadi resinya tidak dicetak lagi (dipindah ke tab Dikirim): '.$locked->pluck('external_order_sn')->implode(', '));
         // Tracking numbers are issued after the shipment is arranged; refresh any that are still missing.
         foreach ($orders->whereNull('tracking_number') as $o) {
             $o->tracking_number = $sync->order($shop, $o->external_order_sn)?->tracking_number;
@@ -161,7 +172,8 @@ class LabelController extends Controller
         // Printed now: the scheduled Telegram send leaves these out.
         \App\Models\Order::whereIn('id', $orders->pluck('id'))->update(['awb_printed_at' => now()]);
 
-        return response($pdf, 200, ['Content-Type' => 'application/pdf', 'Content-Disposition' => 'inline; filename="resi-shopee.pdf"']);
+        return response($pdf, 200, ['Content-Type' => 'application/pdf', 'Content-Disposition' => 'inline; filename="resi-shopee.pdf"',
+            'X-Awb-Skipped' => $locked->pluck('external_order_sn')->implode(',')]);
     }
 
     /** Air waybills for "Pengiriman Kilat" reservations (Shopee bookings), same flow as orders. */
@@ -172,11 +184,21 @@ class LabelController extends Controller
         abort_if($bookings->isEmpty(), 422, 'Pilih reservasi Pengiriman Kilat.');
         abort_if($bookings->pluck('marketplace_shop_id')->unique()->count() > 1, 422, 'Cetak resi per toko: pilih reservasi dari satu toko saja.');
         abort_if($bookings->pluck('shipping_carrier')->unique()->count() > 1, 422, 'Shopee hanya bisa menggabungkan resi dari ekspedisi yang sama. Unduh per ekspedisi.');
-        $notReady = $bookings->where('booking_status', '!=', 'PROCESSED');
-        abort_if($notReady->isNotEmpty(), 422, 'Resi hanya bisa dicetak untuk reservasi yang sudah diproses: '.$notReady->pluck('booking_sn')->implode(', '));
         $shop = $bookings->first()->marketplaceShop;
 
         $api = new ShopeeClient;
+        // Same as orders: refresh from Shopee, skip reservations that moved on (shipped/cancelled), print the rest.
+        try {
+            $sync = new ShopeeSync;
+            foreach ($api->bookingDetail($shop, $bookings->pluck('booking_sn')->all()) as $d) {
+                $sync->upsertBooking($shop, $d);
+            }
+            $bookings = $bookings->map(fn ($b) => $b->fresh(['marketplaceShop']));
+        } catch (ShopeeException) {
+        }
+        $notReady = $bookings->where('booking_status', '!=', 'PROCESSED');
+        $bookings = $bookings->reject(fn ($b) => $notReady->contains('id', $b->id))->values();
+        abort_if($bookings->isEmpty(), 422, 'Semua reservasi terpilih sudah tidak bisa dicetak (sudah dikirim atau belum diproses): '.$notReady->pluck('booking_sn')->implode(', '));
         foreach ($bookings->whereNull('tracking_number') as $b) {
             try {
                 $b->update(['tracking_number' => $api->bookingTrackingNumber($shop, $b->booking_sn) ?: null]);
@@ -191,7 +213,8 @@ class LabelController extends Controller
         }
         \App\Models\ShopeeBooking::whereIn('id', $bookings->pluck('id'))->update(['awb_printed_at' => now()]);
 
-        return response($pdf, 200, ['Content-Type' => 'application/pdf', 'Content-Disposition' => 'inline; filename="resi-kilat.pdf"']);
+        return response($pdf, 200, ['Content-Type' => 'application/pdf', 'Content-Disposition' => 'inline; filename="resi-kilat.pdf"',
+            'X-Awb-Skipped' => $notReady->pluck('booking_sn')->implode(',')]);
     }
 
     private function shopeeOrders(Request $request, array $ids)
