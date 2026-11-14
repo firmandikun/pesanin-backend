@@ -266,11 +266,14 @@ class OrderController extends Controller
             $inCancel = fn ($w, bool $arranged) => $w->where('external_status', 'IN_CANCEL')
                 ->where(fn ($t) => $arranged ? $t->whereNotNull('tracking_number')->where('tracking_number', '!=', '') : $t->whereNull('tracking_number')->orWhere('tracking_number', ''));
             match ($state) {
-                'to_ship' => $q->where(fn ($w) => $w->where('external_status', 'READY_TO_SHIP')->orWhere(fn ($x) => $inCancel($x, false))),
+                // Advance Fulfilment orders are shipped by Shopee, not the seller, so they live in their own tab and
+                // are excluded from the "Perlu Dikirim" states below.
+                'advance' => $q->where('shopee_auto_ship', true)->whereIn('external_status', ['READY_TO_SHIP', 'PROCESSED', 'RETRY_SHIP']),
+                'to_ship' => $q->where('shopee_auto_ship', false)->where(fn ($w) => $w->where('external_status', 'READY_TO_SHIP')->orWhere(fn ($x) => $inCancel($x, false))),
                 // Seller Centre's "Perlu Dikirim" tab: both of the above.
-                'perlu_kirim' => $q->whereIn('external_status', ['READY_TO_SHIP', 'PROCESSED', 'RETRY_SHIP', 'IN_CANCEL']),
+                'perlu_kirim' => $q->where('shopee_auto_ship', false)->whereIn('external_status', ['READY_TO_SHIP', 'PROCESSED', 'RETRY_SHIP', 'IN_CANCEL']),
                 // Already arranged; a failed pickup (RETRY_SHIP) waits for the courier to come back.
-                'processed' => $q->where(fn ($w) => $w->whereIn('external_status', ['PROCESSED', 'RETRY_SHIP'])->orWhere(fn ($x) => $inCancel($x, true))),
+                'processed' => $q->where('shopee_auto_ship', false)->where(fn ($w) => $w->whereIn('external_status', ['PROCESSED', 'RETRY_SHIP'])->orWhere(fn ($x) => $inCancel($x, true))),
                 // Seller Centre keeps a parcel being returned (TO_RETURN) under "Dikirim" too.
                 'shipping' => $q->whereIn('external_status', ['SHIPPED', 'TO_CONFIRM_RECEIVE', 'TO_RETURN']),
                 // "Selesai" defaults to orders completed today (sent done=all to see every completed order).

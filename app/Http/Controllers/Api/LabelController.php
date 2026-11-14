@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Models\MarketplaceShop;
 use App\Support\Shopee\ShopeeClient;
 use App\Support\Shopee\ShopeeException;
+use App\Support\Shopee\ShopeeShipper;
 use App\Support\Shopee\ShopeeSync;
 use Illuminate\Http\Request;
 
@@ -95,50 +96,12 @@ class LabelController extends Controller
             'items.*.tracking_number' => 'nullable|string|max:100',
         ]);
         $items = collect($data['items'])->keyBy('order_id');
-        $api = new ShopeeClient;
+        $shipper = new ShopeeShipper;
         $done = [];
         $failed = [];
         foreach ($this->shopeeOrders($request, $items->keys()->all()) as $order) {
-            $item = $items[$order->id];
-            if ($order->external_status !== 'READY_TO_SHIP') {
-                $failed[] = ['code' => $order->code, 'error' => 'bukan pesanan siap kirim ('.$order->external_status.')'];
-                continue;
-            }
-            // Sample shop: simulate what Shopee does (PROCESSED + tracking number issued).
-            if ($order->marketplaceShop->is_demo) {
-                $order->update(['external_status' => 'PROCESSED', 'tracking_number' => 'SPXID0'.random_int(40000000, 49999999)]);
-                $done[] = $order->code;
-                continue;
-            }
-            try {
-                $shop = $order->marketplaceShop;
-                $param = $api->shippingParameter($shop, $order->external_order_sn);
-                $needed = $param['info_needed'] ?? [];
-                $use = $item['method'];
-                if (! array_key_exists($use, $needed)) {
-                    throw new ShopeeException(match ($use) {
-                        'pickup' => 'ekspedisi ini tidak bisa dijemput, pilih drop-off',
-                        'dropoff' => 'ekspedisi ini tidak bisa drop-off, pilih pickup',
-                        default => 'metode pengiriman tidak tersedia',
-                    });
-                }
-                $api->shipOrder($shop, $order->external_order_sn, [$use => $this->methodBody($use, (array) $needed[$use], $param, $item)]);
-                ShopeeSync::markArranged($order);
-                try {
-                    $order->update(['tracking_number' => $api->trackingNumber($shop, $order->external_order_sn)]);
-                } catch (ShopeeException) {
-                    // issued asynchronously; the next sync picks it up
-                }
-                (new ShopeeSync)->order($shop, $order->external_order_sn);
-                $done[] = $order->code;
-            } catch (ShopeeException $e) {
-                // Shopee rejects manual arranging for Advance Fulfilment / Shopee-fulfilled orders; remember so the
-                // UI stops offering "Atur Pengiriman" for it (Shopee issues the AWB automatically).
-                if (preg_match('/manually arrange|advance fulfil/i', $e->getMessage())) {
-                    $order->update(['shopee_auto_ship' => true]);
-                }
-                $failed[] = ['code' => $order->code, 'error' => $e->getMessage()];
-            }
+            $r = $shipper->arrange($order, $items[$order->id]);
+            $r['ok'] ? $done[] = $order->code : $failed[] = ['code' => $order->code, 'error' => $r['error']];
         }
 
         return ['shipped' => $done, 'failed' => $failed];
@@ -166,35 +129,6 @@ class LabelController extends Controller
         }
 
         return ['ready' => $ready, 'total' => count($data['order_ids'])];
-    }
-
-    /** ship_order body for one method, filled with only the fields Shopee listed in info_needed. */
-    private function methodBody(string $method, array $fields, array $param, array $item): object
-    {
-        if ($method === 'pickup') {
-            return (object) $this->pickup($param['pickup']['address_list'] ?? [], $item['pickup_time_id'] ?? null);
-        }
-        $body = [];
-        foreach ($fields as $field) {
-            $value = match ($field) {
-                'branch_id' => $item['branch_id'] ?? ($param['dropoff']['branch_list'][0]['branch_id'] ?? null),
-                'slug' => $item['slug'] ?? ($param['dropoff']['slug_list'][0]['slug'] ?? null),
-                'sender_real_name' => $item['sender_real_name'] ?? null,
-                'tracking_no', 'tracking_number' => $item['tracking_number'] ?? null,
-                default => null,
-            };
-            if ($value === null || $value === '') {
-                throw new ShopeeException(match ($field) {
-                    'branch_id' => 'pilih counter drop-off',
-                    'sender_real_name' => 'isi nama pengirim untuk drop-off',
-                    'tracking_no', 'tracking_number' => 'isi nomor resi dari ekspedisi',
-                    default => "data {$field} wajib diisi",
-                });
-            }
-            $body[$field === 'tracking_no' ? 'tracking_number' : $field] = $value;
-        }
-
-        return (object) $body;
     }
 
     /** Shopee AWB PDF for orders of one shop. */
@@ -279,15 +213,4 @@ class LabelController extends Controller
     }
 
     /** Address flagged for pickup, with the chosen time slot when it exists there, else the earliest one. */
-    private function pickup(array $addresses, ?string $timeId = null): array
-    {
-        if (! $addresses) {
-            throw new ShopeeException('alamat pickup toko belum diatur di Shopee Seller Centre');
-        }
-        $addr = collect($addresses)->first(fn ($a) => in_array('pickup_address', $a['address_flag'] ?? [], true)) ?? $addresses[0];
-        $slots = collect($addr['time_slot_list'] ?? []);
-        $slot = $slots->first(fn ($t) => (string) $t['pickup_time_id'] === (string) $timeId) ?? $slots->first();
-
-        return ['address_id' => $addr['address_id'], 'pickup_time_id' => $slot['pickup_time_id'] ?? null];
-    }
 }

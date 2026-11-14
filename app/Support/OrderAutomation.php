@@ -29,12 +29,54 @@ class OrderAutomation
 
     public static function settings(User $user): array
     {
-        return ($user->settings['automation'] ?? []) + ['auto_ship' => false, 'auto_ship_cod' => false, 'digital_email' => true, 'digital_wa_template' => null];
+        return ($user->settings['automation'] ?? []) + [
+            'auto_ship' => false, 'auto_ship_cod' => false,
+            'auto_ship_shopee' => false, 'auto_ship_shopee_method' => 'auto',
+            'digital_email' => true, 'digital_wa_template' => null,
+        ];
     }
 
     public static function run(): array
     {
-        return ['shipped' => self::autoShip(), 'delivered' => self::deliverDigital()];
+        return ['shipped' => self::autoShip(), 'shopee_shipped' => self::shopeeAutoShip(), 'delivered' => self::deliverDigital()];
+    }
+
+    /**
+     * Auto "Atur Pengiriman" for Shopee: every READY_TO_SHIP order (not Advance Fulfilment, which Shopee ships
+     * itself) is arranged in the background so the seller need not open the web. Method per the seller's setting
+     * ("auto" = jemput kurir, fallback drop-off). Failures are retried up to MAX_TRIES, then the seller is notified.
+     */
+    public static function shopeeAutoShip(): int
+    {
+        $done = 0;
+        $users = User::whereHas('marketplaceShops', fn ($q) => $q->where('platform', 'shopee')->where('status', 'active')->where('is_demo', false))->get()
+            ->filter(fn ($u) => self::settings($u)['auto_ship_shopee']);
+        foreach ($users as $user) {
+            $pref = self::settings($user)['auto_ship_shopee_method'] ?: 'auto';
+            $sender = $user->store_name ?: $user->name;
+            $shipper = new \App\Support\Shopee\ShopeeShipper;
+            $orders = $user->orders()->active()->where('channel', 'shopee')
+                ->where('external_status', 'READY_TO_SHIP')->where('shopee_auto_ship', false)
+                ->where('auto_ship_tries', '<', self::MAX_TRIES)
+                ->whereHas('marketplaceShop', fn ($q) => $q->where('is_demo', false))
+                ->whereRaw('COALESCE(paid_at, created_at) >= ?', [now()->subDays(self::RECENT_DAYS)])
+                ->orderBy('id')->limit(30)->get();
+            foreach ($orders as $order) {
+                $r = $shipper->arrange($order, ['method' => $pref, 'sender_real_name' => $sender]);
+                if ($r['ok']) {
+                    $order->update(['auto_ship_error' => null]);
+                    $done++;
+                    continue;
+                }
+                $tries = $order->auto_ship_tries + 1;
+                $order->update(['auto_ship_tries' => $tries, 'auto_ship_error' => mb_substr((string) $r['error'], 0, 300)]);
+                if ($tries >= self::MAX_TRIES) {
+                    Notifier::send($user->id, 'order', 'Atur pengiriman otomatis gagal', "{$order->code}: {$r['error']} Atur manual dari Pesanan Shopee.", '/marketplace/orders', $order->id);
+                }
+            }
+        }
+
+        return $done;
     }
 
     /** Orders that may be booked automatically for this seller. */

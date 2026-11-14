@@ -304,15 +304,22 @@ class ShopeeSync
     public function upsertBooking(MarketplaceShop $shop, array $d): \App\Models\ShopeeBooking
     {
         $booking = \App\Models\ShopeeBooking::firstOrNew(['marketplace_shop_id' => $shop->id, 'booking_sn' => $d['booking_sn']]);
+        // For thumbnails on the Pengiriman Kilat rows: match each item to its product listing by item/model.
+        $listings = MarketplaceListing::where('marketplace_shop_id', $shop->id)->get()->keyBy(fn ($l) => $l->item_id.':'.$l->model_id);
         $booking->fill([
             'user_id' => $shop->user_id,
             'order_sn' => ($d['order_sn'] ?? '') ?: null,
             'booking_status' => $d['booking_status'] ?? 'READY_TO_SHIP',
             'shipping_carrier' => $d['shipping_carrier'] ?? $booking->shipping_carrier,
-            'items' => collect($d['item_list'] ?? [])->map(fn ($i) => [
-                'name' => $i['item_name'] ?? '', 'variant' => ($i['model_name'] ?? '') ?: null,
-                'sku' => ($i['model_sku'] ?? '') ?: (($i['item_sku'] ?? '') ?: null), 'qty' => (int) ($i['model_quantity'] ?? $i['model_quantity_purchased'] ?? 1),
-            ])->values()->all() ?: $booking->items,
+            'items' => collect($d['item_list'] ?? [])->map(function ($i) use ($listings) {
+                $listing = $listings[($i['item_id'] ?? 0).':'.($i['model_id'] ?? 0)] ?? $listings[($i['item_id'] ?? 0).':0'] ?? null;
+
+                return [
+                    'name' => $i['item_name'] ?? '', 'variant' => ($i['model_name'] ?? '') ?: null,
+                    'sku' => ($i['model_sku'] ?? '') ?: (($i['item_sku'] ?? '') ?: null), 'qty' => (int) ($i['model_quantity'] ?? $i['model_quantity_purchased'] ?? 1),
+                    'image' => ($i['image_info']['image_url'] ?? null) ?: ($listing->image ?? null),
+                ];
+            })->values()->all() ?: $booking->items,
             'booked_at' => ! empty($d['create_time']) ? Carbon::createFromTimestamp($d['create_time']) : $booking->booked_at,
         ]);
         if (! $booking->tracking_number && $booking->booking_status !== 'READY_TO_SHIP' && $booking->booking_status !== 'CANCELLED') {
@@ -400,14 +407,23 @@ class ShopeeSync
     public function upsertOrder(MarketplaceShop $shop, array $d): Order
     {
         $listings = MarketplaceListing::where('marketplace_shop_id', $shop->id)->get()->keyBy(fn ($l) => $l->item_id.':'.$l->model_id);
-        $items = collect($d['item_list'] ?? [])->map(fn ($i) => [
-            'item_id' => $i['item_id'], 'model_id' => $i['model_id'] ?? 0,
-            'name' => $i['item_name'], 'variant' => $i['model_name'] ?? null, 'sku' => ($i['model_sku'] ?? '') ?: (($i['item_sku'] ?? '') ?: null),
-            'item_sku' => ($i['item_sku'] ?? '') ?: null, 'model_sku' => ($i['model_sku'] ?? '') ?: null,
-            'qty' => (int) ($i['model_quantity_purchased'] ?? 1), 'price' => (int) round($i['model_discounted_price'] ?? $i['model_original_price'] ?? 0),
-            'image' => $i['image_info']['image_url'] ?? null,
-            'product_id' => $listings[$i['item_id'].':'.($i['model_id'] ?? 0)]->product_id ?? $listings[$i['item_id'].':0']->product_id ?? null,
-        ])->values();
+        $items = collect($d['item_list'] ?? [])->map(function ($i) use ($listings) {
+            // Match the product listing by item/model. Shopee's order snapshot often has empty SKUs (e.g. the SKU was
+            // added to the product after the order), so fall back to the listing's current SKUs: item_sku = parent
+            // (SKU Induk), its own sku = the variation SKU. This keeps the AWB label in sync with the product.
+            $listing = $listings[$i['item_id'].':'.($i['model_id'] ?? 0)] ?? $listings[$i['item_id'].':0'] ?? null;
+            $itemSku = (($i['item_sku'] ?? '') ?: null) ?? ($listing->item_sku ?? null);
+            $modelSku = (($i['model_sku'] ?? '') ?: null) ?? ($listing->sku ?? null);
+
+            return [
+                'item_id' => $i['item_id'], 'model_id' => $i['model_id'] ?? 0,
+                'name' => $i['item_name'], 'variant' => $i['model_name'] ?? null, 'sku' => $modelSku ?: $itemSku,
+                'item_sku' => $itemSku, 'model_sku' => $modelSku,
+                'qty' => (int) ($i['model_quantity_purchased'] ?? 1), 'price' => (int) round($i['model_discounted_price'] ?? $i['model_original_price'] ?? 0),
+                'image' => $i['image_info']['image_url'] ?? null,
+                'product_id' => $listing->product_id ?? $listings[$i['item_id'].':0']->product_id ?? null,
+            ];
+        })->values();
 
         // Right after "Atur pengiriman" Shopee can still report READY_TO_SHIP for a while;
         // don't let that stale read move an arranged order back to "Perlu dikirim".
