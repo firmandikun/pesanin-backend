@@ -16,7 +16,7 @@ class Member
 
     /** Owner-only: account, billing, keys/integrations, team management, connecting or removing channels. */
     private const OWNER_ONLY = [
-        '#^PUT me(/password)?$#', '#^\w+ (billing|integrations|banned-devices|activity-logs|balance)(/|$)#',
+        '#^PUT me(/password)?$#', '#^\w+ (billing|integrations|banned-devices|activity-logs|balance|marketplace/balance)(/|$)#',
         '#^\w+ r/(team|domains|notification-accounts)(/|$)#', '#^PUT user-settings$#',
         '#^(POST|DELETE) meta-ads(/(connect|token))?$#', '#^(POST|DELETE) meta-chat(/connect)?$#',
         '#^POST marketplace/shopee/(connect|complete|demo|share-link)$#', '#^DELETE marketplace/shops/#', '#^\w+ whatsapp/connect(/|$)#',
