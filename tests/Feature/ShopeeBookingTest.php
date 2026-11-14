@@ -142,4 +142,33 @@ class ShopeeBookingTest extends TestCase
         $this->assertSame('R1', $this->getJson('/api/marketplace/returns?filter=open')->json('data.0.return_sn'));
         $this->assertSame(2, $this->getJson('/api/marketplace/returns')->json('total'));
     }
+
+    public function test_selesai_tab_shows_orders_completed_today_by_default(): void
+    {
+        $user = User::factory()->create();
+        $shop = $this->shop($user);
+        Http::fake(['*' => Http::response(['response' => []])]);
+        $sync = new ShopeeSync;
+        $sync->upsertOrder($shop, ['order_sn' => 'TODAY', 'order_status' => 'COMPLETED', 'item_list' => [], 'create_time' => now()->subDays(5)->timestamp, 'update_time' => now()->timestamp]);
+        $sync->upsertOrder($shop, ['order_sn' => 'OLD', 'order_status' => 'COMPLETED', 'item_list' => [], 'create_time' => now()->subDays(40)->timestamp, 'update_time' => now()->subDays(30)->timestamp]);
+
+        $this->actingAs($user);
+        $sns = fn ($q) => collect($this->getJson("/api/orders?channel=shopee&shopee_state=done{$q}")->json('orders.data'))->pluck('external_order_sn')->sort()->values()->all();
+        $this->assertSame(['TODAY'], $sns(''));          // default = completed today
+        $this->assertSame(['OLD', 'TODAY'], $sns('&done=all')); // all completed
+    }
+
+    public function test_shop_list_reports_today_order_count(): void
+    {
+        $user = User::factory()->create();
+        $shop = $this->shop($user);
+        Http::fake(['*' => Http::response(['response' => []])]);
+        $sync = new ShopeeSync;
+        $sync->upsertOrder($shop, ['order_sn' => 'A', 'order_status' => 'COMPLETED', 'item_list' => [], 'create_time' => now()->timestamp]);
+        $sync->upsertOrder($shop, ['order_sn' => 'B', 'order_status' => 'COMPLETED', 'item_list' => [], 'create_time' => now()->subDays(3)->timestamp]);
+
+        $row = collect($this->actingAs($user)->getJson('/api/marketplace/shops')->json('shops'))->firstWhere('id', $shop->id);
+        $this->assertSame(2, $row['orders_count']);
+        $this->assertSame(1, $row['orders_today_count']);
+    }
 }

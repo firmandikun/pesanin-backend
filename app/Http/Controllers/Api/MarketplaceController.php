@@ -25,7 +25,9 @@ class MarketplaceController extends Controller
     public function shops(Request $request)
     {
         $user = $request->user();
-        $shops = $user->marketplaceShops()->withCount(['listings', 'orders'])->latest()->get();
+        $shops = $user->marketplaceShops()
+            ->withCount(['listings', 'orders', 'orders as orders_today_count' => fn ($q) => $q->whereDate('created_at', today())])
+            ->latest()->get();
 
         return [
             'shops' => $shops,

@@ -275,7 +275,9 @@ class OrderController extends Controller
                 'processed' => $q->where(fn ($w) => $w->whereIn('external_status', ['PROCESSED', 'RETRY_SHIP'])->orWhere(fn ($x) => $inCancel($x, true))),
                 // Seller Centre keeps a parcel being returned (TO_RETURN) under "Dikirim" too.
                 'shipping' => $q->whereIn('external_status', ['SHIPPED', 'TO_CONFIRM_RECEIVE', 'TO_RETURN']),
-                'done' => $q->where('external_status', 'COMPLETED'),
+                // "Selesai" defaults to orders completed today (sent done=all to see every completed order).
+                'done' => $q->where('external_status', 'COMPLETED')
+                    ->when($request->query('done') !== 'all', fn ($w) => $w->whereDate('completed_at', today())),
                 'cancelled' => $q->where('external_status', 'CANCELLED'),
                 // Pengembalian/Pembatalan → Pembatalan: cancelled orders and buyer cancel requests.
                 'pembatalan' => $q->whereIn('external_status', ['CANCELLED', 'IN_CANCEL']),
