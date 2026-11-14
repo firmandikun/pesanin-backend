@@ -96,4 +96,23 @@ class AwbScheduleTest extends TestCase
     {
         $this->assertSame(['08:00', '13:30'], AwbSchedule::times(['13:30', 'x', '25:00', '08:00', '08:00']));
     }
+
+    public function test_slots_read_new_and_legacy_settings(): void
+    {
+        $this->assertSame([['time' => '08:00', 'scope' => 'new'], ['time' => '13:00', 'scope' => 'new']], AwbSchedule::slots(['awb_times' => ['13:00', '08:00']]));
+        $this->assertSame(
+            [['time' => '07:00', 'scope' => 'all'], ['time' => '15:00', 'scope' => 'new']],
+            AwbSchedule::slots(['awb_slots' => [['time' => '15:00', 'scope' => 'x'], ['time' => '07:00', 'scope' => 'all'], ['time' => '99:00', 'scope' => 'all']]]),
+        );
+    }
+
+    /** An "all" slot resends every ready label, including the ones already printed. */
+    public function test_all_scope_includes_already_printed(): void
+    {
+        $this->seller(['awb_schedule' => true, 'awb_slots' => [['time' => '08:00', 'scope' => 'all']]]);
+
+        // A1 (never printed) + A2 (printed before) — both still waiting for pickup.
+        $this->assertSame(2, AwbSchedule::run(Carbon::parse('2026-11-15 08:02', 'Asia/Jakarta')));
+        $this->assertSame(['document'], $this->telegram);
+    }
 }

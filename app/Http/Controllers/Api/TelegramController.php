@@ -81,6 +81,7 @@ class TelegramController extends Controller
     public function sendNow(Request $request)
     {
         $user = $request->user();
+        $scope = $request->validate(['scope' => 'nullable|in:new,all'])['scope'] ?? 'new';
         try {
             AwbSchedule::telegram($user);
         } catch (RuntimeException $e) {
@@ -88,13 +89,13 @@ class TelegramController extends Controller
         }
         $php = (new PhpExecutableFinder)->find(false);
         if ($php && function_exists('exec') && ! app()->runningUnitTests()) {
-            @exec(sprintf('nohup %s %s awb:send %d >> %s 2>&1 &',
-                escapeshellarg($php), escapeshellarg(base_path('artisan')), $user->id, escapeshellarg(storage_path('logs/awb-send.log'))));
+            @exec(sprintf('nohup %s %s awb:send %d%s >> %s 2>&1 &',
+                escapeshellarg($php), escapeshellarg(base_path('artisan')), $user->id, $scope === 'all' ? ' --all' : '', escapeshellarg(storage_path('logs/awb-send.log'))));
 
             return ['started' => true];
         }
 
-        return ['started' => true, 'result' => AwbSchedule::send($user, 'Kirim manual')];
+        return ['started' => true, 'result' => AwbSchedule::send($user, 'Kirim manual', $scope)];
     }
 
     public function destroy(Request $request)

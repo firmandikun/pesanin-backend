@@ -104,10 +104,10 @@ Artisan::command('awb:schedule', function () {
 })->purpose('Send scheduled Shopee AWB PDFs to Telegram');
 \Illuminate\Support\Facades\Schedule::command('awb:schedule')->everyMinute()->withoutOverlapping(30);
 
-Artisan::command('awb:send {user}', function (int $user) {
+Artisan::command('awb:send {user} {--all : Every ready label, not only the unprinted ones}', function (int $user) {
     $u = \App\Models\User::findOrFail($user);
     try {
-        $r = \App\Support\AwbSchedule::send($u, 'Kirim manual');
+        $r = \App\Support\AwbSchedule::send($u, 'Kirim manual', $this->option('all') ? 'all' : 'new');
         $this->info("awb: {$r['count']} resi dikirim");
     } catch (\Throwable $e) {
         \App\Support\Notifier::send($u->id, 'order', 'Kirim resi ke Telegram gagal', mb_substr($e->getMessage(), 0, 200), '/settings/automation');

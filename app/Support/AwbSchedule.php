@@ -38,7 +38,7 @@ class AwbSchedule
             if (! $s['awb_schedule']) {
                 continue;
             }
-            foreach (self::times($s['awb_times']) as $hm) {
+            foreach (self::slots($s) as ['time' => $hm, 'scope' => $scope]) {
                 $slot = $now->copy()->setTimeFromTimeString($hm);
                 if ($slot->gt($now) || $slot->lt($now->copy()->subMinutes(15))) {
                     continue;
@@ -47,7 +47,7 @@ class AwbSchedule
                     continue;
                 }
                 try {
-                    $sent += self::send($user, "Jadwal {$hm} WIB")['count'];
+                    $sent += self::send($user, "Jadwal {$hm} WIB", $scope)['count'];
                 } catch (Throwable $e) {
                     Log::warning("AWB schedule {$user->id}: {$e->getMessage()}");
                     Notifier::send($user->id, 'order', 'Kirim resi ke Telegram gagal', mb_substr($e->getMessage(), 0, 200), '/settings/automation');
@@ -66,22 +66,45 @@ class AwbSchedule
             ->unique()->sort()->values()->all();
     }
 
-    /** @return array{count:int, failed:array} */
-    public static function send(User $user, string $label): array
+    /**
+     * Send slots from the automation settings: [{time:"08:00", scope:"new"|"all"}], one per time, sorted.
+     * "new" = only labels not printed yet; "all" = every ready label, printed or not. Older settings stored only
+     * `awb_times` (strings), read as "new".
+     *
+     * @return list<array{time:string, scope:string}>
+     */
+    public static function slots(array $settings): array
     {
+        $raw = is_array($settings['awb_slots'] ?? null)
+            ? $settings['awb_slots']
+            : array_map(fn ($t) => ['time' => $t, 'scope' => 'new'], self::times($settings['awb_times'] ?? []));
+        $valid = array_filter($raw, fn ($s) => is_array($s) && self::times([$s['time'] ?? null]));
+
+        return collect($valid)
+            ->map(fn ($s) => ['time' => $s['time'], 'scope' => ($s['scope'] ?? 'new') === 'all' ? 'all' : 'new'])
+            ->unique('time')->sortBy('time')->values()->all();
+    }
+
+    /**
+     * @param  string  $scope  "new" = only labels not printed yet; "all" = every ready label, printed or not
+     * @return array{count:int, failed:array}
+     */
+    public static function send(User $user, string $label, string $scope = 'new'): array
+    {
+        $onlyNew = $scope !== 'all';
         $tg = self::telegram($user);
         $chat = $user->integration('telegram')->settings['chat_id'];
 
         $notDemo = fn ($q) => $q->where('is_demo', false);
         $orders = $user->orders()->active()->where('channel', 'shopee')->whereIn('external_status', ['PROCESSED', 'RETRY_SHIP'])
-            ->whereNotNull('tracking_number')->where('tracking_number', '!=', '')->whereNull('awb_printed_at')
+            ->whereNotNull('tracking_number')->where('tracking_number', '!=', '')->when($onlyNew, fn ($q) => $q->whereNull('awb_printed_at'))
             ->whereHas('marketplaceShop', $notDemo)->with('marketplaceShop')->orderBy('id')->limit(self::MAX)->get();
         $bookings = ShopeeBooking::where('user_id', $user->id)->where('booking_status', 'PROCESSED')
-            ->whereNotNull('tracking_number')->where('tracking_number', '!=', '')->whereNull('awb_printed_at')
+            ->whereNotNull('tracking_number')->where('tracking_number', '!=', '')->when($onlyNew, fn ($q) => $q->whereNull('awb_printed_at'))
             ->whereHas('marketplaceShop', $notDemo)->with('marketplaceShop')->orderBy('id')->limit(self::MAX)->get();
 
         if ($orders->isEmpty() && $bookings->isEmpty()) {
-            $tg->sendMessage($chat, "{$label}: tidak ada resi Shopee baru untuk dicetak.");
+            $tg->sendMessage($chat, "{$label}: tidak ada resi Shopee ".($onlyNew ? 'baru ' : '').'untuk dicetak.');
 
             return ['count' => 0, 'failed' => []];
         }
@@ -95,7 +118,8 @@ class AwbSchedule
                 throw new RuntimeException('Resi gagal diambil dari Shopee: '.implode('; ', $failed));
             }
             $count = count($doneOrders) + count($doneBookings);
-            $caption = "{$label}: {$count} resi Shopee (".count($doneOrders).' pesanan, '.count($doneBookings).' Pengiriman Kilat).';
+            $caption = "{$label}: {$count} resi Shopee".($onlyNew ? ' belum tercetak' : ' (semua yang siap cetak)')
+                .' — '.count($doneOrders).' pesanan, '.count($doneBookings).' Pengiriman Kilat.';
             if ($failed) {
                 $caption .= "\nGagal diambil: ".implode('; ', $failed);
             }
