@@ -47,7 +47,7 @@ class ReportController extends Controller
                 'shopee_to_ship' => (clone $shopee)->where('external_status', 'READY_TO_SHIP')->count(),
                 // "Siap dicetak" must match the orders page "Telah diproses": processed orders PLUS processed
                 // Pengiriman Kilat reservations (they live in shopee_bookings, not orders).
-                'shopee_to_print' => (clone $shopee)->whereIn('external_status', ['PROCESSED', 'RETRY_SHIP'])->count()
+                'shopee_to_print' => (clone $shopee)->where('shopee_auto_ship', false)->whereIn('external_status', ['PROCESSED', 'RETRY_SHIP'])->count()
                     + \App\Models\ShopeeBooking::where('user_id', $user->id)->where('booking_status', 'PROCESSED')->count(),
                 'abandoned_today' => $user->orders()->where('is_abandoned', true)->whereNull('archived_at')->whereDate('created_at', today())->count(),
             ],

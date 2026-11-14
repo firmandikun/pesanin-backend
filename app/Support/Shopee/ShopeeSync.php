@@ -304,15 +304,22 @@ class ShopeeSync
     public function upsertBooking(MarketplaceShop $shop, array $d): \App\Models\ShopeeBooking
     {
         $booking = \App\Models\ShopeeBooking::firstOrNew(['marketplace_shop_id' => $shop->id, 'booking_sn' => $d['booking_sn']]);
+        // For thumbnails on the Pengiriman Kilat rows: match each item to its product listing by item/model.
+        $listings = MarketplaceListing::where('marketplace_shop_id', $shop->id)->get()->keyBy(fn ($l) => $l->item_id.':'.$l->model_id);
         $booking->fill([
             'user_id' => $shop->user_id,
             'order_sn' => ($d['order_sn'] ?? '') ?: null,
             'booking_status' => $d['booking_status'] ?? 'READY_TO_SHIP',
             'shipping_carrier' => $d['shipping_carrier'] ?? $booking->shipping_carrier,
-            'items' => collect($d['item_list'] ?? [])->map(fn ($i) => [
-                'name' => $i['item_name'] ?? '', 'variant' => ($i['model_name'] ?? '') ?: null,
-                'sku' => ($i['model_sku'] ?? '') ?: (($i['item_sku'] ?? '') ?: null), 'qty' => (int) ($i['model_quantity'] ?? $i['model_quantity_purchased'] ?? 1),
-            ])->values()->all() ?: $booking->items,
+            'items' => collect($d['item_list'] ?? [])->map(function ($i) use ($listings) {
+                $listing = $listings[($i['item_id'] ?? 0).':'.($i['model_id'] ?? 0)] ?? $listings[($i['item_id'] ?? 0).':0'] ?? null;
+
+                return [
+                    'name' => $i['item_name'] ?? '', 'variant' => ($i['model_name'] ?? '') ?: null,
+                    'sku' => ($i['model_sku'] ?? '') ?: (($i['item_sku'] ?? '') ?: null), 'qty' => (int) ($i['model_quantity'] ?? $i['model_quantity_purchased'] ?? 1),
+                    'image' => ($i['image_info']['image_url'] ?? null) ?: ($listing->image ?? null),
+                ];
+            })->values()->all() ?: $booking->items,
             'booked_at' => ! empty($d['create_time']) ? Carbon::createFromTimestamp($d['create_time']) : $booking->booked_at,
         ]);
         if (! $booking->tracking_number && $booking->booking_status !== 'READY_TO_SHIP' && $booking->booking_status !== 'CANCELLED') {

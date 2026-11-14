@@ -75,6 +75,24 @@ class ShopeeBookingTest extends TestCase
         $this->assertSame(['C'], $sns('cancelled'));
     }
 
+    public function test_advance_fulfilment_orders_have_their_own_tab(): void
+    {
+        $user = User::factory()->create();
+        $shop = $this->shop($user);
+        Http::fake(['*' => Http::response(['response' => []])]);
+        $sync = new ShopeeSync;
+        // Advance Fulfilment (Shopee-fulfilled) + a normal order, both READY_TO_SHIP.
+        $sync->upsertOrder($shop, ['order_sn' => 'AF', 'order_status' => 'READY_TO_SHIP', 'fulfillment_flag' => 'fulfilled_by_shopee', 'item_list' => [], 'create_time' => time()]);
+        $sync->upsertOrder($shop, ['order_sn' => 'SELF', 'order_status' => 'READY_TO_SHIP', 'fulfillment_flag' => 'fulfilled_by_local_seller', 'item_list' => [], 'create_time' => time()]);
+
+        $this->actingAs($user);
+        $sns = fn ($state) => collect($this->getJson("/api/orders?channel=shopee&shopee_state={$state}")->json('orders.data'))->pluck('external_order_sn')->all();
+        // The AF order shows only under the Advance Fulfilment tab, not Perlu Dikirim.
+        $this->assertSame(['AF'], $sns('advance'));
+        $this->assertSame(['SELF'], $sns('perlu_kirim'));
+        $this->assertSame(['SELF'], $sns('to_ship'));
+    }
+
     public function test_kilat_reservation_awb_can_be_printed(): void
     {
         $user = User::factory()->create();
