@@ -26,6 +26,8 @@ class ReportController extends Controller
         $orders = $user->orders()->active();
         $web = (clone $orders)->where('channel', '!=', 'shopee');
         $shopee = (clone $orders)->where('channel', 'shopee');
+        $shopeeTab = fn (string $state, string $bookingStatus) => OrderController::applyShopeeState((clone $shopee)->getQuery(), $state)->count()
+            + \App\Models\ShopeeBooking::where('user_id', $user->id)->where('booking_status', $bookingStatus)->count();
 
         $now = Analytics::profit($user, $from, $to);
         $prev = Analytics::profit($user, $prevFrom, $prevTo)['summary'];
@@ -44,11 +46,10 @@ class ReportController extends Controller
             'actions' => [
                 'pending' => (clone $web)->where('status', 'pending')->count(),
                 'confirm_transfer' => (clone $web)->where('payment_method', 'bank_transfer')->where('payment_status', 'unpaid')->whereNotIn('status', ['cancelled'])->count(),
-                'shopee_to_ship' => (clone $shopee)->where('external_status', 'READY_TO_SHIP')->count(),
-                // "Siap dicetak" must match the orders page "Telah diproses": processed orders PLUS processed
-                // Pengiriman Kilat reservations (they live in shopee_bookings, not orders).
-                'shopee_to_print' => (clone $shopee)->where('shopee_auto_ship', false)->whereIn('external_status', ['PROCESSED', 'RETRY_SHIP'])->count()
-                    + \App\Models\ShopeeBooking::where('user_id', $user->id)->where('booking_status', 'PROCESSED')->count(),
+                // Same filters as the Shopee orders page tabs, so the cards always equal them: "Perlu diproses" and
+                // "Telah diproses", each = orders + Pengiriman Kilat reservations (those live in shopee_bookings).
+                'shopee_to_ship' => $shopeeTab('to_ship', 'READY_TO_SHIP'),
+                'shopee_to_print' => $shopeeTab('processed', 'PROCESSED'),
                 'abandoned_today' => $user->orders()->where('is_abandoned', true)->whereNull('archived_at')->whereDate('created_at', today())->count(),
             ],
             'summary' => $pick($now['summary']),
