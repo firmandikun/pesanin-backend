@@ -42,7 +42,9 @@ class SalesReportSourcesTest extends TestCase
         $marketplace->user()->associate($user);
         $marketplace->save();
 
-        $response = $this->getJson('/api/reports/sales?from='.today()->toDateString().'&to='.today()->toDateString())->assertOk();
+        // Report days are WIB days (the app runs in UTC): use today's WIB date, or this fails between 00:00 and 07:00 WIB.
+        $day = now(\App\Support\Dates::TZ)->toDateString();
+        $response = $this->getJson("/api/reports/sales?from={$day}&to={$day}")->assertOk();
 
         $response->assertJsonPath('sources.0.type', 'social_media')
             ->assertJsonPath('sources.0.label', 'Media Sosial · Iklan Meta (FB/IG)')
