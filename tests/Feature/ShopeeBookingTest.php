@@ -166,9 +166,10 @@ class ShopeeBookingTest extends TestCase
         $sync = new ShopeeSync;
         $sync->upsertOrder($shop, ['order_sn' => 'A', 'order_status' => 'COMPLETED', 'item_list' => [], 'create_time' => now()->timestamp]);
         $sync->upsertOrder($shop, ['order_sn' => 'B', 'order_status' => 'COMPLETED', 'item_list' => [], 'create_time' => now()->subDays(3)->timestamp]);
+        $sync->upsertOrder($shop, ['order_sn' => 'C', 'order_status' => 'CANCELLED', 'item_list' => [], 'create_time' => now()->timestamp]);
 
         $row = collect($this->actingAs($user)->getJson('/api/marketplace/shops')->json('shops'))->firstWhere('id', $shop->id);
-        $this->assertSame(2, $row['orders_count']);
-        $this->assertSame(1, $row['orders_today_count']);
+        $this->assertSame(3, $row['orders_count']);
+        $this->assertSame(1, $row['orders_today_count']); // today, cancelled excluded (like Shopee)
     }
 }

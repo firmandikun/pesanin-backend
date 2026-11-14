@@ -394,6 +394,7 @@ class ShopeeSync
         $items = collect($d['item_list'] ?? [])->map(fn ($i) => [
             'item_id' => $i['item_id'], 'model_id' => $i['model_id'] ?? 0,
             'name' => $i['item_name'], 'variant' => $i['model_name'] ?? null, 'sku' => ($i['model_sku'] ?? '') ?: (($i['item_sku'] ?? '') ?: null),
+            'item_sku' => ($i['item_sku'] ?? '') ?: null, 'model_sku' => ($i['model_sku'] ?? '') ?: null,
             'qty' => (int) ($i['model_quantity_purchased'] ?? 1), 'price' => (int) round($i['model_discounted_price'] ?? $i['model_original_price'] ?? 0),
             'image' => $i['image_info']['image_url'] ?? null,
             'product_id' => $listings[$i['item_id'].':'.($i['model_id'] ?? 0)]->product_id ?? $listings[$i['item_id'].':0']->product_id ?? null,

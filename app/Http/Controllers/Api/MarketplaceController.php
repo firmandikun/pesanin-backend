@@ -26,7 +26,7 @@ class MarketplaceController extends Controller
     {
         $user = $request->user();
         $shops = $user->marketplaceShops()
-            ->withCount(['listings', 'orders', 'orders as orders_today_count' => fn ($q) => $q->whereDate('created_at', today())])
+            ->withCount(['listings', 'orders', 'orders as orders_today_count' => fn ($q) => $q->whereBetween('created_at', \App\Support\Dates::today())->where('external_status', '!=', 'CANCELLED')])
             ->latest()->get();
 
         return [
@@ -333,8 +333,7 @@ class MarketplaceController extends Controller
             'from' => 'nullable|date', 'to' => 'nullable|date', 'search' => 'nullable|string|max:100',
             'status' => 'nullable|string|max:30', 'page' => 'nullable|integer|min:1', 'per_page' => 'nullable|integer|min:10|max:1000',
         ]);
-        $to = Carbon::parse($data['to'] ?? today())->endOfDay();
-        $from = Carbon::parse($data['from'] ?? $to->copy()->subDays(29))->startOfDay();
+        [$from, $to] = \App\Support\Dates::range($data['from'] ?? null, $data['to'] ?? null);
         $rows = Analytics::transactions($request->user(), $from, $to, $shop->id)
             ->when($data['status'] ?? null, fn ($c, $status) => $c->where('status', $status))
             ->when($data['search'] ?? null, function ($c, $search) {

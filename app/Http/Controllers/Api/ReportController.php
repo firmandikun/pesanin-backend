@@ -19,8 +19,7 @@ class ReportController extends Controller
     {
         $user = $request->user();
         $days = in_array($request->integer('days', 7), [1, 7, 30, 90], true) ? $request->integer('days', 7) : 7;
-        $to = now()->endOfDay();
-        $from = now()->subDays($days - 1)->startOfDay();
+        [$from, $to] = \App\Support\Dates::lastDays($days);
         $prevTo = $from->copy()->subSecond();
         $prevFrom = $prevTo->copy()->subDays($days - 1)->startOfDay();
 
@@ -203,9 +202,6 @@ class ReportController extends Controller
 
     private function range(Request $request): array
     {
-        $to = Carbon::parse($request->query('to', today()->toDateString()))->endOfDay();
-        $from = Carbon::parse($request->query('from', $to->copy()->subDays(29)->toDateString()))->startOfDay();
-
-        return [$from, $to];
+        return \App\Support\Dates::range($request->query('from'), $request->query('to'));
     }
 }
