@@ -204,10 +204,19 @@ class AwbSchedule
         return [$parts, $doneOrders, $doneBookings, $failed];
     }
 
-    /** Label SKU per item: the variation SKU, else the product SKU. */
+    /** Label SKU per item: the variation SKU, else the product SKU, else "Nama Produk (Variasi)". */
     private static function skus(?array $items): array
     {
-        return collect($items ?? [])->map(fn ($i) => ($i['model_sku'] ?? null) ?: (($i['item_sku'] ?? null) ?: (($i['sku'] ?? null) ?: '-')))->values()->all();
+        return collect($items ?? [])->map(function ($i) {
+            $sku = ($i['model_sku'] ?? null) ?: (($i['item_sku'] ?? null) ?: ($i['sku'] ?? null));
+            if ($sku) {
+                return $sku;
+            }
+            $name = trim((string) ($i['name'] ?? ''));
+            $variant = trim((string) ($i['variant'] ?? ''));
+
+            return $name ? ($variant ? "{$name} ({$variant})" : $name) : '-';
+        })->values()->all();
     }
 
     /** Merge + post-process with the Node script (scripts/awb). False when Node or the script isn't available. */
