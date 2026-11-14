@@ -32,6 +32,7 @@ class OrderAutomation
         return ($user->settings['automation'] ?? []) + [
             'auto_ship' => false, 'auto_ship_cod' => false,
             'auto_ship_shopee' => false, 'auto_ship_shopee_method' => 'auto',
+            'awb_schedule' => false, 'awb_times' => ['08:00'],
             'digital_email' => true, 'digital_wa_template' => null,
         ];
     }

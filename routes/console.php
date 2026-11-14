@@ -96,6 +96,25 @@ Artisan::command('orders:automate', function () {
 })->purpose('Auto resi + digital product delivery');
 \Illuminate\Support\Facades\Schedule::command('orders:automate')->everyThirtySeconds()->withoutOverlapping();
 
+// Scheduled "cetak resi": at each seller's chosen times, send the unprinted Shopee AWBs to their Telegram.
+Artisan::command('awb:schedule', function () {
+    if ($n = \App\Support\AwbSchedule::run()) {
+        $this->info("awb: {$n} resi dikirim ke Telegram");
+    }
+})->purpose('Send scheduled Shopee AWB PDFs to Telegram');
+\Illuminate\Support\Facades\Schedule::command('awb:schedule')->everyMinute()->withoutOverlapping(30);
+
+Artisan::command('awb:send {user}', function (int $user) {
+    $u = \App\Models\User::findOrFail($user);
+    try {
+        $r = \App\Support\AwbSchedule::send($u, 'Kirim manual');
+        $this->info("awb: {$r['count']} resi dikirim");
+    } catch (\Throwable $e) {
+        \App\Support\Notifier::send($u->id, 'order', 'Kirim resi ke Telegram gagal', mb_substr($e->getMessage(), 0, 200), '/settings/automation');
+        $this->error($e->getMessage());
+    }
+})->purpose('Send the unprinted Shopee AWBs to Telegram now');
+
 // WhatsApp broadcast: send due broadcasts a small batch at a time (stays under Meta's tier).
 Artisan::command('broadcast:send', function () {
     $n = \App\Support\WhatsApp\BroadcastSender::run();

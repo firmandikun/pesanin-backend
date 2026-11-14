@@ -1,0 +1,10 @@
+{
+  "name": "pesanin-awb",
+  "private": true,
+  "description": "Server-side Shopee AWB post-processing (hide product names, '# | SKU | Qty' table) for the scheduled Telegram send.",
+  "type": "module",
+  "dependencies": {
+    "pdf-lib": "1.17.1",
+    "pdfjs-dist": "4.10.38"
+  }
+}

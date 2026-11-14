@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Models\MarketplaceShop;
+use App\Support\Shopee\ShopeeAwb;
 use App\Support\Shopee\ShopeeClient;
 use App\Support\Shopee\ShopeeException;
 use App\Support\Shopee\ShopeeShipper;
@@ -152,20 +153,13 @@ class LabelController extends Controller
             $o->tracking_number = $sync->order($shop, $o->external_order_sn)?->tracking_number;
         }
         abort_if($orders->contains(fn ($o) => ! $o->tracking_number), 422, 'Sebagian pesanan belum punya nomor resi. Atur pengiriman dulu, lalu coba lagi dalam beberapa saat.');
-        $sns = $orders->pluck('external_order_sn')->all();
         try {
-            $api->createShippingDocument($shop, $orders->pluck('tracking_number', 'external_order_sn')->all());
-            for ($i = 0; $i < 6; $i++) {
-                $pending = collect($api->shippingDocumentResult($shop, $sns))->where('status', 'PROCESSING')->count();
-                if (! $pending) {
-                    break;
-                }
-                usleep(800_000);
-            }
-            $pdf = $api->downloadShippingDocument($shop, $sns);
+            $pdf = (new ShopeeAwb($api))->orders($shop, $orders);
         } catch (ShopeeException $e) {
             abort(422, 'Resi Shopee belum bisa dicetak: '.$e->getMessage().'. Pastikan pesanan sudah diatur pengirimannya.');
         }
+        // Printed now: the scheduled Telegram send leaves these out.
+        \App\Models\Order::whereIn('id', $orders->pluck('id'))->update(['awb_printed_at' => now()]);
 
         return response($pdf, 200, ['Content-Type' => 'application/pdf', 'Content-Disposition' => 'inline; filename="resi-shopee.pdf"']);
     }
@@ -190,19 +184,12 @@ class LabelController extends Controller
             }
         }
         abort_if($bookings->contains(fn ($b) => ! $b->tracking_number), 422, 'Sebagian reservasi belum punya nomor resi dari Shopee. Coba lagi dalam beberapa saat.');
-        $sns = $bookings->pluck('booking_sn')->all();
         try {
-            $api->createBookingShippingDocument($shop, $bookings->pluck('tracking_number', 'booking_sn')->all());
-            for ($i = 0; $i < 6; $i++) {
-                if (! collect($api->bookingShippingDocumentResult($shop, $sns))->where('status', 'PROCESSING')->count()) {
-                    break;
-                }
-                usleep(800_000);
-            }
-            $pdf = $api->downloadBookingShippingDocument($shop, $sns);
+            $pdf = (new ShopeeAwb($api))->bookings($shop, $bookings);
         } catch (ShopeeException $e) {
             abort(422, 'Resi Pengiriman Kilat belum bisa dicetak: '.$e->getMessage());
         }
+        \App\Models\ShopeeBooking::whereIn('id', $bookings->pluck('id'))->update(['awb_printed_at' => now()]);
 
         return response($pdf, 200, ['Content-Type' => 'application/pdf', 'Content-Disposition' => 'inline; filename="resi-kilat.pdf"']);
     }

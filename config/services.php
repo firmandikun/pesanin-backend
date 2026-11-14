@@ -81,6 +81,11 @@ return [
 
     'binderbyte' => ['key' => env('BINDERBYTE_API_KEY')],
 
+    // Node.js for the scheduled AWB post-processing (scripts/awb). Empty = look in PATH, /usr/local/bin, /usr/bin.
+    'node' => [
+        'binary' => env('NODE_BINARY'),
+    ],
+
     'shopee' => [
         // Shopee Open Platform v2. Sandbox keys come from open.shopee.com → App → Test credentials.
         'partner_id' => (int) env('SHOPEE_PARTNER_ID', 0),
