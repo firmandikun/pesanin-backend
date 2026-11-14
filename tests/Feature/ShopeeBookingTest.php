@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Models\MarketplaceListing;
 use App\Models\MarketplaceShop;
 use App\Models\ShopeeBooking;
 use App\Models\User;
@@ -73,6 +74,27 @@ class ShopeeBookingTest extends TestCase
         $this->assertSame(['A'], $sns('processed'));
         $this->assertSame(['B'], $sns('to_ship'));
         $this->assertSame(['C'], $sns('cancelled'));
+    }
+
+    public function test_booking_items_take_sku_and_image_from_listing(): void
+    {
+        $user = User::factory()->create();
+        $shop = $this->shop($user);
+        MarketplaceListing::create([
+            'user_id' => $user->id, 'marketplace_shop_id' => $shop->id, 'item_id' => 55, 'model_id' => 7,
+            'name' => 'Kaos', 'item_sku' => 'INDUK-9', 'sku' => 'VAR-9', 'image' => 'http://img/x.jpg', 'price' => 1000, 'stock' => 1, 'status' => 'NORMAL',
+        ]);
+        Http::fake(['*' => Http::response(['response' => []])]);
+
+        $b = (new ShopeeSync)->upsertBooking($shop, [
+            'booking_sn' => 'BK1', 'booking_status' => 'PROCESSED', 'shipping_carrier' => 'SPX',
+            'item_list' => [['item_id' => 55, 'model_id' => 7, 'item_name' => 'Kaos', 'item_sku' => '', 'model_sku' => '', 'model_quantity' => 2]],
+        ]);
+
+        $item = $b->items[0];
+        $this->assertSame('VAR-9', $item['sku']);
+        $this->assertSame('INDUK-9', $item['item_sku']);
+        $this->assertSame('http://img/x.jpg', $item['image']);
     }
 
     public function test_advance_fulfilment_orders_have_their_own_tab(): void
