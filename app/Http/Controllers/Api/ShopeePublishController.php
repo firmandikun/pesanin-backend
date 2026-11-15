@@ -56,7 +56,7 @@ class ShopeePublishController extends Controller
             return implode(' › ', $names);
         };
 
-        return $all->where('leaf', true)->map(fn ($c) => ['id' => $c['id'], 'name' => $c['name'], 'path' => $path($c)]);
+        return $all->where('leaf', true)->map(fn ($c) => ['id' => $c['id'], 'name' => $c['name'], 'path' => $path($c)])->keyBy('id');
     }
 
     public function category(Request $request, int $category)
@@ -271,6 +271,57 @@ class ShopeePublishController extends Controller
 
         return ['item_id' => $itemId, 'listings' => count($listings), 'shop' => $shop->shop_name, 'status' => $item['item_status']]
             + $this->liveStatus($api, $shop, $itemId);
+    }
+
+    /**
+     * "Salin ke toko lain": an existing Shopee product of one of the seller's shops, shaped like the publish form
+     * (name, description, category, brand, attributes, photos, variations, price/stock, shipping, others) so it can be
+     * uploaded to other shops. Photos come back as URLs; the form re-uploads them.
+     */
+    public function source(Request $request, MarketplaceShop $shop, int $item)
+    {
+        abort_unless($shop->user_id === $request->user()->id && $shop->status === 'active', 404);
+        $api = new ShopeeClient;
+        try {
+            $b = $api->itemBaseInfo($shop, [$item])[0] ?? null;
+            abort_unless($b, 404, 'Produk tidak ditemukan di Shopee.');
+            $m = ! empty($b['has_model']) ? $api->modelList($shop, $item) : [];
+        } catch (ShopeeException $e) {
+            abort(422, 'Gagal mengambil produk dari Shopee: '.$e->getMessage());
+        }
+        $price = fn ($x) => (int) round($x['price_info'][0]['original_price'] ?? 0);
+        $stock = fn ($x) => (int) collect($x['stock_info_v2']['seller_stock'] ?? [])->sum('stock');
+        $desc = ($b['description_type'] ?? 'normal') === 'extended'
+            ? collect($b['description_info']['extended_description']['field_list'] ?? [])->where('field_type', 'text')->pluck('text')->implode("\n")
+            : ($b['description'] ?? '');
+        $tiers = collect($m['tier_variation'] ?? [])->map(fn ($t) => ['name' => mb_substr($t['name'] ?? '', 0, 14), 'options' => collect($t['option_list'] ?? [])->map(fn ($o) => mb_substr($o['option'] ?? '', 0, 20))->all()])->all();
+        $models = $tiers ? collect($m['model'] ?? [])->map(fn ($x) => ['index' => $x['tier_index'] ?? [], 'price' => $price($x), 'stock' => $stock($x), 'sku' => $x['model_sku'] ?? ''])->values()->all() : [];
+        $gtin = $b['gtin_code'] ?? collect($m['model'] ?? [])->pluck('gtin_code')->filter()->first();
+
+        return [
+            'source' => ['shop_id' => $shop->id, 'shop_name' => $shop->shop_name, 'item_id' => $item],
+            'name' => $b['item_name'] ?? '',
+            'description' => $desc,
+            'category' => $this->leaves($shop)->get((int) ($b['category_id'] ?? 0)),
+            'brand_id' => (int) ($b['brand']['brand_id'] ?? 0),
+            'images' => array_slice($b['image']['image_url_list'] ?? [], 0, 9),
+            'attributes' => collect($b['attribute_list'] ?? [])->map(fn ($a) => [
+                'id' => (int) $a['attribute_id'],
+                'value_ids' => collect($a['attribute_value_list'] ?? [])->pluck('value_id')->filter()->map(fn ($v) => (int) $v)->values()->all(),
+                'text' => collect($a['attribute_value_list'] ?? [])->firstWhere('value_id', 0)['original_value_name'] ?? '',
+                'unit' => collect($a['attribute_value_list'] ?? [])->firstWhere('value_id', 0)['value_unit'] ?? '',
+            ])->values()->all(),
+            'price' => $price($b), 'stock' => $stock($b), 'sku' => $b['item_sku'] ?? '',
+            'tiers' => $tiers, 'models' => $models,
+            'wholesale' => collect($b['wholesales'] ?? [])->map(fn ($w) => ['min' => (int) $w['min_count'], 'max' => (int) $w['max_count'], 'price' => (int) round($w['unit_original_price'] ?? $w['unit_price'] ?? 0)])->values()->all(),
+            'weight' => (int) round(((float) ($b['weight'] ?? 0)) * 1000), // kg → gram
+            'dims' => ['length' => (string) ($b['dimension']['package_length'] ?? ''), 'width' => (string) ($b['dimension']['package_width'] ?? ''), 'height' => (string) ($b['dimension']['package_height'] ?? '')],
+            'condition' => strtoupper($b['condition'] ?? 'NEW') === 'USED' ? 'USED' : 'NEW',
+            'dangerous' => (bool) ($b['item_dangerous'] ?? false),
+            'pre_order' => (bool) ($b['pre_order']['is_pre_order'] ?? false),
+            'days_to_ship' => (int) ($b['pre_order']['days_to_ship'] ?? 0),
+            'gtin' => $gtin && $gtin !== '00' ? $gtin : null,
+        ];
     }
 
     /** "Cek status": what Shopee says about an uploaded item now (it may still be under review, or banned). */
