@@ -40,6 +40,7 @@ class ShopeePublishTest extends TestCase
             ]]]),
             '*get_channel_list*' => Http::response(['response' => ['logistics_channel_list' => $channels]]),
             '*add_item*' => Http::response(['response' => ['item_id' => 555]]),
+            '*get_item_base_info*' => Http::response(['response' => ['item_list' => [['item_id' => 555, 'item_status' => 'REVIEWING']]]]),
             '*category_recommend*' => Http::response(['response' => ['category_id' => [2, 404]]]),
             '*init_tier_variation*' => Http::response(['response' => ['item_id' => 555, 'model' => [['model_id' => 71, 'tier_index' => [0]], ['model_id' => 72, 'tier_index' => [1]]]]]),
         ]);
@@ -134,7 +135,7 @@ class ShopeePublishTest extends TestCase
         Http::assertSent(fn ($r) => str_contains($r->url(), 'add_item') && $r['gtin_code'] === '00' && $r['condition'] === 'USED' && $r['item_dangerous'] === 1
             && $r['pre_order'] === ['is_pre_order' => true, 'days_to_ship' => 7] && $r['wholesale'] === [['min_count' => 3, 'max_count' => 10, 'unit_price' => 120000]]
             && $r['logistic_info'] === [['logistic_id' => 80003, 'enabled' => true]] && $r['item_status'] === 'UNLIST');
-        $this->assertSame('UNLIST', MarketplaceListing::sole()->status);
+        $this->assertSame('REVIEWING', MarketplaceListing::sole()->status); // listing follows Shopee's live status (faked as under review)
     }
 
     public function test_scheduled_publish_is_unlisted_until_then(): void
@@ -173,5 +174,15 @@ class ShopeePublishTest extends TestCase
         $this->postJson("/api/marketplace/publish/{$this->shop->id}", $this->body([
             'tiers' => [['name' => 'Ukuran', 'options' => ['5 meter']]], 'models' => [['index' => [0], 'price' => 0, 'stock' => 1]],
         ]))->assertStatus(422)->assertJsonFragment(['message' => 'Harga setiap variasi minimal Rp100.']);
+    }
+
+    /** After upload the result carries Shopee's real status (e.g. still under review) and the Seller Centre link. */
+    public function test_publish_reports_shopee_status_and_link(): void
+    {
+        $this->fakeShopee();
+        $this->postJson("/api/marketplace/publish/{$this->shop->id}", $this->body())->assertOk()
+            ->assertJson(['shopee_status' => 'REVIEWING', 'seller_centre_url' => 'https://seller.shopee.co.id/portal/product/555']);
+        $this->assertSame('REVIEWING', MarketplaceListing::sole()->status);
+        $this->getJson("/api/marketplace/publish/{$this->shop->id}/items/555")->assertOk()->assertJson(['item_id' => 555, 'shopee_status' => 'REVIEWING']);
     }
 }

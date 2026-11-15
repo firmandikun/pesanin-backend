@@ -269,7 +269,39 @@ class ShopeePublishController extends Controller
         }
         ActivityLog::record($request->user(), 'marketplace.publish', "Upload \"{$d['name']}\" ke {$shop->shop_name}");
 
-        return ['item_id' => $itemId, 'listings' => count($listings), 'shop' => $shop->shop_name, 'status' => $item['item_status']];
+        return ['item_id' => $itemId, 'listings' => count($listings), 'shop' => $shop->shop_name, 'status' => $item['item_status']]
+            + $this->liveStatus($api, $shop, $itemId);
+    }
+
+    /** "Cek status": what Shopee says about an uploaded item now (it may still be under review, or banned). */
+    public function status(Request $request, MarketplaceShop $shop, int $item)
+    {
+        abort_unless($shop->user_id === $request->user()->id, 404);
+
+        return ['item_id' => $item] + $this->liveStatus(new ShopeeClient, $shop, $item);
+    }
+
+    /**
+     * Shopee's own item_status (NORMAL / UNLIST / REVIEWING / BANNED / SHOPEE_DELETE / SELLER_DELETE) and the Seller Centre
+     * link, so "berhasil" never hides an item that Shopee is still checking or has blocked. Listing rows follow it.
+     */
+    private function liveStatus(ShopeeClient $api, MarketplaceShop $shop, int $itemId): array
+    {
+        $out = ['seller_centre_url' => "https://seller.shopee.co.id/portal/product/{$itemId}"];
+        try {
+            $info = $api->itemBaseInfo($shop, [$itemId])[0] ?? null;
+        } catch (Throwable) {
+            return $out;
+        }
+        if (! $info) {
+            return $out + ['shopee_status' => 'NOT_FOUND'];
+        }
+        $st = $info['item_status'] ?? null;
+        if ($st) {
+            MarketplaceListing::where('marketplace_shop_id', $shop->id)->where('item_id', $itemId)->update(['status' => $st]);
+        }
+
+        return $out + ['shopee_status' => $st];
     }
 
     /** UI attribute answers → Shopee attribute_list (dropdown ids, or value_id 0 + text/timestamp). */
