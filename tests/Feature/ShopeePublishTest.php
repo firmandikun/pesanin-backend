@@ -40,6 +40,7 @@ class ShopeePublishTest extends TestCase
             ]]]),
             '*get_channel_list*' => Http::response(['response' => ['logistics_channel_list' => $channels]]),
             '*add_item*' => Http::response(['response' => ['item_id' => 555]]),
+            '*category_recommend*' => Http::response(['response' => ['category_id' => [2, 404]]]),
             '*init_tier_variation*' => Http::response(['response' => ['item_id' => 555, 'model' => [['model_id' => 71, 'tier_index' => [0]], ['model_id' => 72, 'tier_index' => [1]]]]]),
         ]);
     }
@@ -87,5 +88,46 @@ class ShopeePublishTest extends TestCase
     {
         $this->fakeShopee([]);
         $this->postJson("/api/marketplace/publish/{$this->shop->id}", $this->body())->assertStatus(422)->assertJsonFragment(['message' => 'Belum ada jasa kirim aktif di toko ini. Aktifkan di Seller Centre → Pengaturan Pengiriman.']);
+    }
+
+    public function test_recommend_returns_known_leaf_categories(): void
+    {
+        $this->fakeShopee();
+        $this->getJson('/api/marketplace/publish/recommend?name=Serum+Vitamin+C')->assertOk()->assertExactJson([['id' => 2, 'name' => 'Serum', 'path' => 'Kecantikan › Serum']]);
+    }
+
+    /** Seller Centre fields: GTIN, kondisi, produk berbahaya, pre-order, grosir, jasa kirim pilihan, arsipkan. */
+    public function test_publish_sends_seller_centre_fields(): void
+    {
+        $this->fakeShopee([
+            ['logistics_channel_id' => 81017, 'logistics_channel_name' => 'J&T', 'enabled' => true],
+            ['logistics_channel_id' => 80003, 'logistics_channel_name' => 'Hemat Kargo', 'enabled' => true],
+        ]);
+        $this->postJson("/api/marketplace/publish/{$this->shop->id}", $this->body([
+            'gtin' => '00', 'condition' => 'USED', 'dangerous' => true, 'pre_order' => true, 'days_to_ship' => 7,
+            'wholesale' => [['min' => 3, 'max' => 10, 'price' => 120000]], 'channels' => ['Hemat Kargo'], 'status' => 'UNLIST',
+        ]))->assertOk()->assertJson(['status' => 'UNLIST']);
+        Http::assertSent(fn ($r) => str_contains($r->url(), 'add_item') && $r['gtin_code'] === '00' && $r['condition'] === 'USED' && $r['item_dangerous'] === 1
+            && $r['pre_order'] === ['is_pre_order' => true, 'days_to_ship' => 7] && $r['wholesale'] === [['min_count' => 3, 'max_count' => 10, 'unit_price' => 120000]]
+            && $r['logistic_info'] === [['logistic_id' => 80003, 'enabled' => true]] && $r['item_status'] === 'UNLIST');
+        $this->assertSame('UNLIST', MarketplaceListing::sole()->status);
+    }
+
+    public function test_scheduled_publish_is_unlisted_until_then(): void
+    {
+        $this->fakeShopee();
+        $at = now(\App\Support\Dates::TZ)->addDays(2)->setTime(9, 30);
+        $this->postJson("/api/marketplace/publish/{$this->shop->id}", $this->body(['publish_at' => $at->format('Y-m-d\TH:i')]))->assertOk();
+        Http::assertSent(fn ($r) => str_contains($r->url(), 'add_item') && $r['item_status'] === 'UNLIST' && $r['scheduled_publish_time'] === $at->timestamp);
+
+        $this->postJson("/api/marketplace/publish/{$this->shop->id}", $this->body(['publish_at' => now(\App\Support\Dates::TZ)->addMinutes(10)->format('Y-m-d\TH:i')]))
+            ->assertStatus(422)->assertJsonFragment(['message' => 'Jadwal tayang minimal 1 jam dari sekarang.']);
+    }
+
+    public function test_no_active_courier_after_selection_is_refused(): void
+    {
+        $this->fakeShopee();
+        $this->postJson("/api/marketplace/publish/{$this->shop->id}", $this->body(['channels' => []]))
+            ->assertStatus(422)->assertJsonFragment(['message' => 'Produk tidak dapat disimpan jika tidak ada jasa kirim yang aktif.']);
     }
 }

@@ -151,6 +151,7 @@ Route::middleware(['auth:sanctum', 'member', 'subscribed'])->group(function () {
     Route::delete('/meta-chat', [\App\Http\Controllers\Api\MetaChatController::class, 'disconnect']);
     Route::get('/marketplace/publish/categories', [\App\Http\Controllers\Api\ShopeePublishController::class, 'categories']);
     Route::get('/marketplace/publish/categories/{category}', [\App\Http\Controllers\Api\ShopeePublishController::class, 'category'])->whereNumber('category');
+    Route::get('/marketplace/publish/recommend', [\App\Http\Controllers\Api\ShopeePublishController::class, 'recommend'])->middleware('throttle:60,1');
     Route::get('/marketplace/publish/shops', [\App\Http\Controllers\Api\ShopeePublishController::class, 'shops']);
     Route::post('/marketplace/publish/images', [\App\Http\Controllers\Api\ShopeePublishController::class, 'images'])->middleware('throttle:30,1');
     Route::post('/marketplace/publish/{shop}', [\App\Http\Controllers\Api\ShopeePublishController::class, 'publish'])->middleware('throttle:120,1');
