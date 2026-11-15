@@ -43,6 +43,7 @@ class ShopeePendingOrderTest extends TestCase
 
     public function test_pending_order_has_its_own_tab_and_is_not_auto_arranged(): void
     {
+        Http::fake(fn () => Http::response(['response' => []]));
         $sync = new ShopeeSync;
         $sync->upsertOrder($this->shop, ['order_sn' => 'P1', 'order_status' => 'PENDING', 'pay_time' => time(), 'item_list' => [], 'create_time' => time()]);
         $sync->upsertOrder($this->shop, ['order_sn' => 'R1', 'order_status' => 'PROCESSED', 'pay_time' => time(), 'item_list' => [], 'create_time' => time()]);
@@ -61,6 +62,7 @@ class ShopeePendingOrderTest extends TestCase
 
     public function test_released_order_gets_fresh_auto_arrange_attempts(): void
     {
+        Http::fake(fn () => Http::response(['response' => []]));
         $sync = new ShopeeSync;
         $order = $sync->upsertOrder($this->shop, ['order_sn' => 'P1', 'order_status' => 'PENDING', 'pay_time' => time(), 'item_list' => [], 'create_time' => time()]);
         $order->update(['auto_ship_tries' => OrderAutomation::MAX_TRIES, 'auto_ship_error' => 'bukan pesanan siap kirim (PENDING)']);
@@ -68,5 +70,43 @@ class ShopeePendingOrderTest extends TestCase
         $sync->upsertOrder($this->shop, ['order_sn' => 'P1', 'order_status' => 'READY_TO_SHIP', 'pay_time' => time(), 'item_list' => [], 'create_time' => time()]);
         $order->refresh();
         $this->assertSame(['READY_TO_SHIP', 0, null], [$order->external_status, (int) $order->auto_ship_tries, $order->auto_ship_error]);
+    }
+
+    /**
+     * Auto-arrange re-reads orders right before arranging: one stored as READY_TO_SHIP that Shopee now holds as
+     * Tertunda is moved to that tab and skipped; the one that is really ready is arranged straight away.
+     */
+    public function test_auto_arrange_rechecks_and_skips_orders_shopee_now_holds(): void
+    {
+        $sync = new ShopeeSync;
+        $sync->upsertOrder($this->shop, ['order_sn' => 'HOLD', 'order_status' => 'READY_TO_SHIP', 'pay_time' => time(), 'item_list' => [], 'create_time' => time()]);
+        $sync->upsertOrder($this->shop, ['order_sn' => 'OK', 'order_status' => 'READY_TO_SHIP', 'pay_time' => time(), 'item_list' => [], 'create_time' => time()]);
+        $shipped = [];
+        Http::fake(function ($req) use (&$shipped) {
+            $url = $req->url();
+            if (str_contains($url, 'get_order_detail')) {
+                return Http::response(['response' => ['order_list' => [
+                    ['order_sn' => 'HOLD', 'order_status' => 'PENDING', 'pay_time' => time(), 'item_list' => [], 'create_time' => time()],
+                    ['order_sn' => 'OK', 'order_status' => in_array('OK', $shipped, true) ? 'PROCESSED' : 'READY_TO_SHIP', 'pay_time' => time(), 'item_list' => [], 'create_time' => time()],
+                ]]]);
+            }
+            if (str_contains($url, 'get_shipping_parameter')) {
+                return Http::response(['response' => ['info_needed' => ['pickup' => ['address_id']], 'pickup' => ['address_list' => [[
+                    'address_id' => 9, 'address_flag' => ['pickup_address'], 'time_slot_list' => [['pickup_time_id' => 'T1']],
+                ]]]]]);
+            }
+            if (str_contains($url, 'ship_order')) {
+                $shipped[] = $req['order_sn'] ?? 'OK';
+
+                return Http::response(['response' => []]);
+            }
+
+            return Http::response(['response' => []]);
+        });
+
+        $this->assertSame(1, OrderAutomation::shopeeAutoShip());
+        $this->assertSame(['OK'], $shipped);
+        $hold = Order::firstWhere('external_order_sn', 'HOLD');
+        $this->assertSame(['PENDING', 0], [$hold->external_status, (int) $hold->auto_ship_tries]);
     }
 }
