@@ -11,6 +11,7 @@ use App\Support\Shopee\ShopeeClient;
 use App\Support\Shopee\ShopeeException;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
 use Throwable;
 
 /**
@@ -133,12 +134,12 @@ class ShopeePublishController extends Controller
     public function video(Request $request)
     {
         $request->validate([
-            'file' => 'required|file|mimetypes:video/mp4,video/quicktime|max:30720',
+            'file' => 'required|file|max:30720',
         ], [
-            'file.mimetypes' => 'Video harus berformat MP4 atau MOV.',
             'file.max' => 'Ukuran video maksimal 30 MB.',
         ]);
         $file = $request->file('file');
+        abort_unless(in_array(strtolower($file->getClientOriginalExtension()), ['mp4', 'mov', 'm4v'], true), 422, 'Video harus berformat MP4, MOV, atau M4V.');
         try {
             return [
                 'video_upload_id' => (new ShopeeClient)->uploadVideo($file->get(), $file->getClientOriginalName()),
@@ -146,6 +147,13 @@ class ShopeePublishController extends Controller
                 'size' => $file->getSize(),
             ];
         } catch (ShopeeException $e) {
+            Log::warning('Shopee product video upload failed', [
+                'user_id' => $request->user()?->id,
+                'filename' => $file->getClientOriginalName(),
+                'size' => $file->getSize(),
+                'mime' => $file->getMimeType(),
+                'error' => $e->getMessage(),
+            ]);
             abort(422, 'Upload video ke Shopee gagal: '.$e->getMessage());
         }
     }
