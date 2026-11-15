@@ -129,6 +129,27 @@ class ShopeePublishController extends Controller
         return collect($out)->map(fn ($i) => $i + ['url' => $this->imageUrl($i['id'])]);
     }
 
+    /** Video: init → upload every part → complete/transcode → video_upload_id. */
+    public function video(Request $request)
+    {
+        $request->validate([
+            'file' => 'required|file|mimetypes:video/mp4,video/quicktime|max:30720',
+        ], [
+            'file.mimetypes' => 'Video harus berformat MP4 atau MOV.',
+            'file.max' => 'Ukuran video maksimal 30 MB.',
+        ]);
+        $file = $request->file('file');
+        try {
+            return [
+                'video_upload_id' => (new ShopeeClient)->uploadVideo($file->get(), $file->getClientOriginalName()),
+                'name' => $file->getClientOriginalName(),
+                'size' => $file->getSize(),
+            ];
+        } catch (ShopeeException $e) {
+            abort(422, 'Upload video ke Shopee gagal: '.$e->getMessage());
+        }
+    }
+
     /** Publish to ONE shop; the UI loops over the selected shops. */
     public function publish(Request $request, MarketplaceShop $shop)
     {
@@ -146,6 +167,7 @@ class ShopeePublishController extends Controller
             'weight' => 'required|integer|min:1|max:1000000', // grams
             'length' => 'nullable|integer|min:1|max:1000', 'width' => 'nullable|integer|min:1|max:1000', 'height' => 'nullable|integer|min:1|max:1000',
             'image_ids' => 'required|array|min:1|max:9', 'image_ids.*' => 'string',
+            'video_upload_id' => 'nullable|string|max:150',
             'attributes' => 'nullable|array',
             'attributes.*.id' => 'required|integer',
             'attributes.*.value_ids' => 'nullable|array', 'attributes.*.value_ids.*' => 'integer',
@@ -205,6 +227,7 @@ class ShopeePublishController extends Controller
                 'wholesale' => ! empty($d['wholesale'])
                     ? collect($d['wholesale'])->map(fn ($w) => ['min_count' => $w['min'], 'max_count' => $w['max'], 'unit_price' => $w['price']])->all() : null,
                 'image' => ['image_id_list' => array_values($d['image_ids'])],
+                'video_upload_id' => $d['video_upload_id'] ?? null,
                 'brand' => ['brand_id' => (int) ($d['brand_id'] ?? 0), 'original_brand_name' => $d['brand_name'] ?? 'NoBrand'],
                 'logistic_info' => collect($channels)->map(fn ($c) => ['logistic_id' => $c['id'], 'enabled' => true])->all(),
                 'attribute_list' => $this->attributeList($d['attributes'] ?? []) ?: null,

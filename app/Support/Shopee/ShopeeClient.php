@@ -370,6 +370,56 @@ class ShopeeClient
         return $id;
     }
 
+    /**
+     * Upload one MP4 through Shopee's multipart video flow.
+     *
+     * The returned upload id is the value accepted by v2.product.add_item. Completing the
+     * upload starts Shopee's transcoding; it is not the same thing as merely uploading a file.
+     */
+    public function uploadVideo(string $bytes, string $filename): string
+    {
+        $init = $this->partnerPost('/api/v2/media/init_video_upload', [
+            'file_md5' => md5($bytes),
+            'file_size' => strlen($bytes),
+        ]);
+        $response = $init['response'] ?? [];
+        $uploadId = (string) ($response['video_upload_id'] ?? '');
+        if ($uploadId === '') {
+            throw new ShopeeException('Shopee tidak mengembalikan video_upload_id.');
+        }
+
+        // Use Shopee's suggested size when present. Five MiB is a safe fallback and keeps
+        // each request comfortably below common proxy limits.
+        $partSize = max(1024 * 1024, (int) ($response['part_size'] ?? 5 * 1024 * 1024));
+        $parts = str_split($bytes, $partSize);
+        foreach ($parts as $index => $part) {
+            $this->uploadVideoPart($uploadId, $index, $part, $filename);
+        }
+
+        $this->partnerPost('/api/v2/media/complete_video_upload', ['video_upload_id' => $uploadId], 120);
+
+        return $uploadId;
+    }
+
+    private function uploadVideoPart(string $uploadId, int $partSeq, string $bytes, string $filename): void
+    {
+        $path = '/api/v2/media/upload_video_part';
+        $ts = time();
+        $url = $this->host.$path.'?'.http_build_query([
+            'partner_id' => $this->partnerId,
+            'timestamp' => $ts,
+            'sign' => $this->sign($path, $ts),
+        ]);
+        $res = Http::timeout(120)->acceptJson()
+            ->attach('video', $bytes, $filename, ['Content-Type' => 'video/mp4'])
+            ->post($url, [
+                'video_upload_id' => $uploadId,
+                'part_seq' => $partSeq,
+                'content_md5' => md5($bytes),
+            ]);
+        $this->unwrap($res->json() ?? [], $res->status());
+    }
+
     public function addItem(MarketplaceShop $shop, array $item): array
     {
         return $this->post($shop, '/api/v2/product/add_item', $item)['response'] ?? [];
@@ -478,6 +528,20 @@ class ShopeeClient
         $ts = time();
         $url = $this->host.$path.'?'.http_build_query(['partner_id' => $this->partnerId, 'timestamp' => $ts, 'sign' => $this->sign($path, $ts)]);
         $res = Http::timeout(30)->acceptJson()->withBody(json_encode($body), 'application/json')->post($url);
+
+        return $this->unwrap($res->json() ?? [], $res->status());
+    }
+
+    /** Partner-level JSON endpoint (media uploads do not belong to a single shop). */
+    private function partnerPost(string $path, array $body, int $timeout = 30): array
+    {
+        $ts = time();
+        $url = $this->host.$path.'?'.http_build_query([
+            'partner_id' => $this->partnerId,
+            'timestamp' => $ts,
+            'sign' => $this->sign($path, $ts),
+        ]);
+        $res = Http::timeout($timeout)->acceptJson()->withBody(json_encode($body, JSON_UNESCAPED_SLASHES), 'application/json')->post($url);
 
         return $this->unwrap($res->json() ?? [], $res->status());
     }

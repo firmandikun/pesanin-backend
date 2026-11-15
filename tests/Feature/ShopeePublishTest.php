@@ -72,6 +72,30 @@ class ShopeePublishTest extends TestCase
         $this->assertSame([555, 0, $p->id, 40000], [(int) $l->item_id, (int) $l->model_id, $l->product_id, (int) $l->cost_price]);
     }
 
+    public function test_publish_sends_completed_video_upload_id(): void
+    {
+        $this->fakeShopee();
+        $this->postJson("/api/marketplace/publish/{$this->shop->id}", $this->body([
+            'video_upload_id' => 'sg-video-upload-1',
+        ]))->assertOk();
+
+        Http::assertSent(fn ($r) => str_contains($r->url(), 'add_item') && $r['video_upload_id'] === 'sg-video-upload-1');
+    }
+
+    public function test_video_upload_runs_init_parts_and_complete_flow(): void
+    {
+        Http::fake([
+            '*init_video_upload*' => Http::response(['response' => ['video_upload_id' => 'sg-upload-1', 'part_size' => 5 * 1024 * 1024]]),
+            '*upload_video_part*' => Http::response(['error' => '', 'message' => '']),
+            '*complete_video_upload*' => Http::response(['error' => '', 'message' => '']),
+        ]);
+
+        $this->assertSame('sg-upload-1', (new \App\Support\Shopee\ShopeeClient)->uploadVideo(str_repeat('x', 1024), 'demo.mp4'));
+
+        Http::assertSentCount(3);
+        Http::assertSent(fn ($r) => str_contains($r->url(), 'complete_video_upload') && $r['video_upload_id'] === 'sg-upload-1');
+    }
+
     public function test_publish_with_variants(): void
     {
         $this->fakeShopee();
