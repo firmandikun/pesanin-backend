@@ -47,6 +47,32 @@ class OrderAutomation
      * itself) is arranged in the background so the seller need not open the web. Method per the seller's setting
      * ("auto" = jemput kurir, fallback drop-off). Failures are retried up to MAX_TRIES, then the seller is notified.
      */
+    /**
+     * Re-read the orders from Shopee right before arranging them and keep only those still READY_TO_SHIP, so an order
+     * Shopee holds as "Tertunda" (PENDING, under review) is moved to its tab instead of being arranged. Covers orders
+     * stored before PENDING was requested and ones Shopee puts on hold after they came in. A failed read keeps the
+     * list as is (arranging then fails safely and is retried).
+     */
+    private static function freshFromShopee(\Illuminate\Support\Collection $orders): \Illuminate\Support\Collection
+    {
+        $api = new \App\Support\Shopee\ShopeeClient;
+        $sync = new \App\Support\Shopee\ShopeeSync;
+        foreach ($orders->groupBy('marketplace_shop_id') as $group) {
+            $shop = $group->first()->marketplaceShop;
+            try {
+                foreach ($group->chunk(50) as $chunk) {
+                    foreach ($api->orderDetail($shop, $chunk->pluck('external_order_sn')->all()) as $d) {
+                        $sync->upsertOrder($shop, $d);
+                    }
+                }
+            } catch (\Throwable) {
+                continue;
+            }
+        }
+
+        return $orders->map->fresh()->filter(fn ($o) => $o && $o->external_status === 'READY_TO_SHIP' && ! $o->shopee_auto_ship)->values();
+    }
+
     public static function shopeeAutoShip(): int
     {
         $done = 0;
@@ -62,6 +88,7 @@ class OrderAutomation
                 ->whereHas('marketplaceShop', fn ($q) => $q->where('is_demo', false))
                 ->whereRaw('COALESCE(paid_at, created_at) >= ?', [now()->subDays(self::RECENT_DAYS)])
                 ->orderBy('id')->limit(30)->get();
+            $orders = self::freshFromShopee($orders);
             foreach ($orders as $order) {
                 $r = $shipper->arrange($order, ['method' => $pref, 'sender_real_name' => $sender]);
                 if ($r['ok']) {

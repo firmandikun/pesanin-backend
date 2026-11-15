@@ -53,7 +53,8 @@ class ShopeeAutoShipTest extends TestCase
                 return Http::response(['response' => ['tracking_number' => 'SPX-AUTO']]);
             }
             if (str_contains($url, 'get_order_detail')) {
-                return Http::response(['response' => ['order_list' => [['order_sn' => 'R1', 'order_status' => 'PROCESSED', 'item_list' => [], 'create_time' => time()]]]]);
+                // Still READY_TO_SHIP when re-read before arranging; PROCESSED once ship_order went through.
+                return Http::response(['response' => ['order_list' => [['order_sn' => 'R1', 'order_status' => $shipped ? 'PROCESSED' : 'READY_TO_SHIP', 'item_list' => [], 'create_time' => time()]]]]);
             }
 
             return Http::response(['response' => []]);
