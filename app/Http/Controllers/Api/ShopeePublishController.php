@@ -24,7 +24,28 @@ class ShopeePublishController extends Controller
     /** Leaf categories with their full path, for a searchable picker. */
     public function categories(Request $request)
     {
-        $all = collect((new ShopeeClient)->categories($this->anyShop($request)))->keyBy('id');
+        return $this->leaves($this->anyShop($request))->sortBy('path')->values();
+    }
+
+    /** "Rekomendasi Kategori": Shopee's suggestions for the product name (+ cover image), as picker rows. */
+    public function recommend(Request $request)
+    {
+        $d = $request->validate(['name' => 'required|string|min:3|max:226', 'image_id' => 'nullable|string|max:100']);
+        $shop = $this->anyShop($request);
+        try {
+            $ids = (new ShopeeClient)->categoryRecommend($shop, $d['name'], $d['image_id'] ?? null);
+        } catch (ShopeeException) {
+            return [];
+        }
+        $leaves = $this->leaves($shop)->keyBy('id');
+
+        return collect($ids)->map(fn ($id) => $leaves[$id] ?? null)->filter()->take(5)->values();
+    }
+
+    /** Leaf categories with their full path ("Kecantikan › Perawatan Wajah › Serum"). */
+    private function leaves(MarketplaceShop $shop)
+    {
+        $all = collect((new ShopeeClient)->categories($shop))->keyBy('id');
         $path = function ($c) use ($all) {
             $names = [];
             for ($i = 0; $c && $i < 8; $i++, $c = $all[$c['parent']] ?? null) {
@@ -34,7 +55,7 @@ class ShopeePublishController extends Controller
             return implode(' › ', $names);
         };
 
-        return $all->where('leaf', true)->map(fn ($c) => ['id' => $c['id'], 'name' => $c['name'], 'path' => $path($c)])->sortBy('path')->values();
+        return $all->where('leaf', true)->map(fn ($c) => ['id' => $c['id'], 'name' => $c['name'], 'path' => $path($c)]);
     }
 
     public function category(Request $request, int $category)
@@ -57,6 +78,14 @@ class ShopeePublishController extends Controller
                 'name_max' => (int) ($limit['item_name_length_limit']['max_limit'] ?? 120),
                 'description_max' => (int) ($limit['item_description_length_limit']['max_limit'] ?? 3000),
                 'price_min' => (int) ($limit['price_limit']['min_limit'] ?? 100),
+                // Pre-order days range, and the days to ship of a normal (ready stock) item.
+                'dts_min' => (int) ($limit['dts_limit']['days_to_ship_limit']['min_limit'] ?? 5),
+                'dts_max' => (int) ($limit['dts_limit']['days_to_ship_limit']['max_limit'] ?? 15),
+                'dts_normal' => (int) ($limit['dts_limit']['non_pre_order_days_to_ship'] ?? 2),
+                'weight_mandatory' => (bool) ($limit['weight_limit']['weight_mandatory'] ?? true),
+                'dimension_mandatory' => (bool) ($limit['dimension_limit']['dimension_mandatory'] ?? false),
+                // Mandatory / Flexible / Optional — "00" means "Produk tanpa GTIN".
+                'gtin_rule' => $limit['gtin_limit']['gtin_validation_rule'] ?? 'Optional',
             ],
         ];
     }
@@ -130,14 +159,35 @@ class ShopeePublishController extends Controller
             'models.*.price' => 'required|integer|min:100',
             'models.*.stock' => 'required|integer|min:0',
             'models.*.sku' => 'nullable|string|max:100',
-        ]);
+            'gtin' => ['nullable', 'string', 'regex:/^(00|\d{8,14})$/'],
+            'condition' => 'nullable|in:NEW,USED',
+            'dangerous' => 'nullable|boolean',
+            'pre_order' => 'nullable|boolean',
+            'days_to_ship' => 'nullable|integer|min:1|max:90',
+            'wholesale' => 'nullable|array|max:5',
+            'wholesale.*.min' => 'required|integer|min:2',
+            'wholesale.*.max' => 'required|integer|gte:wholesale.*.min',
+            'wholesale.*.price' => 'required|integer|min:100',
+            'channels' => 'nullable|array', 'channels.*' => 'string|max:100', // courier names to enable; omitted = all
+            'status' => 'nullable|in:NORMAL,UNLIST', // Simpan & Tampilkan / Simpan & Arsipkan
+            'publish_at' => 'nullable|date', // Jadwal Ditampilkan, WIB "YYYY-MM-DDTHH:mm" (item stays UNLIST until then)
+        ], ['gtin.regex' => 'GTIN harus 8–14 digit angka, atau centang "Produk tanpa GTIN".']);
+        // Shopee accepts now+1h … now+90d, to the minute.
+        $scheduled = ! empty($d['publish_at']) ? \Carbon\Carbon::parse($d['publish_at'], \App\Support\Dates::TZ)->startOfMinute() : null;
+        abort_if($scheduled && $scheduled->lt(now()->addHour()), 422, 'Jadwal tayang minimal 1 jam dari sekarang.');
+        abort_if($scheduled && $scheduled->gt(now()->addDays(90)), 422, 'Jadwal tayang maksimal 90 hari lagi.');
         $product = ! empty($d['product_id']) ? Product::where('user_id', $request->user()->id)->find($d['product_id']) : null;
         $api = new ShopeeClient;
 
         try {
             $channels = $api->enabledChannels($shop);
             abort_if(! $channels, 422, 'Belum ada jasa kirim aktif di toko ini. Aktifkan di Seller Centre → Pengaturan Pengiriman.');
+            if (isset($d['channels'])) {
+                $channels = array_values(array_filter($channels, fn ($c) => in_array($c['name'], $d['channels'], true)));
+                abort_if(! $channels, 422, 'Produk tidak dapat disimpan jika tidak ada jasa kirim yang aktif.');
+            }
             $models = $d['models'] ?? [];
+            $gtin = $d['gtin'] ?? null;
             $item = array_filter([
                 'item_name' => $d['name'], 'description' => $d['description'], 'category_id' => $d['category_id'],
                 'original_price' => $models ? min(array_column($models, 'price')) : $d['price'],
@@ -146,7 +196,14 @@ class ShopeePublishController extends Controller
                 'weight' => round($d['weight'] / 1000, 3),
                 'dimension' => ! empty($d['length']) && ! empty($d['width']) && ! empty($d['height'])
                     ? ['package_length' => $d['length'], 'package_width' => $d['width'], 'package_height' => $d['height']] : null,
-                'item_status' => 'NORMAL', 'condition' => 'NEW',
+                'item_status' => $scheduled ? 'UNLIST' : ($d['status'] ?? 'NORMAL'),
+                'scheduled_publish_time' => $scheduled?->timestamp,
+                'condition' => $d['condition'] ?? 'NEW',
+                'item_dangerous' => isset($d['dangerous']) ? (int) $d['dangerous'] : null,
+                'gtin_code' => $models ? null : $gtin,
+                'pre_order' => ['is_pre_order' => (bool) ($d['pre_order'] ?? false)] + (isset($d['days_to_ship']) ? ['days_to_ship' => $d['days_to_ship']] : []),
+                'wholesale' => ! empty($d['wholesale'])
+                    ? collect($d['wholesale'])->map(fn ($w) => ['min_count' => $w['min'], 'max_count' => $w['max'], 'unit_price' => $w['price']])->all() : null,
                 'image' => ['image_id_list' => array_values($d['image_ids'])],
                 'brand' => ['brand_id' => (int) ($d['brand_id'] ?? 0), 'original_brand_name' => $d['brand_name'] ?? 'NoBrand'],
                 'logistic_info' => collect($channels)->map(fn ($c) => ['logistic_id' => $c['id'], 'enabled' => true])->all(),
@@ -162,21 +219,21 @@ class ShopeePublishController extends Controller
             if ($models && ! empty($d['tiers'])) {
                 $tierRes = $api->initTierVariation($shop, $itemId,
                     collect($d['tiers'])->map(fn ($t) => ['name' => $t['name'], 'option_list' => collect($t['options'])->map(fn ($o) => ['option' => $o])->all()])->all(),
-                    collect($models)->map(fn ($m) => array_filter(['tier_index' => $m['index'], 'original_price' => $m['price'], 'seller_stock' => [['stock' => $m['stock']]], 'model_sku' => $m['sku'] ?? null]))->all());
+                    collect($models)->map(fn ($m) => array_filter(['tier_index' => $m['index'], 'original_price' => $m['price'], 'seller_stock' => [['stock' => $m['stock']]], 'model_sku' => $m['sku'] ?? null, 'gtin_code' => $gtin], fn ($v) => $v !== null))->all());
                 foreach ($tierRes['model'] ?? [] as $i => $m) {
                     $src = collect($models)->first(fn ($x) => $x['index'] === ($m['tier_index'] ?? null)) ?? $models[$i] ?? [];
                     $listings[] = $this->listing($shop, $product, $itemId, (int) $m['model_id'], $d['name'],
-                        collect($m['tier_index'] ?? [])->map(fn ($ti, $k) => $d['tiers'][$k]['options'][$ti] ?? '')->implode(', '), $src['sku'] ?? null, $src['price'] ?? $d['price'], $src['stock'] ?? 0, $imageUrl);
+                        collect($m['tier_index'] ?? [])->map(fn ($ti, $k) => $d['tiers'][$k]['options'][$ti] ?? '')->implode(', '), $src['sku'] ?? null, $src['price'] ?? $d['price'], $src['stock'] ?? 0, $imageUrl, $item['item_status']);
                 }
             } else {
-                $listings[] = $this->listing($shop, $product, $itemId, 0, $d['name'], null, $d['sku'] ?? null, $d['price'], $d['stock'], $imageUrl);
+                $listings[] = $this->listing($shop, $product, $itemId, 0, $d['name'], null, $d['sku'] ?? null, $d['price'], $d['stock'], $imageUrl, $item['item_status']);
             }
         } catch (ShopeeException $e) {
             abort(422, $e->getMessage());
         }
         ActivityLog::record($request->user(), 'marketplace.publish', "Upload \"{$d['name']}\" ke {$shop->shop_name}");
 
-        return ['item_id' => $itemId, 'listings' => count($listings), 'shop' => $shop->shop_name];
+        return ['item_id' => $itemId, 'listings' => count($listings), 'shop' => $shop->shop_name, 'status' => $item['item_status']];
     }
 
     /** UI attribute answers → Shopee attribute_list (dropdown ids, or value_id 0 + text/timestamp). */
@@ -192,11 +249,11 @@ class ShopeePublishController extends Controller
         })->filter()->values()->all();
     }
 
-    private function listing(MarketplaceShop $shop, ?Product $product, int $itemId, int $modelId, string $name, ?string $modelName, ?string $sku, int $price, int $stock, string $image): MarketplaceListing
+    private function listing(MarketplaceShop $shop, ?Product $product, int $itemId, int $modelId, string $name, ?string $modelName, ?string $sku, int $price, int $stock, string $image, string $status = 'NORMAL'): MarketplaceListing
     {
         $l = MarketplaceListing::firstOrNew(['marketplace_shop_id' => $shop->id, 'item_id' => $itemId, 'model_id' => $modelId]);
         $l->user_id = $shop->user_id;
-        $l->fill(['product_id' => $product?->id, 'name' => $name, 'model_name' => $modelName, 'sku' => $sku, 'price' => $price, 'stock' => $stock, 'status' => 'NORMAL', 'image' => $image,
+        $l->fill(['product_id' => $product?->id, 'name' => $name, 'model_name' => $modelName, 'sku' => $sku, 'price' => $price, 'stock' => $stock, 'status' => $status, 'image' => $image,
             'cost_price' => $l->cost_price ?? $product?->cost_price])->save();
 
         return $l;

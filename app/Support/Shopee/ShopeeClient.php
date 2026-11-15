@@ -343,6 +343,12 @@ class ShopeeClient
             ->map(fn ($c) => ['id' => (int) $c['logistics_channel_id'], 'name' => $c['logistics_channel_name']])->values()->all();
     }
 
+    /** Category ids Shopee suggests for an item name (and optionally its cover image_id), best first. */
+    public function categoryRecommend(MarketplaceShop $shop, string $name, ?string $imageId = null): array
+    {
+        return array_map('intval', $this->get($shop, '/api/v2/product/category_recommend', array_filter(['item_name' => $name, 'product_cover_image' => $imageId]))['response']['category_id'] ?? []);
+    }
+
     public function itemLimit(MarketplaceShop $shop, int $categoryId): array
     {
         return $this->get($shop, '/api/v2/product/get_item_limit', ['category_id' => $categoryId])['response'] ?? [];
