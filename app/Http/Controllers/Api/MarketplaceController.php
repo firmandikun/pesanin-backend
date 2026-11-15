@@ -459,6 +459,9 @@ class MarketplaceController extends Controller
             ->when($request->query('status'), fn ($qq, $v) => $qq->where('status', $v))
             ->when($request->query('cost') === 'filled', fn ($qq) => $qq->where('cost_price', '>', 0))
             ->when($request->query('cost') === 'empty', fn ($qq) => $qq->where(fn ($w) => $w->whereNull('cost_price')->orWhere('cost_price', 0)))
+            // Stok: "out" = variations with no stock left (as counted in the "Stok habis" card), "in" = still in stock.
+            ->when($request->query('stock') === 'out', fn ($qq) => $qq->where('stock', '<=', 0))
+            ->when($request->query('stock') === 'in', fn ($qq) => $qq->where('stock', '>', 0))
             ->when($request->query('search'), fn ($qq, $s) => $qq->where(fn ($w) => $w->where('name', 'like', "%{$s}%")->orWhere('sku', 'like', "%{$s}%")))
             ->orderBy('name')->orderBy('model_name');
 
