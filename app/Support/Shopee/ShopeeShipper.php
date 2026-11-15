@@ -19,6 +19,9 @@ class ShopeeShipper
      */
     public function arrange(Order $order, array $opts = []): array
     {
+        if ($order->external_status === 'PENDING') {
+            return ['ok' => false, 'error' => 'pesanan masih Tertunda (sedang ditinjau Shopee), atur pengiriman setelah Shopee melepasnya'];
+        }
         if ($order->external_status !== 'READY_TO_SHIP') {
             return ['ok' => false, 'error' => 'bukan pesanan siap kirim ('.$order->external_status.')'];
         }

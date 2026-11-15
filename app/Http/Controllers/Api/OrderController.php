@@ -250,10 +250,12 @@ class OrderController extends Controller
         match ($state) {
             // Advance Fulfilment orders are shipped by Shopee, not the seller, so they live in their own tab and
             // are excluded from the "Perlu Dikirim" states below.
-            'advance' => $q->where('shopee_auto_ship', true)->whereIn('external_status', ['READY_TO_SHIP', 'PROCESSED', 'RETRY_SHIP']),
+            'advance' => $q->where('shopee_auto_ship', true)->whereIn('external_status', ['PENDING', 'READY_TO_SHIP', 'PROCESSED', 'RETRY_SHIP']),
+            // "Tertunda": paid orders Shopee is still reviewing; they cannot be arranged until Shopee releases them.
+            'pending' => $q->where('shopee_auto_ship', false)->where('external_status', 'PENDING'),
             'to_ship' => $q->where('shopee_auto_ship', false)->where(fn ($w) => $w->where('external_status', 'READY_TO_SHIP')->orWhere(fn ($x) => $inCancel($x, false))),
             // Seller Centre's "Perlu Dikirim" tab: both of the above.
-            'perlu_kirim' => $q->where('shopee_auto_ship', false)->whereIn('external_status', ['READY_TO_SHIP', 'PROCESSED', 'RETRY_SHIP', 'IN_CANCEL']),
+            'perlu_kirim' => $q->where('shopee_auto_ship', false)->whereIn('external_status', ['PENDING', 'READY_TO_SHIP', 'PROCESSED', 'RETRY_SHIP', 'IN_CANCEL']),
             // Already arranged; a failed pickup (RETRY_SHIP) waits for the courier to come back.
             'processed' => $q->where('shopee_auto_ship', false)->where(fn ($w) => $w->whereIn('external_status', ['PROCESSED', 'RETRY_SHIP'])->orWhere(fn ($x) => $inCancel($x, true))),
             // Seller Centre keeps a parcel being returned (TO_RETURN) under "Dikirim" too.

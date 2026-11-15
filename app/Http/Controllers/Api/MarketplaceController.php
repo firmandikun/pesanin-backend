@@ -383,7 +383,7 @@ class MarketplaceController extends Controller
         $feeCols = $rows->flatMap(fn ($r) => collect($r['fee_breakdown'])->pluck('label'))->unique()->values()->all();
         $head = ['No Pesanan', 'Tanggal', 'Status', 'Produk', 'Variasi', 'Qty', 'Jumlah (harga produk)', ...$feeCols,
             'Total Biaya', 'Pendapatan Bersih', 'HPP', 'Laba', 'Margin %', 'Penghasilan', 'Resi', 'Kurir'];
-        $statusLabel = ['UNPAID' => 'Belum bayar', 'READY_TO_SHIP' => 'Perlu dikirim', 'PROCESSED' => 'Siap diserahkan', 'RETRY_SHIP' => 'Kirim ulang',
+        $statusLabel = ['UNPAID' => 'Belum bayar', 'PENDING' => 'Tertunda', 'READY_TO_SHIP' => 'Perlu dikirim', 'PROCESSED' => 'Siap diserahkan', 'RETRY_SHIP' => 'Kirim ulang',
             'SHIPPED' => 'Dikirim', 'TO_CONFIRM_RECEIVE' => 'Menunggu konfirmasi', 'COMPLETED' => 'Selesai', 'IN_CANCEL' => 'Pembatalan', 'CANCELLED' => 'Dibatalkan', 'TO_RETURN' => 'Retur'];
         $name = 'transaksi-'.Str::slug($shop->shop_name).'-'.$from->format('Ymd').'-'.$to->format('Ymd').'.csv';
 

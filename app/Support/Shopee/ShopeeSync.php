@@ -175,7 +175,9 @@ class ShopeeSync
         // can be weeks old, so "Dikirim" looks back further than the to-ship tabs.
         // RETRY_SHIP / TO_CONFIRM_RECEIVE / TO_RETURN are not accepted as filters; local ones are refreshed by detail.
         $listable = ['READY_TO_SHIP' => 30, 'PROCESSED' => 30, 'SHIPPED' => 60];
-        $open = ['READY_TO_SHIP', 'PROCESSED', 'RETRY_SHIP', 'SHIPPED', 'TO_CONFIRM_RECEIVE'];
+        // PENDING ("Tertunda") is not a list filter: those orders are listed as READY_TO_SHIP and their detail
+        // (read with request_order_status_pending) tells PENDING, so they are re-checked every run until released.
+        $open = ['PENDING', 'READY_TO_SHIP', 'PROCESSED', 'RETRY_SHIP', 'SHIPPED', 'TO_CONFIRM_RECEIVE'];
         $listed = []; // order_sn => status Shopee reports
         foreach ($listable as $status => $days) {
             for ($end = now(), $from = $end->copy()->subDays($days); $from < $end; $from->addDays(15)) {
@@ -477,10 +479,13 @@ class ShopeeSync
             $d['order_status'] = 'PROCESSED';
         }
         [$status, $shipping] = $this->mapStatus($d['order_status'] ?? 'UNPAID');
+        // Shopee released a "Tertunda" order: give the automatic "Atur Pengiriman" a fresh start (it may have failed
+        // on it while it was still pending).
+        $released = $existing && $existing->external_status === 'PENDING' && ($d['order_status'] ?? null) === 'READY_TO_SHIP';
         $addr = $d['recipient_address'] ?? [];
         $subtotal = $items->sum(fn ($i) => $i['qty'] * $i['price']);
 
-        $build = function () use ($shop, $d, $items, $addr, $subtotal, $status, $shipping) {
+        $build = function () use ($shop, $d, $items, $addr, $subtotal, $status, $shipping, $released) {
             $order = Order::firstOrNew(['marketplace_shop_id' => $shop->id, 'external_order_sn' => $d['order_sn']]);
             $order->user_id = $shop->user_id;
             $order->fill([
@@ -516,6 +521,10 @@ class ShopeeSync
             ]);
             if (! $order->exists && ! empty($d['create_time'])) {
                 $order->created_at = Carbon::createFromTimestamp($d['create_time']);
+            }
+            if ($released) {
+                $order->auto_ship_tries = 0;
+                $order->auto_ship_error = null;
             }
 
             return $order;
@@ -573,7 +582,7 @@ class ShopeeSync
     }
 
     /** Statuses for which Shopee returns an (estimated or final) income breakdown. */
-    public const INCOME_STATUSES = ['READY_TO_SHIP', 'PROCESSED', 'RETRY_SHIP', 'SHIPPED', 'TO_CONFIRM_RECEIVE', 'COMPLETED', 'TO_RETURN'];
+    public const INCOME_STATUSES = ['PENDING', 'READY_TO_SHIP', 'PROCESSED', 'RETRY_SHIP', 'SHIPPED', 'TO_CONFIRM_RECEIVE', 'COMPLETED', 'TO_RETURN'];
 
     /** Shopee order_income fields shown to the seller: key => [label, +1 credit / -1 deduction]. */
     public const FEE_LINES = [
@@ -758,7 +767,7 @@ class ShopeeSync
     {
         return match ($s) {
             'UNPAID' => ['pending', 'not_shipped'],
-            'READY_TO_SHIP', 'PROCESSED', 'RETRY_SHIP' => ['processing', 'not_shipped'],
+            'PENDING', 'READY_TO_SHIP', 'PROCESSED', 'RETRY_SHIP' => ['processing', 'not_shipped'],
             'SHIPPED', 'TO_CONFIRM_RECEIVE' => ['processing', 'in_transit'],
             'COMPLETED' => ['completed', 'delivered'],
             'TO_RETURN' => ['refunded', 'returned'],
