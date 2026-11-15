@@ -155,6 +155,7 @@ Route::middleware(['auth:sanctum', 'member', 'subscribed'])->group(function () {
     Route::get('/marketplace/publish/shops', [\App\Http\Controllers\Api\ShopeePublishController::class, 'shops']);
     Route::post('/marketplace/publish/images', [\App\Http\Controllers\Api\ShopeePublishController::class, 'images'])->middleware('throttle:30,1');
     Route::post('/marketplace/publish/video', [\App\Http\Controllers\Api\ShopeePublishController::class, 'video'])->middleware('throttle:10,1');
+    Route::get('/marketplace/publish/{shop}/items/{item}/source', [\App\Http\Controllers\Api\ShopeePublishController::class, 'source'])->whereNumber('item')->middleware('throttle:60,1');
     Route::get('/marketplace/publish/{shop}/items/{item}', [\App\Http\Controllers\Api\ShopeePublishController::class, 'status'])->whereNumber('item')->middleware('throttle:60,1');
     Route::post('/marketplace/publish/{shop}', [\App\Http\Controllers\Api\ShopeePublishController::class, 'publish'])->middleware('throttle:120,1');
     Route::get('/meta-ads', [\App\Http\Controllers\Api\MetaAdsController::class, 'status']);

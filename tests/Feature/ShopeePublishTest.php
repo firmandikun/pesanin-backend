@@ -185,4 +185,46 @@ class ShopeePublishTest extends TestCase
         $this->assertSame('REVIEWING', MarketplaceListing::sole()->status);
         $this->getJson("/api/marketplace/publish/{$this->shop->id}/items/555")->assertOk()->assertJson(['item_id' => 555, 'shopee_status' => 'REVIEWING']);
     }
+
+    /** "Salin ke toko lain": an existing Shopee item comes back shaped like the publish form. */
+    public function test_source_returns_existing_item_as_form_data(): void
+    {
+        Http::fake([
+            '*get_category*' => Http::response(['response' => ['category_list' => [
+                ['category_id' => 1, 'parent_category_id' => 0, 'display_category_name' => 'Elektronik', 'original_category_name' => 'E', 'has_children' => true],
+                ['category_id' => 2, 'parent_category_id' => 1, 'display_category_name' => 'Kabel', 'original_category_name' => 'K', 'has_children' => false],
+            ]]]),
+            '*get_item_base_info*' => Http::response(['response' => ['item_list' => [[
+                'item_id' => 77, 'item_name' => 'Kabel Merah Hitam', 'description' => 'Per meter', 'category_id' => 2, 'item_sku' => 'KBL',
+                'brand' => ['brand_id' => 0, 'original_brand_name' => 'NoBrand'], 'weight' => '0.05', 'condition' => 'NEW', 'item_dangerous' => 0,
+                'dimension' => ['package_length' => 10, 'package_width' => 10, 'package_height' => 2], 'pre_order' => ['is_pre_order' => false, 'days_to_ship' => 2],
+                'image' => ['image_url_list' => ['https://cf.shopee.co.id/file/a', 'https://cf.shopee.co.id/file/b']],
+                'attribute_list' => [['attribute_id' => 5, 'attribute_value_list' => [['value_id' => 51]]], ['attribute_id' => 6, 'attribute_value_list' => [['value_id' => 0, 'original_value_name' => '2x0,12', 'value_unit' => 'mm']]]],
+                'has_model' => true, 'gtin_code' => '00',
+            ]]]]),
+            '*get_model_list*' => Http::response(['response' => [
+                'tier_variation' => [['name' => 'Ukuran', 'option_list' => [['option' => '5 meter'], ['option' => '10 meter']]]],
+                'model' => [
+                    ['model_id' => 1, 'tier_index' => [0], 'price_info' => [['original_price' => 28999]], 'stock_info_v2' => ['seller_stock' => [['stock' => 100]]], 'model_sku' => 'K5'],
+                    ['model_id' => 2, 'tier_index' => [1], 'price_info' => [['original_price' => 48980]], 'stock_info_v2' => ['seller_stock' => [['stock' => 100]]], 'model_sku' => 'K10'],
+                ],
+            ]]),
+        ]);
+        $this->getJson("/api/marketplace/publish/{$this->shop->id}/items/77/source")->assertOk()->assertJson([
+            'source' => ['shop_name' => 'Toko A', 'item_id' => 77], 'name' => 'Kabel Merah Hitam', 'category' => ['id' => 2, 'path' => 'Elektronik › Kabel'],
+            'images' => ['https://cf.shopee.co.id/file/a', 'https://cf.shopee.co.id/file/b'], 'weight' => 50, 'sku' => 'KBL', 'gtin' => null,
+            'attributes' => [['id' => 5, 'value_ids' => [51], 'text' => ''], ['id' => 6, 'value_ids' => [], 'text' => '2x0,12', 'unit' => 'mm']],
+            'tiers' => [['name' => 'Ukuran', 'options' => ['5 meter', '10 meter']]],
+            'models' => [['index' => [0], 'price' => 28999, 'stock' => 100, 'sku' => 'K5'], ['index' => [1], 'price' => 48980, 'stock' => 100, 'sku' => 'K10']],
+        ]);
+    }
+
+    public function test_source_of_another_users_shop_is_hidden(): void
+    {
+        $other = User::factory()->create();
+        $shop = new MarketplaceShop(['platform' => 'shopee', 'shop_id' => 10, 'shop_name' => 'B', 'status' => 'active', 'access_token' => 'a', 'refresh_token' => 'r', 'access_expires_at' => now()->addHour(), 'refresh_expires_at' => now()->addDays(30)]);
+        $shop->user_id = $other->id;
+        $shop->save();
+        $this->getJson("/api/marketplace/publish/{$shop->id}/items/77/source")->assertNotFound();
+    }
 }
