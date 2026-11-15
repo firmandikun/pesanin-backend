@@ -154,4 +154,24 @@ class ShopeePublishTest extends TestCase
         $this->postJson("/api/marketplace/publish/{$this->shop->id}", $this->body(['channels' => []]))
             ->assertStatus(422)->assertJsonFragment(['message' => 'Produk tidak dapat disimpan jika tidak ada jasa kirim yang aktif.']);
     }
+
+    /** With variations the item-level price can be empty (0): it is taken from the cheapest model. */
+    public function test_variants_without_item_price_are_accepted(): void
+    {
+        $this->fakeShopee();
+        $this->postJson("/api/marketplace/publish/{$this->shop->id}", $this->body([
+            'price' => 0, 'stock' => 0,
+            'tiers' => [['name' => 'Ukuran', 'options' => ['5 meter', '10 meter']]],
+            'models' => [['index' => [0], 'price' => 28999, 'stock' => 100], ['index' => [1], 'price' => 48980, 'stock' => 100]],
+        ]))->assertOk()->assertJson(['listings' => 2]);
+        Http::assertSent(fn ($r) => str_contains($r->url(), 'add_item') && $r['original_price'] == 28999 && $r['seller_stock'] === [['stock' => 200]]);
+    }
+
+    public function test_variant_price_below_minimum_has_indonesian_message(): void
+    {
+        $this->fakeShopee();
+        $this->postJson("/api/marketplace/publish/{$this->shop->id}", $this->body([
+            'tiers' => [['name' => 'Ukuran', 'options' => ['5 meter']]], 'models' => [['index' => [0], 'price' => 0, 'stock' => 1]],
+        ]))->assertStatus(422)->assertJsonFragment(['message' => 'Harga setiap variasi minimal Rp100.']);
+    }
 }

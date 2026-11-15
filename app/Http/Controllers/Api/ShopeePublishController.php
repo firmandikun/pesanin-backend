@@ -169,8 +169,9 @@ class ShopeePublishController extends Controller
             'category_id' => 'required|integer',
             'brand_id' => 'nullable|integer',
             'brand_name' => 'nullable|string|max:100',
-            'price' => 'required|integer|min:100',
-            'stock' => 'required|integer|min:0|max:999999',
+            // With variations the price/stock live on each model; the item-level ones are then optional.
+            'price' => 'exclude_with:models|required|integer|min:100',
+            'stock' => 'exclude_with:models|required|integer|min:0|max:999999',
             'sku' => 'nullable|string|max:100',
             'weight' => 'required|integer|min:1|max:1000000', // grams
             'length' => 'nullable|integer|min:1|max:1000', 'width' => 'nullable|integer|min:1|max:1000', 'height' => 'nullable|integer|min:1|max:1000',
@@ -201,7 +202,11 @@ class ShopeePublishController extends Controller
             'channels' => 'nullable|array', 'channels.*' => 'string|max:100', // courier names to enable; omitted = all
             'status' => 'nullable|in:NORMAL,UNLIST', // Simpan & Tampilkan / Simpan & Arsipkan
             'publish_at' => 'nullable|date', // Jadwal Ditampilkan, WIB "YYYY-MM-DDTHH:mm" (item stays UNLIST until then)
-        ], ['gtin.regex' => 'GTIN harus 8–14 digit angka, atau centang "Produk tanpa GTIN".']);
+        ], ['price.min' => 'Harga minimal Rp100.', 'price.required' => 'Harga wajib diisi.', 'models.*.price.min' => 'Harga setiap variasi minimal Rp100.', 'models.*.price.required' => 'Harga setiap variasi wajib diisi.', 'gtin.regex' => 'GTIN harus 8–14 digit angka, atau centang "Produk tanpa GTIN".']);
+        if (! empty($d['models'])) {
+            $d['price'] = min(array_column($d['models'], 'price'));
+            $d['stock'] = array_sum(array_column($d['models'], 'stock'));
+        }
         // Shopee accepts now+1h … now+90d, to the minute.
         $scheduled = ! empty($d['publish_at']) ? \Carbon\Carbon::parse($d['publish_at'], \App\Support\Dates::TZ)->startOfMinute() : null;
         abort_if($scheduled && $scheduled->lt(now()->addHour()), 422, 'Jadwal tayang minimal 1 jam dari sekarang.');
