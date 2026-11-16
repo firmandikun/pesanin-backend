@@ -283,12 +283,20 @@ class Analytics
     public static function adConversionMap(int $shopId, Carbon $from, Carbon $to): array
     {
         [$fromDay, $toDay] = [Dates::day($from), Dates::day($to)];
-        $campaigns = ShopeeAdCampaign::where('marketplace_shop_id', $shopId)
-            ->withSum(['stats as range_expense' => fn ($q) => $q->whereBetween('date', [$fromDay, $toDay])], 'expense')
-            ->withSum(['stats as range_orders' => fn ($q) => $q->whereBetween('date', [$fromDay, $toDay])], 'orders')
-            ->withSum('stats as total_expense', 'expense')
-            ->withSum('stats as total_orders', 'orders')
-            ->get();
+        $campaigns = ShopeeAdCampaign::where('marketplace_shop_id', $shopId)->get(['id', 'campaign_id', 'name', 'status', 'item_ids']);
+        if ($campaigns->isEmpty()) {
+            return [];
+        }
+        $campIds = $campaigns->pluck('id')->all();
+        $rangeSums = \App\Models\ShopeeAdStat::whereIn('shopee_ad_campaign_id', $campIds)
+            ->whereBetween('date', [$fromDay, $toDay])
+            ->selectRaw('shopee_ad_campaign_id, SUM(expense) as expense, SUM(orders) as orders')
+            ->groupBy('shopee_ad_campaign_id')
+            ->get()->keyBy('shopee_ad_campaign_id');
+        $totalSums = \App\Models\ShopeeAdStat::whereIn('shopee_ad_campaign_id', $campIds)
+            ->selectRaw('shopee_ad_campaign_id, SUM(expense) as expense, SUM(orders) as orders')
+            ->groupBy('shopee_ad_campaign_id')
+            ->get()->keyBy('shopee_ad_campaign_id');
 
         $agg = [];
         foreach ($campaigns as $c) {
@@ -297,6 +305,8 @@ class Analytics
                 continue;
             }
             $share = 1 / count($ids);
+            $rStat = $rangeSums[$c->id] ?? null;
+            $tStat = $totalSums[$c->id] ?? null;
             foreach ($ids as $itemId) {
                 $agg[$itemId] ??= [
                     'campaigns' => [],
@@ -310,10 +320,10 @@ class Analytics
                 if ($c->status === 'ongoing') {
                     $agg[$itemId]['ongoing'] = true;
                 }
-                $agg[$itemId]['range_expense'] += ((float) $c->range_expense) * $share;
-                $agg[$itemId]['range_orders'] += ((float) $c->range_orders) * $share;
-                $agg[$itemId]['total_expense'] += ((float) $c->total_expense) * $share;
-                $agg[$itemId]['total_orders'] += ((float) $c->total_orders) * $share;
+                $agg[$itemId]['range_expense'] += ((float) ($rStat->expense ?? 0)) * $share;
+                $agg[$itemId]['range_orders'] += ((float) ($rStat->orders ?? 0)) * $share;
+                $agg[$itemId]['total_expense'] += ((float) ($tStat->expense ?? 0)) * $share;
+                $agg[$itemId]['total_orders'] += ((float) ($tStat->orders ?? 0)) * $share;
             }
         }
 

@@ -439,7 +439,23 @@ class MarketplaceController extends Controller
             'status' => 'nullable|string|max:30', 'page' => 'nullable|integer|min:1', 'per_page' => 'nullable|integer|min:10|max:1000',
         ]);
         [$from, $to] = \App\Support\Dates::range($data['from'] ?? null, $data['to'] ?? null);
-        $allRows = Analytics::transactions($request->user(), $from, $to, $shop->id)
+        $user = $request->user();
+
+        // Versioned cache key so pagination (page 2, 3, …) and tab clicks reuse computed rows in <2ms,
+        // while any order sync, HPP edit, or ad sync immediately invalidates the cache key.
+        $orderVer = \App\Models\Order::where('marketplace_shop_id', $shop->id)->selectRaw('COUNT(*) as c, MAX(updated_at) as u')->first();
+        $listVer = MarketplaceListing::where('marketplace_shop_id', $shop->id)->max('updated_at');
+        $prodVer = \App\Models\Product::where('user_id', $user->id)->max('updated_at');
+        $adVer = \App\Models\ShopeeAdCampaign::where('marketplace_shop_id', $shop->id)->max('updated_at')
+            .':'.\App\Models\ShopeeAdStat::whereIn('shopee_ad_campaign_id', \App\Models\ShopeeAdCampaign::where('marketplace_shop_id', $shop->id)->select('id'))->max('updated_at');
+        $cacheKey = 'shopee:tx:'.md5( implode('|', [
+            $shop->id, $from->timestamp, $to->timestamp,
+            $orderVer->c ?? 0, $orderVer->u ?? '', $listVer ?? '', $prodVer ?? '', $adVer,
+        ]));
+
+        $baseRows = \Illuminate\Support\Facades\Cache::remember($cacheKey, 60, fn () => Analytics::transactions($user, $from, $to, $shop->id));
+
+        $allRows = $baseRows
             ->when($data['search'] ?? null, function ($c, $search) {
                 $needle = mb_strtolower($search);
 
