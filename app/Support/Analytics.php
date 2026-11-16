@@ -8,6 +8,7 @@ use App\Models\MarketplaceListing;
 use App\Models\MarketplaceShop;
 use App\Models\Order;
 use App\Models\Product;
+use App\Models\ShopeeAdCampaign;
 use App\Models\User;
 use Carbon\Carbon;
 use Illuminate\Support\Collection;
@@ -211,24 +212,118 @@ class Analytics
         self::$listingCosts = MarketplaceListing::where('user_id', $user->id)->where('marketplace_shop_id', $shopId)->where('cost_price', '>', 0)->get()
             ->mapWithKeys(fn ($l) => [$l->marketplace_shop_id.':'.$l->item_id.':'.$l->model_id => (int) $l->cost_price])->all();
         $feeRates = self::shopFeeRates($user);
+        $adItems = self::adConversionMap($shopId, $from, $to);
 
-        return $orders->map(function (Order $order) use ($costs, $feeRates) {
+        return $orders->map(function (Order $order) use ($costs, $feeRates, $adItems) {
             $money = self::breakdown($order, $costs, $feeRates);
             $netRevenue = $money['revenue'] - $money['fees'];
-            $profit = $netRevenue - $money['cogs'];
+            $grossProfit = $netRevenue - $money['cogs'];
+
+            $seenItems = [];
+            $isAdvertised = false;
+            $adCost = 0;
+            $items = collect($order->items ?? [])->map(function ($i) use ($adItems, $money, &$seenItems, &$isAdvertised, &$adCost) {
+                $itemId = (int) ($i['item_id'] ?? 0);
+                $ad = $itemId ? ($adItems[$itemId] ?? null) : null;
+                $lineAdCost = 0;
+                if ($ad) {
+                    $isAdvertised = true;
+                    // Count conversion cost once per advertised product (item_id) in an active sale order.
+                    if ($money['revenue'] > 0 && ! isset($seenItems[$itemId])) {
+                        $lineAdCost = (int) round($ad['cost_per_conversion']);
+                        $adCost += $lineAdCost;
+                        $seenItems[$itemId] = true;
+                    }
+                }
+
+                return $i + [
+                    'is_advertised' => (bool) $ad,
+                    'ad_campaign' => $ad['campaign'] ?? null,
+                    'ad_status' => $ad['status'] ?? null,
+                    'ad_cost_per_conversion' => $ad ? $ad['cost_per_conversion'] : 0,
+                    'ad_conversions' => $ad['conversions'] ?? 0,
+                    'ad_expense' => $ad['expense'] ?? 0,
+                    'ad_cost' => $lineAdCost,
+                ];
+            })->all();
+
+            $profit = $grossProfit - $adCost;
 
             return [
                 'id' => $order->id, 'order_sn' => $order->external_order_sn, 'created_at' => $order->created_at,
                 'status' => $order->external_status, 'customer_name' => $order->customer_name,
-                'tracking_number' => $order->tracking_number, 'courier' => $order->courier, 'items' => $order->items ?? [],
+                'tracking_number' => $order->tracking_number, 'courier' => $order->courier, 'items' => $items,
                 'quantity' => $order->quantity, 'gmv' => $money['gmv'], 'revenue' => $money['revenue'],
                 'fees' => $money['fees'], 'net_revenue' => $netRevenue, 'cogs' => $money['cogs'],
+                'is_advertised' => $isAdvertised, 'ad_cost' => $adCost, 'gross_profit' => $grossProfit,
                 'profit' => $profit, 'margin' => $money['revenue'] ? round($profit / $money['revenue'] * 100, 1) : 0,
                 'fee_final' => $money['fee_final'], 'missing_cost' => $money['missing_cost'],
                 'fee_breakdown' => $order->fee_breakdown ?: self::fallbackFeeLines($order, $money),
                 'fee_source' => $order->fee_breakdown ? 'shopee' : ($order->escrow_amount !== null ? 'summary' : 'estimate'),
             ];
         });
+    }
+
+    /**
+     * Per-item_id Shopee Ads conversion metrics (Biaya per Konversi = expense / broad_order) from synced
+     * ShopeeAdCampaign & ShopeeAdStat rows. Uses stats in [$from, $to] first, falling back to all synced stats.
+     *
+     * @return array<int, array{is_advertised: bool, campaign: string, status: string, expense: int, conversions: int, cost_per_conversion: float}>
+     */
+    public static function adConversionMap(int $shopId, Carbon $from, Carbon $to): array
+    {
+        [$fromDay, $toDay] = [Dates::day($from), Dates::day($to)];
+        $campaigns = ShopeeAdCampaign::where('marketplace_shop_id', $shopId)
+            ->withSum(['stats as range_expense' => fn ($q) => $q->whereBetween('date', [$fromDay, $toDay])], 'expense')
+            ->withSum(['stats as range_orders' => fn ($q) => $q->whereBetween('date', [$fromDay, $toDay])], 'orders')
+            ->withSum('stats as total_expense', 'expense')
+            ->withSum('stats as total_orders', 'orders')
+            ->get();
+
+        $agg = [];
+        foreach ($campaigns as $c) {
+            $ids = array_values(array_filter(array_map('intval', $c->item_ids ?? [])));
+            if (! $ids) {
+                continue;
+            }
+            $share = 1 / count($ids);
+            foreach ($ids as $itemId) {
+                $agg[$itemId] ??= [
+                    'campaigns' => [],
+                    'ongoing' => false,
+                    'range_expense' => 0.0,
+                    'range_orders' => 0.0,
+                    'total_expense' => 0.0,
+                    'total_orders' => 0.0,
+                ];
+                $agg[$itemId]['campaigns'][] = $c->name ?: "Kampanye {$c->campaign_id}";
+                if ($c->status === 'ongoing') {
+                    $agg[$itemId]['ongoing'] = true;
+                }
+                $agg[$itemId]['range_expense'] += ((float) $c->range_expense) * $share;
+                $agg[$itemId]['range_orders'] += ((float) $c->range_orders) * $share;
+                $agg[$itemId]['total_expense'] += ((float) $c->total_expense) * $share;
+                $agg[$itemId]['total_orders'] += ((float) $c->total_orders) * $share;
+            }
+        }
+
+        $out = [];
+        foreach ($agg as $itemId => $row) {
+            $useRange = $row['range_orders'] > 0 || ($row['range_expense'] > 0 && $row['total_orders'] <= 0);
+            $expense = $useRange ? $row['range_expense'] : $row['total_expense'];
+            $orders = $useRange ? $row['range_orders'] : $row['total_orders'];
+            $cpc = $orders > 0 ? round($expense / $orders, 2) : 0.0;
+            $out[$itemId] = [
+                'is_advertised' => true,
+                'campaign' => implode(', ', array_unique($row['campaigns'])),
+                'status' => $row['ongoing'] ? 'ongoing' : 'inactive',
+                'expense' => (int) round($expense),
+                'conversions' => (int) round($orders),
+                'cost_per_conversion' => $cpc,
+            ];
+        }
+
+        return $out;
     }
 
     /** Last 30 days vs the 30 before, per product across all channels, with stock cover. */

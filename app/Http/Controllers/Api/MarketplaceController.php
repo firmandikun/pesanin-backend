@@ -258,20 +258,64 @@ class MarketplaceController extends Controller
         $products = $campaignRows->flatMap(fn ($c) => collect($c['items'])->map(fn ($it) => ['item' => $it, 'share' => 1 / max(1, count($c['items'])), 'c' => $c]))
             ->groupBy(fn ($x) => $x['item']['item_id'])->map(function ($g) {
                 $sum = fn ($k) => (int) round($g->sum(fn ($x) => $x['c'][$k] * $x['share']));
+                $firstCamp = $g->first()['c'];
+                $budgets = $g->pluck('c.budget')->filter(fn ($b) => $b !== null && $b > 0);
 
-                return $g->first()['item'] + ['campaigns' => $g->count(), 'shared' => $g->contains(fn ($x) => $x['share'] < 1),
-                    'expense' => $sum('expense'), 'gmv' => $sum('gmv'), 'clicks' => $sum('clicks'), 'orders' => $sum('orders')];
+                return $g->first()['item'] + [
+                    'campaigns' => $g->count(),
+                    'shared' => $g->contains(fn ($x) => $x['share'] < 1),
+                    'status' => $g->contains(fn ($x) => $x['c']['status'] === 'ongoing') ? 'ongoing' : ($firstCamp['status'] ?? null),
+                    'ad_type' => $firstCamp['ad_type'] ?? null,
+                    'bidding_method' => $firstCamp['bidding_method'] ?? null,
+                    'budget' => $budgets->isEmpty() ? null : (int) $budgets->sum(),
+                    'expense' => $sum('expense'),
+                    'gmv' => $sum('gmv'),
+                    'clicks' => $sum('clicks'),
+                    'impressions' => $sum('impressions'),
+                    'orders' => $sum('orders'),
+                    'items_sold' => $sum('items_sold'),
+                ];
             })->sortByDesc('expense')->values();
 
         $daily = \App\Models\AdSpend::where('user_id', $u->id)->where('platform', 'shopee_ads')->where('synced', true)
             ->whereIn('marketplace_shop_id', $shopIds)->whereBetween('spent_on', [$from, $to]);
+        $dailyStats = \App\Models\ShopeeAdStat::whereIn('shopee_ad_campaign_id', $campaigns->pluck('id'))
+            ->whereBetween('date', [$from, $to])
+            ->selectRaw('date, SUM(impressions) as impressions, SUM(clicks) as clicks, SUM(expense) as stat_expense, SUM(gmv) as gmv, SUM(orders) as orders, SUM(items_sold) as items_sold')
+            ->groupBy('date')
+            ->get()
+            ->keyBy(fn ($r) => \Illuminate\Support\Carbon::parse($r->date)->toDateString());
+
+        $dailyRows = (clone $daily)->selectRaw('spent_on as date, SUM(amount) as expense')->groupBy('spent_on')->orderBy('spent_on')->get()
+            ->map(function ($d) use ($dailyStats) {
+                $dateStr = \Illuminate\Support\Carbon::parse($d->date)->toDateString();
+                $st = $dailyStats[$dateStr] ?? null;
+
+                return [
+                    'date' => $dateStr,
+                    'expense' => (int) $d->expense,
+                    'impressions' => (int) ($st->impressions ?? 0),
+                    'clicks' => (int) ($st->clicks ?? 0),
+                    'gmv' => (int) ($st->gmv ?? 0),
+                    'orders' => (int) ($st->orders ?? 0),
+                    'items_sold' => (int) ($st->items_sold ?? 0),
+                ];
+            });
 
         return [
             'from' => $from, 'to' => $to,
-            'total' => ['expense' => (int) (clone $daily)->sum('amount')] + collect(['gmv', 'clicks', 'impressions', 'orders'])->mapWithKeys(fn ($k) => [$k => $allCampaignRows->sum($k)])->all(),
+            'total' => ['expense' => (int) (clone $daily)->sum('amount')] + collect(['gmv', 'clicks', 'impressions', 'orders', 'items_sold'])->mapWithKeys(fn ($k) => [$k => $allCampaignRows->sum($k)])->all(),
             'active_only' => $activeOnly,
             'counts' => ['campaigns' => $allCampaignRows->count(), 'active' => $allCampaignRows->where('status', 'ongoing')->count()],
-            'daily' => (clone $daily)->selectRaw('spent_on as date, SUM(amount) as expense')->groupBy('spent_on')->orderBy('spent_on')->get(),
+            'status_counts' => [
+                'all' => $allCampaignRows->count(),
+                'ongoing' => $allCampaignRows->where('status', 'ongoing')->count(),
+                'scheduled' => $allCampaignRows->where('status', 'scheduled')->count(),
+                'paused' => $allCampaignRows->where('status', 'paused')->count(),
+                'ended' => $allCampaignRows->where('status', 'ended')->count(),
+                'closed' => $allCampaignRows->where('status', 'closed')->count(),
+            ],
+            'daily' => $dailyRows,
             'campaigns' => $campaignRows, 'products' => $products,
             // Sandbox shops are topped up via Shopee Console → Test Account → Login Seller Center.
             'topup_url' => config('services.shopee.host') === 'https://partner.shopeemobile.com' ? 'https://seller.shopee.co.id/portal/marketing/pas/index' : null,
@@ -382,7 +426,7 @@ class MarketplaceController extends Controller
         [$rows, , $from, $to] = $this->transactionRows($request, $shop);
         $feeCols = $rows->flatMap(fn ($r) => collect($r['fee_breakdown'])->pluck('label'))->unique()->values()->all();
         $head = ['No Pesanan', 'Tanggal', 'Status', 'Produk', 'Variasi', 'Qty', 'Jumlah (harga produk)', ...$feeCols,
-            'Total Biaya', 'Pendapatan Bersih', 'HPP', 'Laba', 'Margin %', 'Penghasilan', 'Resi', 'Kurir'];
+            'Total Biaya', 'Pendapatan Bersih', 'HPP', 'Biaya Iklan (Konversi)', 'Laba', 'Margin %', 'Penghasilan', 'Resi', 'Kurir'];
         $statusLabel = ['UNPAID' => 'Belum bayar', 'PENDING' => 'Tertunda', 'READY_TO_SHIP' => 'Perlu dikirim', 'PROCESSED' => 'Siap diserahkan', 'RETRY_SHIP' => 'Kirim ulang',
             'SHIPPED' => 'Dikirim', 'TO_CONFIRM_RECEIVE' => 'Menunggu konfirmasi', 'COMPLETED' => 'Selesai', 'IN_CANCEL' => 'Pembatalan', 'CANCELLED' => 'Dibatalkan', 'TO_RETURN' => 'Retur'];
         $name = 'transaksi-'.Str::slug($shop->shop_name).'-'.$from->format('Ymd').'-'.$to->format('Ymd').'.csv';
@@ -397,7 +441,7 @@ class MarketplaceController extends Controller
                     $r['order_sn'], $r['created_at']->format('Y-m-d H:i'), $statusLabel[$r['status']] ?? $r['status'],
                     collect($r['items'])->pluck('name')->implode(' | '), collect($r['items'])->pluck('variant')->filter()->implode(' | '),
                     $r['quantity'], $r['revenue'], ...array_map(fn ($c) => $fees[$c] ?? 0, $feeCols),
-                    -$r['fees'], $r['net_revenue'], $r['cogs'], $r['profit'], $r['margin'],
+                    -$r['fees'], $r['net_revenue'], $r['cogs'], -($r['ad_cost'] ?? 0), $r['profit'], $r['margin'],
                     $r['fee_final'] ? 'Sudah cair' : 'Estimasi', $r['tracking_number'], $r['courier'],
                 ], ';');
             }
@@ -420,6 +464,7 @@ class MarketplaceController extends Controller
             'summary' => [
                 'gmv' => (int) $rows->sum('gmv'), 'revenue' => (int) $rows->sum('revenue'), 'fees' => (int) $rows->sum('fees'),
                 'net_revenue' => (int) $rows->sum('net_revenue'), 'cogs' => (int) $rows->sum('cogs'),
+                'ads' => (int) $rows->sum('ad_cost'), 'gross_profit' => (int) $rows->sum('gross_profit'),
                 'profit' => (int) $rows->sum('profit'), 'missing_cost' => $rows->where('missing_cost', true)->count(),
             ],
             'backfilling' => $backfilling,
@@ -456,16 +501,26 @@ class MarketplaceController extends Controller
         $q = MarketplaceListing::where('user_id', $request->user()->id)
             ->with(['shop:id,shop_name,shop_id,is_demo', 'product:id,name,sku,cost_price,stock,track_stock'])
             ->when($request->query('shop_id'), fn ($qq, $v) => $qq->where('marketplace_shop_id', $v))
-            ->when($request->query('status'), fn ($qq, $v) => $qq->where('status', $v))
+            ->when($request->query('status'), fn ($qq, $v) => $v === 'BANNED'
+                ? $qq->whereIn('status', ['BANNED', 'SHOPEE_DELETE'])
+                : $qq->where('status', $v))
             ->when($request->query('cost') === 'filled', fn ($qq) => $qq->where('cost_price', '>', 0))
             ->when($request->query('cost') === 'empty', fn ($qq) => $qq->where(fn ($w) => $w->whereNull('cost_price')->orWhere('cost_price', 0)))
-            // Stok: "out" = variations with no stock left (as counted in the "Stok habis" card), "in" = still in stock.
+            // Stok: "out" = sold-out, "low" = running low (1..10), "in" = in stock.
             ->when($request->query('stock') === 'out', fn ($qq) => $qq->where('stock', '<=', 0))
+            ->when($request->query('stock') === 'low', fn ($qq) => $qq->where('stock', '>', 0)->where('stock', '<=', 10))
             ->when($request->query('stock') === 'in', fn ($qq) => $qq->where('stock', '>', 0))
-            ->when($request->query('search'), fn ($qq, $s) => $qq->where(fn ($w) => $w->where('name', 'like', "%{$s}%")->orWhere('sku', 'like', "%{$s}%")))
+            ->when($request->query('search'), fn ($qq, $s) => $qq->where(fn ($w) => $w
+                ->where('name', 'like', "%{$s}%")
+                ->orWhere('sku', 'like', "%{$s}%")
+                ->orWhere('item_sku', 'like', "%{$s}%")
+                ->orWhere('model_name', 'like', "%{$s}%")
+                ->orWhere('item_id', 'like', "%{$s}%")
+                ->orWhere('model_id', 'like', "%{$s}%")))
             ->orderBy('name')->orderBy('model_name');
 
-        $base = MarketplaceListing::where('user_id', $request->user()->id);
+        $base = MarketplaceListing::where('user_id', $request->user()->id)
+            ->when($request->query('shop_id'), fn ($qq, $v) => $qq->where('marketplace_shop_id', $v));
 
         // Paginate by Shopee product (shop + item), not by variation, so a product's variations stay together.
         $groups = (clone $q)->reorder()->select('marketplace_shop_id', 'item_id')->selectRaw('MIN(name) as group_name')
@@ -476,12 +531,27 @@ class MarketplaceController extends Controller
         ))->get();
         $listings = $groups->setCollection($rows);
 
+        $countProducts = fn ($scope = null) => (clone $base)
+            ->when($scope, $scope)
+            ->select('marketplace_shop_id', 'item_id')
+            ->groupBy('marketplace_shop_id', 'item_id')
+            ->get()
+            ->count();
+
         return [
             'listings' => $listings,
             'stats' => [
                 'total' => (clone $base)->count(), 'linked' => (clone $base)->whereNotNull('product_id')->count(),
                 'out_of_stock' => (clone $base)->where('stock', '<=', 0)->count(), 'stock' => (int) (clone $base)->sum('stock'),
                 'with_cost' => (clone $base)->whereNotNull('cost_price')->where('cost_price', '>', 0)->count(),
+                'low_stock' => (clone $base)->where('stock', '>', 0)->where('stock', '<=', 10)->count(),
+                'tabs' => [
+                    'all' => $countProducts(),
+                    'live' => $countProducts(fn ($b) => $b->where('status', 'NORMAL')),
+                    'action' => $countProducts(fn ($b) => $b->whereIn('status', ['BANNED', 'SHOPEE_DELETE'])),
+                    'reviewing' => $countProducts(fn ($b) => $b->where('status', 'REVIEWING')),
+                    'unlist' => $countProducts(fn ($b) => $b->where('status', 'UNLIST')),
+                ],
             ],
         ];
     }

@@ -96,7 +96,7 @@ class AwbSchedule
         $chat = $user->integration('telegram')->settings['chat_id'];
 
         $notDemo = fn ($q) => $q->where('is_demo', false);
-        $orders = $user->orders()->active()->where('channel', 'shopee')->whereIn('external_status', ['PROCESSED', 'RETRY_SHIP'])
+        $orders = $user->orders()->active()->where('channel', 'shopee')->whereIn('external_status', ['PROCESSED', 'RETRY_SHIP', 'IN_CANCEL'])
             ->whereNotNull('tracking_number')->where('tracking_number', '!=', '')->when($onlyNew, fn ($q) => $q->whereNull('awb_printed_at'))
             ->whereHas('marketplaceShop', $notDemo)->with('marketplaceShop')->orderBy('id')->limit(self::MAX)->get();
         $bookings = ShopeeBooking::where('user_id', $user->id)->where('booking_status', 'PROCESSED')
@@ -117,7 +117,7 @@ class AwbSchedule
             }
         }
         $orders = $orders->map(fn ($o) => $o->fresh(['marketplaceShop']))
-            ->filter(fn ($o) => in_array($o->external_status, ['PROCESSED', 'RETRY_SHIP'], true))->values();
+            ->filter(fn ($o) => in_array($o->external_status, ['PROCESSED', 'RETRY_SHIP', 'IN_CANCEL'], true))->values();
 
         if ($orders->isEmpty() && $bookings->isEmpty()) {
             $tg->sendMessage($chat, "{$label}: tidak ada resi Shopee ".($onlyNew ? 'baru ' : '').'untuk dicetak.');

@@ -311,6 +311,9 @@ class ShopeeSync
     public function upsertBooking(MarketplaceShop $shop, array $d): \App\Models\ShopeeBooking
     {
         $booking = \App\Models\ShopeeBooking::firstOrNew(['marketplace_shop_id' => $shop->id, 'booking_sn' => $d['booking_sn']]);
+        if (($d['booking_status'] ?? null) === 'READY_TO_SHIP' && $booking->exists && Cache::has(self::arrangedBookingKey($booking->id))) {
+            $d['booking_status'] = 'PROCESSED';
+        }
         // For thumbnails on the Pengiriman Kilat rows: match each item to its product listing by item/model.
         $listings = MarketplaceListing::where('marketplace_shop_id', $shop->id)->get()->keyBy(fn ($l) => $l->item_id.':'.$l->model_id);
         $booking->fill([
@@ -389,12 +392,38 @@ class ShopeeSync
         return "shopee:arranged:{$orderId}";
     }
 
+    public static function arrangedBookingKey(int $bookingId): string
+    {
+        return "shopee:booking_arranged:{$bookingId}";
+    }
+
     /** Shopee accepted ship_order: show the order as arranged now, whatever the next few reads say. */
     public static function markArranged(Order $order): void
     {
         Cache::put(self::arrangedKey($order->id), true, now()->addMinutes(15));
-        if ($order->external_status === 'READY_TO_SHIP') {
+        if (in_array($order->external_status, ['READY_TO_SHIP', 'IN_CANCEL'], true)) {
             $order->update(['external_status' => 'PROCESSED', 'status' => 'processing', 'shipping_status' => 'not_shipped']);
+        }
+    }
+
+    /** Shopee accepted ship_booking: show the reservation as arranged now, whatever the next few reads say. */
+    public static function markBookingArranged(\App\Models\ShopeeBooking $booking): void
+    {
+        Cache::put(self::arrangedBookingKey($booking->id), true, now()->addMinutes(15));
+        if ($booking->booking_status === 'READY_TO_SHIP') {
+            $booking->update(['booking_status' => 'PROCESSED']);
+        }
+    }
+
+    /** Shopee accepted handle_buyer_cancellation (REJECT): return the order to its pre-cancel state immediately. */
+    public static function markCancelRejected(Order $order): void
+    {
+        Cache::put("shopee:cancel_rejected:{$order->id}", true, now()->addMinutes(10));
+        if ($order->external_status === 'IN_CANCEL') {
+            $order->update([
+                'external_status' => $order->tracking_number ? 'PROCESSED' : 'READY_TO_SHIP',
+                'status' => 'processing',
+            ]);
         }
     }
 
@@ -403,6 +432,13 @@ class ShopeeSync
         $detail = $this->api->orderDetail($shop, [$orderSn])[0] ?? null;
 
         return $detail ? $this->upsertOrder($shop, $detail) : null;
+    }
+
+    public function booking(MarketplaceShop $shop, string $bookingSn): ?\App\Models\ShopeeBooking
+    {
+        $detail = $this->api->bookingDetail($shop, [$bookingSn])[0] ?? null;
+
+        return $detail ? $this->upsertBooking($shop, $detail) : null;
     }
 
     /**
@@ -477,6 +513,9 @@ class ShopeeSync
         $existing = Order::where('marketplace_shop_id', $shop->id)->where('external_order_sn', $d['order_sn'])->first();
         if (($d['order_status'] ?? null) === 'READY_TO_SHIP' && $existing && Cache::has(self::arrangedKey($existing->id))) {
             $d['order_status'] = 'PROCESSED';
+        }
+        if (($d['order_status'] ?? null) === 'IN_CANCEL' && $existing && Cache::has("shopee:cancel_rejected:{$existing->id}")) {
+            $d['order_status'] = ($existing->tracking_number || Cache::has(self::arrangedKey($existing->id))) ? 'PROCESSED' : 'READY_TO_SHIP';
         }
         [$status, $shipping] = $this->mapStatus($d['order_status'] ?? 'UNPAID');
         // Shopee released a "Tertunda" order: give the automatic "Atur Pengiriman" a fresh start (it may have failed
@@ -553,7 +592,7 @@ class ShopeeSync
                 if ($tn = $this->api->trackingNumber($shop, $d['order_sn'])) {
                     $order->update(['tracking_number' => $tn]);
                 }
-            } catch (ShopeeException) {
+            } catch (ShopeeException|\Illuminate\Http\Client\ConnectionException) {
                 // not issued yet; the next sync retries
             }
         }
@@ -563,7 +602,7 @@ class ShopeeSync
             try {
                 $last = collect($this->api->trackingInfo($shop, $d['order_sn'])['tracking_info'] ?? [])->sortByDesc('update_time')->first();
                 $order->update(['external_note' => $last ? mb_substr(trim($last['description'] ?? ''), 0, 250) : null]);
-            } catch (ShopeeException) {
+            } catch (ShopeeException|\Illuminate\Http\Client\ConnectionException) {
                 // keep the previous note
             }
         } elseif ($order->external_note) {

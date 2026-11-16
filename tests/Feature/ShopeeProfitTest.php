@@ -142,4 +142,73 @@ class ShopeeProfitTest extends TestCase
         $this->shop->update(['ads_ppn' => 0]);
         $this->assertSame(150000, Analytics::profit($this->user, today()->startOfDay(), today()->endOfDay())['summary']['ads']);
     }
+
+    public function test_transaction_deducts_ad_cost_per_conversion_when_product_is_advertised(): void
+    {
+        // Product 101 is advertised (Biaya Iklan = 125552, Konversi = 33 -> Biaya per Konversi = 3804.61 -> 3805)
+        // Product 202 is NOT advertised
+        $camp = new \App\Models\ShopeeAdCampaign([
+            'marketplace_shop_id' => $this->shop->id,
+            'campaign_id' => 701,
+            'name' => 'Iklan Cover Knalpot',
+            'ad_type' => 'manual',
+            'status' => 'ongoing',
+            'bidding_method' => 'auto',
+            'item_ids' => [101],
+        ]);
+        $camp->user_id = $this->user->id;
+        $camp->save();
+        \App\Models\ShopeeAdStat::create([
+            'shopee_ad_campaign_id' => $camp->id,
+            'date' => today()->toDateString(),
+            'impressions' => 6600,
+            'clicks' => 210,
+            'expense' => 125552,
+            'gmv' => 815200,
+            'orders' => 33,
+            'items_sold' => 34,
+        ]);
+
+        $o1 = new Order([
+            'code' => 'ORD-ADS', 'channel' => 'shopee', 'source' => 'marketplace', 'marketplace_shop_id' => $this->shop->id,
+            'external_order_sn' => 'ORD-ADS', 'external_status' => 'COMPLETED', 'status' => 'completed', 'payment_status' => 'paid', 'payment_method' => 'marketplace',
+            'quantity' => 1, 'subtotal' => 24350, 'total' => 24350, 'escrow_amount' => 20000, 'escrow_final' => true,
+            'items' => [['item_id' => 101, 'model_id' => 0, 'name' => 'Cover Knalpot Airblade', 'qty' => 1, 'price' => 24350]],
+        ]);
+        $o1->user_id = $this->user->id;
+        $o1->save();
+
+        $o2 = new Order([
+            'code' => 'ORD-NOADS', 'channel' => 'shopee', 'source' => 'marketplace', 'marketplace_shop_id' => $this->shop->id,
+            'external_order_sn' => 'ORD-NOADS', 'external_status' => 'COMPLETED', 'status' => 'completed', 'payment_status' => 'paid', 'payment_method' => 'marketplace',
+            'quantity' => 1, 'subtotal' => 50000, 'total' => 50000, 'escrow_amount' => 42000, 'escrow_final' => true,
+            'items' => [['item_id' => 202, 'model_id' => 0, 'name' => 'Produk Tanpa Iklan', 'qty' => 1, 'price' => 50000]],
+        ]);
+        $o2->user_id = $this->user->id;
+        $o2->save();
+
+        Sanctum::actingAs($this->user);
+        $res = $this->getJson("/api/marketplace/shops/{$this->shop->id}/transactions")->assertOk()->json();
+        $rows = collect($res['transactions']['data'])->keyBy('order_sn');
+
+        // Advertised product order:
+        $adRow = $rows['ORD-ADS'];
+        $this->assertTrue($adRow['is_advertised']);
+        $this->assertTrue($adRow['items'][0]['is_advertised']);
+        $this->assertEqualsWithDelta(3804.61, $adRow['items'][0]['ad_cost_per_conversion'], 0.01);
+        $this->assertSame(3805, $adRow['ad_cost']);
+        $this->assertSame(20000, $adRow['gross_profit']);
+        $this->assertSame(20000 - 3805, $adRow['profit']);
+
+        // Non-advertised product order:
+        $noAdRow = $rows['ORD-NOADS'];
+        $this->assertFalse($noAdRow['is_advertised']);
+        $this->assertFalse($noAdRow['items'][0]['is_advertised']);
+        $this->assertSame(0, $noAdRow['ad_cost']);
+        $this->assertSame(42000, $noAdRow['profit']);
+
+        // Summary includes total ad_cost deducted across orders:
+        $this->assertSame(3805, $res['summary']['ads']);
+        $this->assertSame(20000 + 42000 - 3805, $res['summary']['profit']);
+    }
 }

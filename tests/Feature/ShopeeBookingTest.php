@@ -212,4 +212,98 @@ class ShopeeBookingTest extends TestCase
         $this->assertSame(3, $row['orders_count']);
         $this->assertSame(1, $row['orders_today_count']); // today, cancelled excluded (like Shopee)
     }
+
+    public function test_kilat_reservation_can_be_arranged_and_printed(): void
+    {
+        $user = User::factory()->create();
+        $shop = $this->shop($user);
+        $b = ShopeeBooking::create([
+            'user_id' => $user->id, 'marketplace_shop_id' => $shop->id,
+            'booking_sn' => 'BK_READY', 'booking_status' => 'READY_TO_SHIP', 'shipping_carrier' => 'SPX Hemat',
+        ]);
+        $sent = [];
+        Http::fake(function ($req) use (&$sent) {
+            $path = parse_url($req->url(), PHP_URL_PATH);
+            $sent[] = $path;
+            if (str_contains($path, 'get_booking_shipping_parameter')) {
+                return Http::response(['response' => [
+                    'info_needed' => ['pickup' => ['address_id', 'pickup_time_id']],
+                    'pickup' => ['address_list' => [['address_id' => 11, 'address' => 'Jl. Toko', 'city' => 'Bandung', 'address_flag' => ['pickup_address'], 'time_slot_list' => [['pickup_time_id' => 'slot-1', 'time_text' => '13:00-17:00']]]]],
+                ]]);
+            }
+            if (str_contains($path, 'ship_booking')) {
+                return Http::response(['response' => []]);
+            }
+            if (str_contains($path, 'get_booking_tracking_number')) {
+                return Http::response(['response' => ['tracking_number' => 'SPXID999888']]);
+            }
+            if (str_contains($path, 'get_booking_detail')) {
+                // Even if Shopee briefly still reports READY_TO_SHIP, markBookingArranged keeps it PROCESSED.
+                return Http::response(['response' => ['booking_list' => [['booking_sn' => 'BK_READY', 'booking_status' => 'READY_TO_SHIP', 'shipping_carrier' => 'SPX Hemat']]]]);
+            }
+            if (str_contains($path, 'download_booking_shipping_document')) {
+                return Http::response('%PDF-1.4 arranged-kilat', 200, ['Content-Type' => 'application/pdf']);
+            }
+
+            return Http::response(['response' => ['result_list' => [['booking_sn' => 'BK_READY', 'status' => 'READY']]]]);
+        });
+
+        $this->actingAs($user);
+        $opts = $this->getJson("/api/labels/shopee/options?booking_ids={$b->id}")->assertOk()->json('orders');
+        $this->assertSame('booking', $opts[0]['kind']);
+        $this->assertSame(['pickup'], $opts[0]['methods']);
+
+        $this->postJson('/api/labels/shopee/ship', [
+            'items' => [['booking_id' => $b->id, 'method' => 'pickup', 'pickup_time_id' => 'slot-1']],
+        ])->assertOk()->assertJsonPath('shipped', ['BK_READY']);
+
+        $b->refresh();
+        $this->assertSame('PROCESSED', $b->booking_status);
+        $this->assertSame('SPXID999888', $b->tracking_number);
+        $this->assertContains('/api/v2/logistics/ship_booking', $sent);
+
+        $pdf = $this->post('/api/labels/shopee/booking-pdf', ['booking_ids' => [$b->id]], ['Accept' => 'application/json'])->assertOk();
+        $this->assertSame('%PDF-1.4 arranged-kilat', $pdf->getContent());
+    }
+
+    public function test_in_cancel_order_can_be_printed_and_rejected(): void
+    {
+        $user = User::factory()->create();
+        $shop = $this->shop($user);
+        $sent = [];
+        Http::fake(function ($req) use (&$sent) {
+            $path = parse_url($req->url(), PHP_URL_PATH);
+            $sent[] = $path;
+            if (str_contains($path, 'get_order_detail')) {
+                return Http::response(['response' => ['order_list' => [[
+                    'order_sn' => 'INC1', 'order_status' => 'IN_CANCEL', 'shipping_carrier' => 'SPX', 'item_list' => [], 'create_time' => time(),
+                ]]]]);
+            }
+            if (str_contains($path, 'download_shipping_document')) {
+                return Http::response('%PDF-1.4 incancel-awb', 200, ['Content-Type' => 'application/pdf']);
+            }
+            if (str_contains($path, 'handle_buyer_cancellation')) {
+                return Http::response(['response' => ['update_time' => time()]]);
+            }
+
+            return Http::response(['response' => ['result_list' => [['order_sn' => 'INC1', 'status' => 'READY']]]]);
+        });
+        $order = (new ShopeeSync)->upsertOrder($shop, [
+            'order_sn' => 'INC1', 'order_status' => 'IN_CANCEL', 'shipping_carrier' => 'SPX',
+            'item_list' => [], 'create_time' => time(),
+        ]);
+        $order->forceFill(['tracking_number' => 'SPXINC123'])->save();
+
+        $this->actingAs($user);
+        // 1. Even while still IN_CANCEL, the label can be printed.
+        $pdf = $this->post('/api/labels/shopee/pdf', ['order_ids' => [$order->id]], ['Accept' => 'application/json'])->assertOk();
+        $this->assertSame('%PDF-1.4 incancel-awb', $pdf->getContent());
+
+        // 2. Rejecting the buyer's cancellation calls Shopee and moves the order back to PROCESSED.
+        $this->postJson('/api/labels/shopee/cancel', ['order_id' => $order->id, 'operation' => 'REJECT'])
+            ->assertOk()
+            ->assertJsonPath('order.external_status', 'PROCESSED');
+        $this->assertContains('/api/v2/order/handle_buyer_cancellation', $sent);
+        $this->assertSame('PROCESSED', $order->fresh()->external_status);
+    }
 }

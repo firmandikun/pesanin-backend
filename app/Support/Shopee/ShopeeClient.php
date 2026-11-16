@@ -182,6 +182,25 @@ class ShopeeClient
         return $this->post($shop, '/api/v2/logistics/ship_order', ['order_sn' => $orderSn] + $method);
     }
 
+    public function bookingShippingParameter(MarketplaceShop $shop, string $bookingSn): array
+    {
+        return $this->get($shop, '/api/v2/logistics/get_booking_shipping_parameter', ['booking_sn' => $bookingSn])['response'] ?? [];
+    }
+
+    public function shipBooking(MarketplaceShop $shop, string $bookingSn, array $method): array
+    {
+        return $this->post($shop, '/api/v2/logistics/ship_booking', ['booking_sn' => $bookingSn] + $method);
+    }
+
+    /** Respond to a buyer's cancellation request (IN_CANCEL): $operation = 'REJECT' or 'ACCEPT'. */
+    public function handleBuyerCancellation(MarketplaceShop $shop, string $orderSn, string $operation = 'REJECT'): array
+    {
+        return $this->post($shop, '/api/v2/order/handle_buyer_cancellation', [
+            'order_sn' => $orderSn,
+            'operation' => strtoupper($operation),
+        ])['response'] ?? [];
+    }
+
     /** Courier checkpoints of a shipped order: [logistics_status, tracking_info[{update_time, description, logistics_status}]]. */
     public function trackingInfo(MarketplaceShop $shop, string $orderSn): array
     {

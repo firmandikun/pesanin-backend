@@ -162,8 +162,13 @@ class ShopeePublishController extends Controller
     public function publish(Request $request, MarketplaceShop $shop)
     {
         abort_unless($shop->user_id === $request->user()->id && $shop->status === 'active', 404);
+        // Treat 0/empty package dimensions as unset when none of the three is > 0.
+        if ((int) $request->input('length') <= 0 && (int) $request->input('width') <= 0 && (int) $request->input('height') <= 0) {
+            $request->merge(['length' => null, 'width' => null, 'height' => null]);
+        }
         $d = $request->validate([
             'product_id' => 'nullable|integer',
+            'existing_item_id' => 'nullable|integer',
             'name' => 'required|string|min:2|max:226',
             'description' => 'required|string|min:1|max:3000',
             'category_id' => 'required|integer',
@@ -202,7 +207,34 @@ class ShopeePublishController extends Controller
             'channels' => 'nullable|array', 'channels.*' => 'string|max:100', // courier names to enable; omitted = all
             'status' => 'nullable|in:NORMAL,UNLIST', // Simpan & Tampilkan / Simpan & Arsipkan
             'publish_at' => 'nullable|date', // Jadwal Ditampilkan, WIB "YYYY-MM-DDTHH:mm" (item stays UNLIST until then)
-        ], ['price.min' => 'Harga minimal Rp100.', 'price.required' => 'Harga wajib diisi.', 'models.*.price.min' => 'Harga setiap variasi minimal Rp100.', 'models.*.price.required' => 'Harga setiap variasi wajib diisi.', 'gtin.regex' => 'GTIN harus 8–14 digit angka, atau centang "Produk tanpa GTIN".']);
+        ], [
+            'name.required' => 'Nama produk wajib diisi.',
+            'name.min' => 'Nama produk minimal 2 karakter.',
+            'name.max' => 'Nama produk maksimal 226 karakter.',
+            'description.required' => 'Deskripsi produk wajib diisi.',
+            'description.max' => 'Deskripsi produk maksimal 3000 karakter.',
+            'category_id.required' => 'Kategori produk wajib dipilih.',
+            'price.min' => 'Harga minimal Rp100.',
+            'price.required' => 'Harga wajib diisi.',
+            'stock.required' => 'Stok wajib diisi.',
+            'stock.min' => 'Stok tidak boleh kurang dari 0.',
+            'weight.required' => 'Berat produk wajib diisi.',
+            'weight.min' => 'Berat produk minimal 1 gram.',
+            'length.min' => 'Ukuran panjang paket minimal 1 cm (atau kosongkan semua ukuran paket).',
+            'width.min' => 'Ukuran lebar paket minimal 1 cm (atau kosongkan semua ukuran paket).',
+            'height.min' => 'Ukuran tinggi paket minimal 1 cm (atau kosongkan semua ukuran paket).',
+            'image_ids.required' => 'Tambahkan minimal 1 foto produk.',
+            'image_ids.min' => 'Tambahkan minimal 1 foto produk.',
+            'tiers.*.name.required' => 'Nama variasi wajib diisi.',
+            'tiers.*.name.max' => 'Nama variasi maksimal 14 karakter.',
+            'tiers.*.options.required' => 'Opsi variasi wajib diisi.',
+            'tiers.*.options.*.max' => 'Nama opsi variasi maksimal 20 karakter.',
+            'models.*.price.min' => 'Harga setiap variasi minimal Rp100.',
+            'models.*.price.required' => 'Harga setiap variasi wajib diisi.',
+            'models.*.stock.required' => 'Stok setiap variasi wajib diisi.',
+            'models.*.stock.min' => 'Stok variasi tidak boleh kurang dari 0.',
+            'gtin.regex' => 'GTIN harus 8–14 digit angka, atau centang "Produk tanpa GTIN".',
+        ]);
         if (! empty($d['models'])) {
             $d['price'] = min(array_column($d['models'], 'price'));
             $d['stock'] = array_sum(array_column($d['models'], 'stock'));
@@ -213,6 +245,7 @@ class ShopeePublishController extends Controller
         abort_if($scheduled && $scheduled->gt(now()->addDays(90)), 422, 'Jadwal tayang maksimal 90 hari lagi.');
         $product = ! empty($d['product_id']) ? Product::where('user_id', $request->user()->id)->find($d['product_id']) : null;
         $api = new ShopeeClient;
+        $itemId = (int) ($d['existing_item_id'] ?? 0);
 
         try {
             $channels = $api->enabledChannels($shop);
@@ -223,6 +256,7 @@ class ShopeePublishController extends Controller
             }
             $models = $d['models'] ?? [];
             $gtin = $d['gtin'] ?? null;
+            $itemStatus = $scheduled ? 'UNLIST' : ($d['status'] ?? 'NORMAL');
             $item = array_filter([
                 'item_name' => $d['name'], 'description' => $d['description'], 'category_id' => $d['category_id'],
                 'original_price' => $models ? min(array_column($models, 'price')) : $d['price'],
@@ -231,7 +265,7 @@ class ShopeePublishController extends Controller
                 'weight' => round($d['weight'] / 1000, 3),
                 'dimension' => ! empty($d['length']) && ! empty($d['width']) && ! empty($d['height'])
                     ? ['package_length' => $d['length'], 'package_width' => $d['width'], 'package_height' => $d['height']] : null,
-                'item_status' => $scheduled ? 'UNLIST' : ($d['status'] ?? 'NORMAL'),
+                'item_status' => $itemStatus,
                 'scheduled_publish_time' => $scheduled?->timestamp,
                 'condition' => $d['condition'] ?? 'NEW',
                 'item_dangerous' => isset($d['dangerous']) ? (int) $d['dangerous'] : null,
@@ -246,31 +280,79 @@ class ShopeePublishController extends Controller
                 'attribute_list' => $this->attributeList($d['attributes'] ?? []) ?: null,
             ], fn ($v) => $v !== null);
 
-            $res = $api->addItem($shop, $item);
-            $itemId = (int) ($res['item_id'] ?? 0);
-            abort_unless($itemId, 422, 'Shopee tidak mengembalikan item_id.');
+            if (! $itemId) {
+                $res = $api->addItem($shop, $item);
+                $itemId = (int) ($res['item_id'] ?? 0);
+                abort_unless($itemId, 422, 'Shopee tidak mengembalikan item_id.');
+            }
 
             $listings = [];
             $imageUrl = $this->imageUrl($d['image_ids'][0]);
             if ($models && ! empty($d['tiers'])) {
-                $tierRes = $api->initTierVariation($shop, $itemId,
-                    collect($d['tiers'])->map(fn ($t) => ['name' => $t['name'], 'option_list' => collect($t['options'])->map(fn ($o) => ['option' => $o])->all()])->all(),
-                    collect($models)->map(fn ($m) => array_filter(['tier_index' => $m['index'], 'original_price' => $m['price'], 'seller_stock' => [['stock' => $m['stock']]], 'model_sku' => $m['sku'] ?? null, 'gtin_code' => $gtin], fn ($v) => $v !== null))->all());
+                $tierPayload = collect($d['tiers'])->map(fn ($t) => ['name' => $t['name'], 'option_list' => collect($t['options'])->map(fn ($o) => ['option' => $o])->all()])->all();
+                $modelPayload = collect($models)->map(fn ($m) => array_filter(['tier_index' => $m['index'], 'original_price' => $m['price'], 'seller_stock' => [['stock' => $m['stock']]], 'model_sku' => $m['sku'] ?? null, 'gtin_code' => $gtin], fn ($v) => $v !== null))->all();
+                $tierRes = null;
+                // Shopee often needs ~5s after add_item before init_tier_variation can attach variations to the new item.
+                for ($attempt = 0; $attempt < 4; $attempt++) {
+                    try {
+                        $tierRes = $api->initTierVariation($shop, $itemId, $tierPayload, $modelPayload);
+                        break;
+                    } catch (ShopeeException $e) {
+                        if ($attempt < 3 && preg_match('/still being created|wait \d+ second|item.*not.*found|system busy|try again/i', $e->getMessage())) {
+                            if (! app()->runningUnitTests()) {
+                                sleep(5);
+                            }
+                            continue;
+                        }
+                        throw $e;
+                    }
+                }
                 foreach ($tierRes['model'] ?? [] as $i => $m) {
                     $src = collect($models)->first(fn ($x) => $x['index'] === ($m['tier_index'] ?? null)) ?? $models[$i] ?? [];
                     $listings[] = $this->listing($shop, $product, $itemId, (int) $m['model_id'], $d['name'],
-                        collect($m['tier_index'] ?? [])->map(fn ($ti, $k) => $d['tiers'][$k]['options'][$ti] ?? '')->implode(', '), $src['sku'] ?? null, $src['price'] ?? $d['price'], $src['stock'] ?? 0, $imageUrl, $item['item_status']);
+                        collect($m['tier_index'] ?? [])->map(fn ($ti, $k) => $d['tiers'][$k]['options'][$ti] ?? '')->implode(', '), $src['sku'] ?? null, $src['price'] ?? $d['price'], $src['stock'] ?? 0, $imageUrl, $itemStatus);
                 }
             } else {
-                $listings[] = $this->listing($shop, $product, $itemId, 0, $d['name'], null, $d['sku'] ?? null, $d['price'], $d['stock'], $imageUrl, $item['item_status']);
+                $listings[] = $this->listing($shop, $product, $itemId, 0, $d['name'], null, $d['sku'] ?? null, $d['price'], $d['stock'], $imageUrl, $itemStatus);
             }
         } catch (ShopeeException $e) {
-            abort(422, $e->getMessage());
+            return response()->json([
+                'message' => self::translateShopeeError($e->getMessage()),
+                'item_id' => $itemId ?: null,
+            ], 422);
         }
         ActivityLog::record($request->user(), 'marketplace.publish', "Upload \"{$d['name']}\" ke {$shop->shop_name}");
 
-        return ['item_id' => $itemId, 'listings' => count($listings), 'shop' => $shop->shop_name, 'status' => $item['item_status']]
+        return ['item_id' => $itemId, 'listings' => count($listings), 'shop' => $shop->shop_name, 'status' => $itemStatus]
             + $this->liveStatus($api, $shop, $itemId);
+    }
+
+    /** Translate common Shopee API English errors into clear Bahasa Indonesia for the seller. */
+    public static function translateShopeeError(string $msg): string
+    {
+        $m = trim($msg);
+        $rules = [
+            '/still being created.*wait (\d+) second/i' => 'Produk sedang diproses oleh Shopee. Mohon tunggu $1 detik lalu klik "Ulangi yang gagal" untuk menyimpan variasi.',
+            '/duplicate.*item.*name|item name.*already exists/i' => 'Nama produk sudah pernah digunakan di toko Shopee ini. Ubah sedikit nama produk lalu coba lagi.',
+            '/logistic.*not.*valid|logistic.*empty|channel.*not.*enabled|no.*valid.*logistic/i' => 'Jasa kirim yang dipilih tidak aktif atau tidak mendukung berat/ukuran paket produk ini di toko Shopee.',
+            '/weight.*exceed|weight.*limit|weight.*invalid/i' => 'Berat produk melebihi batas ekspedisi yang dipilih atau tidak valid.',
+            '/dimension.*invalid|package_length|package_width|package_height/i' => 'Ukuran paket (panjang, lebar, tinggi) tidak valid atau melebihi batas ekspedisi.',
+            '/mandatory.*attribute|attribute.*mandatory|attribute.*invalid/i' => 'Masih ada atribut spesifikasi wajib Shopee yang belum diisi atau tidak valid.',
+            '/brand.*invalid|brand.*mandatory/i' => 'Merek produk wajib dipilih untuk kategori ini.',
+            '/category.*invalid|category.*not.*leaf/i' => 'Kategori produk tidak valid atau belum dipilih sampai sub-kategori paling akhir.',
+            '/price.*limit|price.*range|price.*exceed|price.*difference/i' => 'Harga produk atau selisih harga antar variasi melewati batas ketentuan Shopee.',
+            '/image.*invalid|image.*download|image.*size/i' => 'Foto produk gagal diproses oleh Shopee. Pastikan format JPG/PNG dan ukuran sesuai.',
+            '/gtin.*invalid|gtin.*mandatory/i' => 'Kode GTIN tidak valid. Gunakan 8–14 digit angka atau centang "Produk tanpa GTIN".',
+            '/tier_variation.*option.*duplicate/i' => 'Ada nama opsi variasi yang kembar/duplikat. Pastikan setiap opsi variasi berbeda.',
+            '/token.*expired|invalid.*access_token|permission.*denied/i' => 'Sesi koneksi toko Shopee sudah kedaluwarsa. Hubungkan ulang toko di menu Daftar Toko.',
+        ];
+        foreach ($rules as $pattern => $idText) {
+            if (preg_match($pattern, $m)) {
+                return preg_replace($pattern, $idText, $m) ?: $idText;
+            }
+        }
+
+        return $m;
     }
 
     /**
@@ -315,7 +397,11 @@ class ShopeePublishController extends Controller
             'tiers' => $tiers, 'models' => $models,
             'wholesale' => collect($b['wholesales'] ?? [])->map(fn ($w) => ['min' => (int) $w['min_count'], 'max' => (int) $w['max_count'], 'price' => (int) round($w['unit_original_price'] ?? $w['unit_price'] ?? 0)])->values()->all(),
             'weight' => (int) round(((float) ($b['weight'] ?? 0)) * 1000), // kg → gram
-            'dims' => ['length' => (string) ($b['dimension']['package_length'] ?? ''), 'width' => (string) ($b['dimension']['package_width'] ?? ''), 'height' => (string) ($b['dimension']['package_height'] ?? '')],
+            'dims' => [
+                'length' => ! empty($b['dimension']['package_length']) && (int) $b['dimension']['package_length'] > 0 ? (string) (int) $b['dimension']['package_length'] : '',
+                'width' => ! empty($b['dimension']['package_width']) && (int) $b['dimension']['package_width'] > 0 ? (string) (int) $b['dimension']['package_width'] : '',
+                'height' => ! empty($b['dimension']['package_height']) && (int) $b['dimension']['package_height'] > 0 ? (string) (int) $b['dimension']['package_height'] : '',
+            ],
             'condition' => strtoupper($b['condition'] ?? 'NEW') === 'USED' ? 'USED' : 'NEW',
             'dangerous' => (bool) ($b['item_dangerous'] ?? false),
             'pre_order' => (bool) ($b['pre_order']['is_pre_order'] ?? false),

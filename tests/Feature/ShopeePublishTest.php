@@ -227,4 +227,47 @@ class ShopeePublishTest extends TestCase
         $shop->save();
         $this->getJson("/api/marketplace/publish/{$shop->id}/items/77/source")->assertNotFound();
     }
+
+    public function test_publish_retries_when_item_is_still_being_created_and_ignores_zero_dimensions(): void
+    {
+        $tierCalls = 0;
+        Http::fake(function ($req) use (&$tierCalls) {
+            $url = $req->url();
+            if (str_contains($url, 'get_channel_list')) {
+                return Http::response(['response' => ['logistics_channel_list' => [['logistics_channel_id' => 81017, 'logistics_channel_name' => 'J&T', 'enabled' => true]]]]);
+            }
+            if (str_contains($url, 'add_item')) {
+                return Http::response(['response' => ['item_id' => 789]]);
+            }
+            if (str_contains($url, 'init_tier_variation')) {
+                $tierCalls++;
+                if ($tierCalls === 1) {
+                    return Http::response([
+                        'error' => 'product.error_param',
+                        'message' => 'The item is still being created. Please wait 5 seconds before creating variation.',
+                    ], 200);
+                }
+
+                return Http::response(['response' => ['item_id' => 789, 'model' => [['model_id' => 91, 'tier_index' => [0]], ['model_id' => 92, 'tier_index' => [1]]]]]);
+            }
+            if (str_contains($url, 'get_item_base_info')) {
+                return Http::response(['response' => ['item_list' => [['item_id' => 789, 'item_status' => 'NORMAL']]]]);
+            }
+
+            return Http::response(['response' => []]);
+        });
+
+        $this->postJson("/api/marketplace/publish/{$this->shop->id}", $this->body([
+            'length' => 0, 'width' => 0, 'height' => 0,
+            'tiers' => [['name' => 'Ukuran', 'options' => ['30mm', '34mm']]],
+            'models' => [['index' => [0], 'price' => 8999, 'stock' => 100, 'sku' => 'S30'], ['index' => [1], 'price' => 8999, 'stock' => 200, 'sku' => 'S34']],
+        ]))->assertOk()->assertJson([
+            'item_id' => 789,
+            'listings' => 2,
+            'shopee_status' => 'NORMAL',
+        ]);
+
+        $this->assertSame(2, $tierCalls);
+        $this->assertSame(2, MarketplaceListing::where('item_id', 789)->count());
+    }
 }

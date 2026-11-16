@@ -175,6 +175,7 @@ Route::middleware(['auth:sanctum', 'member', 'subscribed'])->group(function () {
     Route::get('/labels', [LabelController::class, 'data']);
     Route::get('/labels/shopee/options', [LabelController::class, 'shopeeOptions']);
     Route::post('/labels/shopee/ship', [LabelController::class, 'shopeeShip']);
+    Route::post('/labels/shopee/cancel', [LabelController::class, 'shopeeCancel']);
     Route::post('/labels/shopee/refresh', [LabelController::class, 'shopeeRefresh']);
     Route::post('/labels/shopee/pdf', [LabelController::class, 'shopeePdf']);
     Route::post('/labels/shopee/booking-pdf', [LabelController::class, 'shopeeBookingPdf']);

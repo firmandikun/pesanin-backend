@@ -3,9 +3,10 @@
 namespace App\Support\Shopee;
 
 use App\Models\Order;
+use App\Models\ShopeeBooking;
 
 /**
- * Arranges shipment for a single READY_TO_SHIP Shopee order (pickup by courier or drop-off at a counter).
+ * Arranges shipment for a single READY_TO_SHIP Shopee order or Pengiriman Kilat reservation (booking).
  * Shared by the manual "Atur Pengiriman" action and the background auto-arrange (OrderAutomation).
  */
 class ShopeeShipper
@@ -22,17 +23,24 @@ class ShopeeShipper
         if ($order->external_status === 'PENDING') {
             return ['ok' => false, 'error' => 'pesanan masih Tertunda (sedang ditinjau Shopee), atur pengiriman setelah Shopee melepasnya'];
         }
-        if ($order->external_status !== 'READY_TO_SHIP') {
+        if (! in_array($order->external_status, ['READY_TO_SHIP', 'IN_CANCEL'], true)) {
             return ['ok' => false, 'error' => 'bukan pesanan siap kirim ('.$order->external_status.')'];
         }
         $shop = $order->marketplaceShop;
         // Sample shop: simulate what Shopee does (PROCESSED + tracking number issued).
         if ($shop->is_demo) {
-            $order->update(['external_status' => 'PROCESSED', 'tracking_number' => 'SPXID0'.random_int(40000000, 49999999)]);
+            $order->update(['external_status' => 'PROCESSED', 'status' => 'processing', 'tracking_number' => 'SPXID0'.random_int(40000000, 49999999)]);
 
             return ['ok' => true, 'error' => null];
         }
         try {
+            if ($order->external_status === 'IN_CANCEL') {
+                try {
+                    $this->api->handleBuyerCancellation($shop, $order->external_order_sn, 'REJECT');
+                } catch (ShopeeException) {
+                    // If Shopee allows shipping directly or already cleared IN_CANCEL, proceed to ship_order.
+                }
+            }
             $param = $this->api->shippingParameter($shop, $order->external_order_sn);
             $needed = $param['info_needed'] ?? [];
             $use = $this->pickMethod($opts['method'] ?? 'auto', $needed);
@@ -60,6 +68,50 @@ class ShopeeShipper
                 $order->update(['shopee_auto_ship' => true]);
             }
 
+            return ['ok' => false, 'error' => $e->getMessage()];
+        }
+    }
+
+    /**
+     * Arrange shipment for a READY_TO_SHIP "Pengiriman Kilat" reservation (Shopee booking).
+     *
+     * @return array{ok: bool, error: ?string}
+     */
+    public function arrangeBooking(ShopeeBooking $booking, array $opts = []): array
+    {
+        if ($booking->booking_status !== 'READY_TO_SHIP') {
+            return ['ok' => false, 'error' => 'bukan reservasi siap kirim ('.$booking->booking_status.')'];
+        }
+        $shop = $booking->marketplaceShop;
+        if ($shop->is_demo) {
+            $booking->update(['booking_status' => 'PROCESSED', 'tracking_number' => 'SPXID0'.random_int(40000000, 49999999)]);
+
+            return ['ok' => true, 'error' => null];
+        }
+        try {
+            $param = $this->api->bookingShippingParameter($shop, $booking->booking_sn);
+            $needed = $param['info_needed'] ?? [];
+            $use = $this->pickMethod($opts['method'] ?? 'auto', $needed);
+            if (! array_key_exists($use, $needed)) {
+                throw new ShopeeException(match ($use) {
+                    'pickup' => 'ekspedisi ini tidak bisa dijemput, pilih drop-off',
+                    'dropoff' => 'ekspedisi ini tidak bisa drop-off, pilih pickup',
+                    default => 'metode pengiriman tidak tersedia',
+                });
+            }
+            $this->api->shipBooking($shop, $booking->booking_sn, [$use => $this->methodBody($use, (array) $needed[$use], $param, $opts)]);
+            ShopeeSync::markBookingArranged($booking);
+            try {
+                if ($tn = $this->api->bookingTrackingNumber($shop, $booking->booking_sn)) {
+                    $booking->update(['tracking_number' => $tn]);
+                }
+            } catch (ShopeeException) {
+                // issued asynchronously; the next sync picks it up
+            }
+            (new ShopeeSync)->booking($shop, $booking->booking_sn);
+
+            return ['ok' => true, 'error' => null];
+        } catch (ShopeeException $e) {
             return ['ok' => false, 'error' => $e->getMessage()];
         }
     }
