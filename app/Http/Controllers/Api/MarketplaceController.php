@@ -361,7 +361,12 @@ class MarketplaceController extends Controller
     public function sync(Request $request, MarketplaceShop $shop)
     {
         $this->own($request, $shop);
-        $what = $request->validate(['what' => 'nullable|in:all,products,orders,ads,recent'])['what'] ?? 'all';
+        $validated = $request->validate([
+            'what' => 'nullable|in:all,products,orders,ads,recent',
+            'from' => 'nullable|date',
+            'to' => 'nullable|date',
+        ]);
+        $what = $validated['what'] ?? 'all';
         if ($shop->is_demo) {
             return ['message' => 'Toko contoh tidak perlu disinkronkan.', 'result' => []];
         }
@@ -380,7 +385,13 @@ class MarketplaceController extends Controller
                 $result['products'] = $sync->products($shop);
             }
             if (in_array($what, ['all', 'orders'])) {
-                $result['orders'] = $sync->orders($shop);
+                if (! empty($validated['from']) || ! empty($validated['to'])) {
+                    [$rf, $rt] = \App\Support\Dates::range($validated['from'] ?? null, $validated['to'] ?? null);
+                    $result['orders'] = $sync->syncRange($shop, $rf, $rt);
+                    $sync->settle($shop, 50);
+                } else {
+                    $result['orders'] = $sync->orders($shop);
+                }
             }
             if (in_array($what, ['all', 'ads'])) {
                 try {
@@ -402,6 +413,23 @@ class MarketplaceController extends Controller
         return ['message' => 'Sinkronisasi selesai', 'result' => $result, 'shop' => $shop->fresh()];
     }
 
+    /** Match a transaction row against one of the UI status tabs. */
+    private static function matchTransactionTab(array $row, string $tab): bool
+    {
+        $st = (string) ($row['status'] ?? '');
+        $hasResi = ! empty($row['tracking_number']);
+
+        return match ($tab) {
+            'READY_TO_SHIP' => in_array($st, ['READY_TO_SHIP', 'PENDING'], true) || ($st === 'IN_CANCEL' && ! $hasResi),
+            'PROCESSED' => in_array($st, ['PROCESSED', 'RETRY_SHIP'], true) || ($st === 'IN_CANCEL' && $hasResi),
+            'SHIPPED' => in_array($st, ['SHIPPED', 'TO_CONFIRM_RECEIVE'], true),
+            'COMPLETED' => $st === 'COMPLETED',
+            'CANCELLED' => in_array($st, ['CANCELLED', 'IN_CANCEL'], true),
+            'TO_RETURN' => $st === 'TO_RETURN',
+            default => $st === $tab,
+        };
+    }
+
     /** Transaction rows of a shop for the request's date range, status and search filters. */
     private function transactionRows(Request $request, MarketplaceShop $shop): array
     {
@@ -411,14 +439,24 @@ class MarketplaceController extends Controller
             'status' => 'nullable|string|max:30', 'page' => 'nullable|integer|min:1', 'per_page' => 'nullable|integer|min:10|max:1000',
         ]);
         [$from, $to] = \App\Support\Dates::range($data['from'] ?? null, $data['to'] ?? null);
-        $rows = Analytics::transactions($request->user(), $from, $to, $shop->id)
-            ->when($data['status'] ?? null, fn ($c, $status) => $c->where('status', $status))
+        $allRows = Analytics::transactions($request->user(), $from, $to, $shop->id)
             ->when($data['search'] ?? null, function ($c, $search) {
                 $needle = mb_strtolower($search);
+
                 return $c->filter(fn ($row) => str_contains(mb_strtolower(($row['order_sn'] ?? '').' '.($row['customer_name'] ?? '').' '.($row['tracking_number'] ?? '')), $needle));
             })->values();
 
-        return [$rows, $data, $from, $to];
+        $tabs = ['READY_TO_SHIP', 'PROCESSED', 'SHIPPED', 'COMPLETED', 'CANCELLED', 'TO_RETURN'];
+        $tabCounts = ['' => $allRows->count()];
+        foreach ($tabs as $t) {
+            $tabCounts[$t] = $allRows->filter(fn ($r) => self::matchTransactionTab($r, $t))->count();
+        }
+
+        $rows = ! empty($data['status'])
+            ? $allRows->filter(fn ($r) => self::matchTransactionTab($r, $data['status']))->values()
+            : $allRows;
+
+        return [$rows, $data, $from, $to, $tabCounts];
     }
 
     /**
@@ -455,7 +493,7 @@ class MarketplaceController extends Controller
 
     public function transactions(Request $request, MarketplaceShop $shop)
     {
-        [$rows, $data, $from] = $this->transactionRows($request, $shop);
+        [$rows, $data, $from, , $tabCounts] = $this->transactionRows($request, $shop);
         $backfilling = \App\Support\Shopee\ShopeeBackfill::ensureShop($shop, $from);
         $perPage = (int) ($data['per_page'] ?? 10);
         $page = (int) ($data['page'] ?? 1);
@@ -471,6 +509,7 @@ class MarketplaceController extends Controller
                 'ads' => (int) $rows->sum('ad_cost'), 'gross_profit' => (int) $rows->sum('gross_profit'),
                 'profit' => (int) $rows->sum('profit'), 'missing_cost' => $rows->where('missing_cost', true)->count(),
             ],
+            'tab_counts' => $tabCounts,
             'backfilling' => $backfilling,
         ];
     }

@@ -142,6 +142,84 @@ class ShopeeSync
         return $count;
     }
 
+    /**
+     * Sync orders for a specific date range [$from, $to] chosen in the UI date filter.
+     * Lists orders in 15-day windows from Shopee and only fetches full details for orders that are missing locally,
+     * changed status on Shopee, or are COMPLETED without final escrow breakdown.
+     */
+    public function syncRange(MarketplaceShop $shop, Carbon $from, Carbon $to): int
+    {
+        @set_time_limit(0);
+        if ($shop->is_demo) {
+            return 0;
+        }
+        $floor = now()->subYears(2)->startOfDay();
+        $start = $from->copy()->startOfDay()->max($floor);
+        $end = $to->copy()->endOfDay()->min(now());
+        if ($start->gt($end)) {
+            return 0;
+        }
+
+        $listed = []; // order_sn => order_status on Shopee
+        for ($w = $start->copy(); $w < $end; $w->addDays(15)) {
+            $wEnd = $w->copy()->addDays(15)->min($end);
+            $cursor = '';
+            do {
+                $page = $this->api->orderList($shop, $w->timestamp, $wEnd->timestamp, $cursor, 'create_time');
+                foreach ($page['order_list'] ?? [] as $o) {
+                    if (! empty($o['order_sn'])) {
+                        $listed[$o['order_sn']] = $o['order_status'] ?? null;
+                    }
+                }
+                $cursor = $page['next_cursor'] ?? '';
+            } while (! empty($page['more']));
+        }
+
+        // If the selected range includes recent days, also check update_time so older orders completed in this range are updated.
+        if ($end->gte(now()->subDays(15))) {
+            $uStart = $start->copy()->max(now()->subDays(15)->startOfDay());
+            if ($uStart->lt($end)) {
+                $cursor = '';
+                do {
+                    $page = $this->api->orderList($shop, $uStart->timestamp, $end->timestamp, $cursor, 'update_time');
+                    foreach ($page['order_list'] ?? [] as $o) {
+                        if (! empty($o['order_sn'])) {
+                            $listed[$o['order_sn']] = $o['order_status'] ?? ($listed[$o['order_sn']] ?? null);
+                        }
+                    }
+                    $cursor = $page['next_cursor'] ?? '';
+                } while (! empty($page['more']));
+            }
+        }
+
+        if (! $listed) {
+            return 0;
+        }
+
+        $local = Order::where('marketplace_shop_id', $shop->id)
+            ->whereIn('external_order_sn', array_keys($listed))
+            ->get(['external_order_sn', 'external_status', 'escrow_final', 'fee_breakdown'])
+            ->keyBy('external_order_sn');
+
+        $needDetail = [];
+        foreach ($listed as $sn => $st) {
+            $row = $local[$sn] ?? null;
+            if (! $row || ($st && $row->external_status !== $st) || ($st === 'COMPLETED' && ! $row->escrow_final) || $row->fee_breakdown === null) {
+                $needDetail[] = $sn;
+            }
+        }
+
+        $count = 0;
+        foreach (array_chunk($needDetail, 50) as $chunk) {
+            foreach ($this->api->orderDetail($shop, $chunk) as $detail) {
+                $this->upsertOrder($shop, $detail);
+                $count++;
+            }
+        }
+
+        return $count;
+    }
+
     /** List orders in one window (optionally one status) and upsert their details. */
     private function pull(MarketplaceShop $shop, int $from, int $to, string $field = 'create_time', ?string $status = null, ?array &$seen = null): int
     {

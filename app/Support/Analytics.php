@@ -211,10 +211,8 @@ class Analytics
                 $q->whereBetween('created_at', [$from, $to])
                     ->orWhere(function ($w) use ($from, $to) {
                         $w->where('external_status', 'COMPLETED')
-                            ->where(function ($c) use ($from, $to) {
-                                $c->whereBetween('completed_at', [$from, $to])
-                                    ->orWhere(fn ($u) => $u->whereNull('completed_at')->whereBetween('updated_at', [$from, $to]));
-                            });
+                            ->whereNotNull('completed_at')
+                            ->whereBetween('completed_at', [$from, $to]);
                     });
             })
             ->latest()->get();
@@ -262,6 +260,7 @@ class Analytics
 
             return [
                 'id' => $order->id, 'order_sn' => $order->external_order_sn, 'created_at' => $order->created_at,
+                'completed_at' => $order->completed_at,
                 'status' => $order->external_status, 'customer_name' => $order->customer_name,
                 'tracking_number' => $order->tracking_number, 'courier' => $order->courier, 'items' => $items,
                 'quantity' => $order->quantity, 'gmv' => $money['gmv'], 'revenue' => $money['revenue'],
