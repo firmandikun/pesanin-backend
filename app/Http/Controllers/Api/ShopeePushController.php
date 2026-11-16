@@ -25,13 +25,17 @@ class ShopeePushController extends Controller
         try {
             $shops = MarketplaceShop::where('platform', 'shopee')->where('shop_id', $payload['shop_id'] ?? 0)->where('status', 'active')->where('is_demo', false)->get();
             $orderSn = $payload['data']['ordersn'] ?? $payload['data']['order_sn'] ?? null;
+            $bookingSn = $payload['data']['booking_sn'] ?? $payload['data']['bookingsn'] ?? null;
             foreach ($shops as $shop) {
+                if ($bookingSn) {
+                    (new ShopeeSync)->booking($shop, (string) $bookingSn);
+                }
                 match ($event->code) {
                     // 3 = order status update, 4 = tracking number update
                     3, 4 => $orderSn ? (new ShopeeSync)->order($shop, $orderSn) : null,
                     // 2 = seller revoked the authorisation
                     2 => $shop->update(['status' => 'disconnected', 'access_token' => null, 'refresh_token' => null]),
-                    default => null,
+                    default => $orderSn ? (new ShopeeSync)->order($shop, (string) $orderSn) : null,
                 };
             }
             $event->update(['processed_at' => now()]);

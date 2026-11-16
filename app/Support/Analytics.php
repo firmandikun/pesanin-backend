@@ -206,7 +206,18 @@ class Analytics
     public static function transactions(User $user, Carbon $from, Carbon $to, int $shopId): Collection
     {
         $orders = $user->orders()->where('channel', 'shopee')->where('marketplace_shop_id', $shopId)
-            ->where('is_abandoned', false)->whereBetween('created_at', [$from, $to])->latest()->get();
+            ->where('is_abandoned', false)
+            ->where(function ($q) use ($from, $to) {
+                $q->whereBetween('created_at', [$from, $to])
+                    ->orWhere(function ($w) use ($from, $to) {
+                        $w->where('external_status', 'COMPLETED')
+                            ->where(function ($c) use ($from, $to) {
+                                $c->whereBetween('completed_at', [$from, $to])
+                                    ->orWhere(fn ($u) => $u->whereNull('completed_at')->whereBetween('updated_at', [$from, $to]));
+                            });
+                    });
+            })
+            ->latest()->get();
         $costs = Product::withTrashed()->where('user_id', $user->id)->where('cost_price', '>', 0)
             ->pluck('cost_price', 'id')->map(fn ($v) => (int) $v)->all();
         self::$listingCosts = MarketplaceListing::where('user_id', $user->id)->where('marketplace_shop_id', $shopId)->where('cost_price', '>', 0)->get()

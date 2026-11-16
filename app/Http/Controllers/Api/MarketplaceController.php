@@ -361,7 +361,7 @@ class MarketplaceController extends Controller
     public function sync(Request $request, MarketplaceShop $shop)
     {
         $this->own($request, $shop);
-        $what = $request->validate(['what' => 'nullable|in:all,products,orders,ads'])['what'] ?? 'all';
+        $what = $request->validate(['what' => 'nullable|in:all,products,orders,ads,recent'])['what'] ?? 'all';
         if ($shop->is_demo) {
             return ['message' => 'Toko contoh tidak perlu disinkronkan.', 'result' => []];
         }
@@ -371,6 +371,10 @@ class MarketplaceController extends Controller
         $sync = new ShopeeSync;
         $result = [];
         try {
+            if ($what === 'recent') {
+                $result['recent'] = $sync->recent($shop, 60);
+                $sync->settle($shop, 25);
+            }
             if (in_array($what, ['all', 'products'])) {
                 $sync->shopInfo($shop);
                 $result['products'] = $sync->products($shop);

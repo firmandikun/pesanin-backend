@@ -365,15 +365,17 @@ class ShopeeSync
     }
 
     /**
-     * Fast poll (every 30s): orders created or changed in the last few minutes, by update_time.
-     * Keeps new orders and status changes close to real time without Live Push.
+     * Fast poll (every 30s): orders and Pengiriman Kilat reservations created or changed in the last few minutes.
+     * Keeps new orders, bookings, and status changes (including COMPLETED) close to real time without Live Push.
      */
     public function recent(MarketplaceShop $shop, int $minutes = 5): int
     {
         $count = 0;
+        $from = now()->subMinutes($minutes)->timestamp;
+        $to = now()->timestamp;
         $cursor = '';
         do {
-            $page = $this->api->orderList($shop, now()->subMinutes($minutes)->timestamp, now()->timestamp, $cursor, 'update_time');
+            $page = $this->api->orderList($shop, $from, $to, $cursor, 'update_time');
             $sns = array_column($page['order_list'] ?? [], 'order_sn');
             foreach (array_chunk($sns, 50) as $chunk) {
                 foreach ($this->api->orderDetail($shop, $chunk) as $detail) {
@@ -383,6 +385,51 @@ class ShopeeSync
             }
             $cursor = $page['next_cursor'] ?? '';
         } while (! empty($page['more']));
+
+        // Also poll recent Pengiriman Kilat (bookings) so new reservations appear within 30s instead of waiting for hourly sync.
+        try {
+            $count += $this->recentBookings($shop, max($minutes, 15));
+        } catch (\Throwable $e) {
+            \Illuminate\Support\Facades\Log::warning("Shopee recent bookings {$shop->id}: {$e->getMessage()}");
+        }
+
+        return $count;
+    }
+
+    /** Fast poll for Pengiriman Kilat bookings created or updated recently. */
+    public function recentBookings(MarketplaceShop $shop, int $minutes = 15): int
+    {
+        $from = now()->subMinutes($minutes)->timestamp;
+        $to = now()->timestamp;
+        $listed = [];
+        foreach (['create_time', 'update_time'] as $field) {
+            $cursor = '';
+            do {
+                $page = $this->api->bookingList($shop, $from, $to, $cursor, $field);
+                foreach ($page['booking_list'] ?? [] as $bk) {
+                    if (! empty($bk['booking_sn'])) {
+                        $listed[$bk['booking_sn']] = $bk['booking_status'] ?? null;
+                    }
+                }
+                $cursor = $page['next_cursor'] ?? '';
+            } while (! empty($page['more']));
+        }
+        if (! $listed) {
+            return 0;
+        }
+        $local = \App\Models\ShopeeBooking::where('marketplace_shop_id', $shop->id)
+            ->whereIn('booking_sn', array_keys($listed))
+            ->pluck('booking_status', 'booking_sn');
+        $refresh = collect($listed)
+            ->filter(fn ($st, $sn) => ! isset($local[$sn]) || ($st !== null && $local[$sn] !== $st))
+            ->keys()->all();
+        $count = 0;
+        foreach (array_chunk($refresh, 50) as $chunk) {
+            foreach ($this->api->bookingDetail($shop, $chunk) as $d) {
+                $this->upsertBooking($shop, $d);
+                $count++;
+            }
+        }
 
         return $count;
     }
