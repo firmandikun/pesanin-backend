@@ -144,20 +144,22 @@ class ShopeeSync
 
     /**
      * Sync orders for a specific date range [$from, $to] chosen in the UI date filter.
-     * Lists orders in 15-day windows from Shopee and only fetches full details for orders that are missing locally,
-     * changed status on Shopee, or are COMPLETED without final escrow breakdown.
+     * Lists orders in 15-day windows from Shopee, fetches missing/changed order details in fast 50-order batches,
+     * and settles missing escrow breakdowns progressively.
+     *
+     * @return array{orders: int, settled: int, remaining_orders: int, remaining_escrow: int, remaining: int, shopee_total: int}
      */
-    public function syncRange(MarketplaceShop $shop, Carbon $from, Carbon $to): int
+    public function syncRange(MarketplaceShop $shop, Carbon $from, Carbon $to): array
     {
         @set_time_limit(0);
         if ($shop->is_demo) {
-            return 0;
+            return ['orders' => 0, 'settled' => 0, 'remaining_orders' => 0, 'remaining_escrow' => 0, 'remaining' => 0, 'shopee_total' => 0];
         }
         $floor = now()->subYears(2)->startOfDay();
         $start = $from->copy()->startOfDay()->max($floor);
         $end = $to->copy()->endOfDay()->min(now());
         if ($start->gt($end)) {
-            return 0;
+            return ['orders' => 0, 'settled' => 0, 'remaining_orders' => 0, 'remaining_escrow' => 0, 'remaining' => 0, 'shopee_total' => 0];
         }
 
         $listed = []; // order_sn => order_status on Shopee
@@ -193,31 +195,64 @@ class ShopeeSync
         }
 
         if (! $listed) {
-            return 0;
+            return ['orders' => 0, 'settled' => 0, 'remaining_orders' => 0, 'remaining_escrow' => 0, 'remaining' => 0, 'shopee_total' => 0];
         }
 
-        $local = Order::where('marketplace_shop_id', $shop->id)
-            ->whereIn('external_order_sn', array_keys($listed))
-            ->get(['external_order_sn', 'external_status', 'escrow_final', 'fee_breakdown'])
-            ->keyBy('external_order_sn');
+        // Chunk whereIn by 500 to avoid SQLite/MySQL parameter limits when a month has 1,000+ orders.
+        $local = collect(array_keys($listed))->chunk(500)->flatMap(fn ($chunk) => Order::where('marketplace_shop_id', $shop->id)
+            ->whereIn('external_order_sn', $chunk->all())
+            ->get(['id', 'external_order_sn', 'external_status', 'payment_status', 'escrow_amount', 'escrow_final', 'fee_breakdown'])
+        )->keyBy('external_order_sn');
 
-        $needDetail = [];
+        // 1. Orders missing locally or whose status on Shopee changed.
+        $needOrder = [];
         foreach ($listed as $sn => $st) {
             $row = $local[$sn] ?? null;
-            if (! $row || ($st && $row->external_status !== $st) || ($st === 'COMPLETED' && ! $row->escrow_final) || $row->fee_breakdown === null) {
-                $needDetail[] = $sn;
+            if (! $row || ($st && $row->external_status !== $st)) {
+                $needOrder[] = $sn;
             }
         }
 
-        $count = 0;
-        foreach (array_chunk($needDetail, 50) as $chunk) {
+        // Fetch up to 500 missing/changed orders per batch (10 API calls of 50 orders).
+        // When pulling > 15 orders at once, defer per-order escrow/tracking calls so all orders enter the DB in seconds.
+        $batchOrderSns = array_slice($needOrder, 0, 500);
+        $deferEscrow = count($batchOrderSns) > 15;
+        $listingsCache = MarketplaceListing::where('marketplace_shop_id', $shop->id)->get()->keyBy(fn ($l) => $l->item_id.':'.$l->model_id);
+        $upserted = 0;
+        foreach (array_chunk($batchOrderSns, 50) as $chunk) {
             foreach ($this->api->orderDetail($shop, $chunk) as $detail) {
-                $this->upsertOrder($shop, $detail);
-                $count++;
+                $this->upsertOrder($shop, $detail, $deferEscrow, $listingsCache);
+                $upserted++;
             }
         }
+        $remainingOrders = max(0, count($needOrder) - count($batchOrderSns));
 
-        return $count;
+        // 2. Paid orders in this range that still need escrow_detail (fee_breakdown or final COMPLETED escrow).
+        $needEscrowQuery = Order::where('marketplace_shop_id', $shop->id)
+            ->where('payment_status', 'paid')
+            ->whereIn('external_status', self::INCOME_STATUSES)
+            ->whereBetween('created_at', [$start, $end])
+            ->where(fn ($q) => $q->whereNull('fee_breakdown')->orWhereNull('escrow_amount')->orWhere(fn ($w) => $w->where('external_status', 'COMPLETED')->where('escrow_final', false)));
+
+        $totalNeedEscrow = (clone $needEscrowQuery)->count();
+        // Settle a batch of escrow details if we didn't just spend the whole request pulling 500 orders.
+        $escrowLimit = count($batchOrderSns) >= 250 ? 15 : 40;
+        $toSettle = $needEscrowQuery->latest('created_at')->limit($escrowLimit)->get();
+        $settled = 0;
+        foreach ($toSettle as $order) {
+            $this->fees($shop, $order);
+            $settled++;
+        }
+        $remainingEscrow = max(0, $totalNeedEscrow - $settled);
+
+        return [
+            'orders' => $upserted,
+            'settled' => $settled,
+            'remaining_orders' => $remainingOrders,
+            'remaining_escrow' => $remainingEscrow,
+            'remaining' => $remainingOrders + $remainingEscrow,
+            'shopee_total' => count($listed),
+        ];
     }
 
     /** List orders in one window (optionally one status) and upsert their details. */
@@ -612,9 +647,9 @@ class ShopeeSync
         }
     }
 
-    public function upsertOrder(MarketplaceShop $shop, array $d): Order
+    public function upsertOrder(MarketplaceShop $shop, array $d, bool $deferEscrow = false, ?\Illuminate\Support\Collection $listingsCache = null): Order
     {
-        $listings = MarketplaceListing::where('marketplace_shop_id', $shop->id)->get()->keyBy(fn ($l) => $l->item_id.':'.$l->model_id);
+        $listings = $listingsCache ?? MarketplaceListing::where('marketplace_shop_id', $shop->id)->get()->keyBy(fn ($l) => $l->item_id.':'.$l->model_id);
         $items = collect($d['item_list'] ?? [])->map(function ($i) use ($listings) {
             // Match the product listing by item/model. Shopee's order snapshot often has empty SKUs (e.g. the SKU was
             // added to the product after the order), so fall back to the listing's current SKUs: item_sku = parent
@@ -711,8 +746,13 @@ class ShopeeSync
             }
         }
 
+        $pkgTracking = ($d['package_list'][0]['tracking_number'] ?? '') ?: null;
+        if ($pkgTracking && ! $order->tracking_number) {
+            $order->update(['tracking_number' => $pkgTracking]);
+        }
+
         // Tracking numbers are issued asynchronously after the shipment is arranged.
-        if (! $order->tracking_number && in_array($d['order_status'] ?? '', ['PROCESSED', 'SHIPPED', 'TO_CONFIRM_RECEIVE', 'COMPLETED'], true)) {
+        if (! $deferEscrow && ! $order->tracking_number && in_array($d['order_status'] ?? '', ['PROCESSED', 'SHIPPED', 'TO_CONFIRM_RECEIVE', 'COMPLETED'], true)) {
             try {
                 if ($tn = $this->api->trackingNumber($shop, $d['order_sn'])) {
                     $order->update(['tracking_number' => $tn]);
@@ -723,21 +763,21 @@ class ShopeeSync
         }
 
         // A failed pickup comes back as RETRY_SHIP; keep Shopee's reason so the seller sees why.
-        if (($d['order_status'] ?? '') === 'RETRY_SHIP') {
+        if (! $deferEscrow && ($d['order_status'] ?? '') === 'RETRY_SHIP') {
             try {
                 $last = collect($this->api->trackingInfo($shop, $d['order_sn'])['tracking_info'] ?? [])->sortByDesc('update_time')->first();
                 $order->update(['external_note' => $last ? mb_substr(trim($last['description'] ?? ''), 0, 250) : null]);
             } catch (ShopeeException|\Illuminate\Http\Client\ConnectionException) {
                 // keep the previous note
             }
-        } elseif ($order->external_note) {
+        } elseif ($order->external_note && ($d['order_status'] ?? '') !== 'RETRY_SHIP') {
             $order->update(['external_note' => null]);
         }
 
         // Shopee estimates the seller's income as soon as an order is paid and finalises it when escrow is
         // released (COMPLETED). Refresh the estimate whenever the status moves, until it is final.
         $status = $d['order_status'] ?? '';
-        if (! $shop->is_demo && ! $order->escrow_final && $order->payment_status === 'paid' && in_array($status, self::INCOME_STATUSES, true)
+        if (! $deferEscrow && ! $shop->is_demo && ! $order->escrow_final && $order->payment_status === 'paid' && in_array($status, self::INCOME_STATUSES, true)
             && ($order->escrow_amount === null || $status === 'COMPLETED' || $existing?->external_status !== $status)) {
             $this->fees($shop, $order);
         }

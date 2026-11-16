@@ -403,6 +403,7 @@ class MarketplaceController extends Controller
             'to' => 'nullable|date',
         ]);
         $what = $validated['what'] ?? 'all';
+        $force = $request->boolean('force');
         if ($shop->is_demo) {
             return ['message' => 'Toko contoh tidak perlu disinkronkan.', 'result' => []];
         }
@@ -423,8 +424,24 @@ class MarketplaceController extends Controller
             if (in_array($what, ['all', 'orders'])) {
                 if (! empty($validated['from']) || ! empty($validated['to'])) {
                     [$rf, $rt] = \App\Support\Dates::range($validated['from'] ?? null, $validated['to'] ?? null);
-                    $result['orders'] = $sync->syncRange($shop, $rf, $rt);
-                    $sync->settle($shop, 50);
+                    $doneKey = "shopee:sync_range_done:{$shop->id}:{$rf->toDateString()}:{$rt->toDateString()}";
+                    if (! $force && \Illuminate\Support\Facades\Cache::has($doneKey)) {
+                        $result['orders'] = 0;
+                        $result['settled'] = 0;
+                        $result['remaining'] = 0;
+                    } else {
+                        $rangeRes = $sync->syncRange($shop, $rf, $rt);
+                        $result['orders'] = $rangeRes['orders'];
+                        $result['settled'] = $rangeRes['settled'];
+                        $result['remaining_orders'] = $rangeRes['remaining_orders'];
+                        $result['remaining_escrow'] = $rangeRes['remaining_escrow'];
+                        $result['remaining'] = $rangeRes['remaining'];
+                        $result['shopee_total'] = $rangeRes['shopee_total'];
+                        // Only mark this range as settled for 45s once 100% of orders & escrow in the range are synced.
+                        if ($rangeRes['remaining'] === 0) {
+                            \Illuminate\Support\Facades\Cache::put($doneKey, 1, 45);
+                        }
+                    }
                 } else {
                     $result['orders'] = $sync->orders($shop);
                 }
@@ -467,48 +484,64 @@ class MarketplaceController extends Controller
     }
 
     /** Transaction rows of a shop for the request's date range, status and search filters. */
-    private function transactionRows(Request $request, MarketplaceShop $shop): array
+    private function transactionRows(Request $request, MarketplaceShop $shop, bool $withFeeBreakdown = false): array
     {
         $this->own($request, $shop);
         $data = $request->validate([
             'from' => 'nullable|date', 'to' => 'nullable|date', 'search' => 'nullable|string|max:100',
-            'status' => 'nullable|string|max:30', 'page' => 'nullable|integer|min:1', 'per_page' => 'nullable|integer|min:10|max:1000',
+            'status' => 'nullable|string|max:30', 'page' => 'nullable|integer|min:1', 'per_page' => 'nullable|integer|min:10|max:25000',
         ]);
         [$from, $to] = \App\Support\Dates::range($data['from'] ?? null, $data['to'] ?? null);
-        $user = $request->user();
+        $baseRows = Analytics::transactions($request->user(), $from, $to, $shop->id, $withFeeBreakdown)->values();
 
-        // Versioned cache key so pagination (page 2, 3, …) and tab clicks reuse computed rows in <2ms,
-        // while any order sync, HPP edit, or ad sync immediately invalidates the cache key.
-        $orderVer = \App\Models\Order::where('marketplace_shop_id', $shop->id)->selectRaw('COUNT(*) as c, MAX(updated_at) as u')->first();
-        $listVer = MarketplaceListing::where('marketplace_shop_id', $shop->id)->max('updated_at');
-        $prodVer = \App\Models\Product::where('user_id', $user->id)->max('updated_at');
-        $adVer = \App\Models\ShopeeAdCampaign::where('marketplace_shop_id', $shop->id)->max('updated_at')
-            .':'.\App\Models\ShopeeAdStat::whereIn('shopee_ad_campaign_id', \App\Models\ShopeeAdCampaign::where('marketplace_shop_id', $shop->id)->select('id'))->max('updated_at');
-        $cacheKey = 'shopee:tx:'.md5( implode('|', [
-            $shop->id, $from->timestamp, $to->timestamp,
-            $orderVer->c ?? 0, $orderVer->u ?? '', $listVer ?? '', $prodVer ?? '', $adVer,
-        ]));
+        $needle = ! empty($data['search']) ? mb_strtolower($data['search']) : null;
+        $statusFilter = $data['status'] ?? null;
 
-        $baseRows = \Illuminate\Support\Facades\Cache::remember($cacheKey, 60, fn () => Analytics::transactions($user, $from, $to, $shop->id));
+        $tabCounts = [
+            '' => 0,
+            'READY_TO_SHIP' => 0,
+            'PROCESSED' => 0,
+            'SHIPPED' => 0,
+            'COMPLETED' => 0,
+            'CANCELLED' => 0,
+            'TO_RETURN' => 0,
+        ];
+        $filtered = [];
 
-        $allRows = $baseRows
-            ->when($data['search'] ?? null, function ($c, $search) {
-                $needle = mb_strtolower($search);
+        foreach ($baseRows as $r) {
+            if ($needle !== null && ! str_contains(mb_strtolower(($r['order_sn'] ?? '').' '.($r['customer_name'] ?? '').' '.($r['tracking_number'] ?? '')), $needle)) {
+                continue;
+            }
+            $tabCounts['']++;
+            $st = (string) ($r['status'] ?? '');
+            $hasResi = ! empty($r['tracking_number']);
+            if ($st === 'READY_TO_SHIP' || $st === 'PENDING' || ($st === 'IN_CANCEL' && ! $hasResi)) {
+                $tabCounts['READY_TO_SHIP']++;
+            }
+            if ($st === 'PROCESSED' || $st === 'RETRY_SHIP' || ($st === 'IN_CANCEL' && $hasResi)) {
+                $tabCounts['PROCESSED']++;
+            }
+            if ($st === 'SHIPPED' || $st === 'TO_CONFIRM_RECEIVE') {
+                $tabCounts['SHIPPED']++;
+            }
+            if ($st === 'COMPLETED') {
+                $tabCounts['COMPLETED']++;
+            }
+            if ($st === 'CANCELLED' || $st === 'IN_CANCEL') {
+                $tabCounts['CANCELLED']++;
+            }
+            if ($st === 'TO_RETURN') {
+                $tabCounts['TO_RETURN']++;
+            }
 
-                return $c->filter(fn ($row) => str_contains(mb_strtolower(($row['order_sn'] ?? '').' '.($row['customer_name'] ?? '').' '.($row['tracking_number'] ?? '')), $needle));
-            })->values();
-
-        $tabs = ['READY_TO_SHIP', 'PROCESSED', 'SHIPPED', 'COMPLETED', 'CANCELLED', 'TO_RETURN'];
-        $tabCounts = ['' => $allRows->count()];
-        foreach ($tabs as $t) {
-            $tabCounts[$t] = $allRows->filter(fn ($r) => self::matchTransactionTab($r, $t))->count();
+            if (! $statusFilter || self::matchTransactionTab($r, $statusFilter)) {
+                $filtered[] = $r;
+            }
         }
 
-        $rows = ! empty($data['status'])
-            ? $allRows->filter(fn ($r) => self::matchTransactionTab($r, $data['status']))->values()
-            : $allRows;
+        $rows = collect($filtered);
 
-        return [$rows, $data, $from, $to, $tabCounts];
+        return [$rows, $data, $from, $to, $tabCounts, $baseRows];
     }
 
     /**
@@ -517,7 +550,7 @@ class MarketplaceController extends Controller
      */
     public function exportTransactions(Request $request, MarketplaceShop $shop)
     {
-        [$rows, , $from, $to] = $this->transactionRows($request, $shop);
+        [$rows, , $from, $to] = $this->transactionRows($request, $shop, true);
         $feeCols = $rows->flatMap(fn ($r) => collect($r['fee_breakdown'])->pluck('label'))->unique()->values()->all();
         $head = ['No Pesanan', 'Tanggal', 'Status', 'Produk', 'Variasi', 'Qty', 'Jumlah (harga produk)', ...$feeCols,
             'Total Biaya', 'Pendapatan Bersih', 'HPP', 'Biaya Iklan (Konversi)', 'Laba', 'Margin %', 'Penghasilan', 'Resi', 'Kurir'];
@@ -531,8 +564,11 @@ class MarketplaceController extends Controller
             fputcsv($out, $head, ';');
             foreach ($rows as $r) {
                 $fees = collect($r['fee_breakdown'])->groupBy('label')->map(fn ($g) => $g->sum('amount'));
+                $createdStr = $r['created_at'] instanceof \DateTimeInterface
+                    ? $r['created_at']->format('Y-m-d H:i')
+                    : substr((string) $r['created_at'], 0, 16);
                 fputcsv($out, [
-                    $r['order_sn'], $r['created_at']->format('Y-m-d H:i'), $statusLabel[$r['status']] ?? $r['status'],
+                    $r['order_sn'], $createdStr, $statusLabel[$r['status']] ?? $r['status'],
                     collect($r['items'])->pluck('name')->implode(' | '), collect($r['items'])->pluck('variant')->filter()->implode(' | '),
                     $r['quantity'], $r['revenue'], ...array_map(fn ($c) => $fees[$c] ?? 0, $feeCols),
                     -$r['fees'], $r['net_revenue'], $r['cogs'], -($r['ad_cost'] ?? 0), $r['profit'], $r['margin'],
@@ -545,21 +581,46 @@ class MarketplaceController extends Controller
 
     public function transactions(Request $request, MarketplaceShop $shop)
     {
-        [$rows, $data, $from, , $tabCounts] = $this->transactionRows($request, $shop);
+        [$rows, $data, $from, , $tabCounts, $baseRows] = $this->transactionRows($request, $shop, false);
         $backfilling = \App\Support\Shopee\ShopeeBackfill::ensureShop($shop, $from);
         $perPage = (int) ($data['per_page'] ?? 10);
         $page = (int) ($data['page'] ?? 1);
+        $pageRows = Analytics::attachFeeBreakdowns($rows->forPage($page, $perPage)->values());
+
+        $gmv = 0;
+        $revenue = 0;
+        $fees = 0;
+        $netRevenue = 0;
+        $cogs = 0;
+        $ads = 0;
+        $grossProfit = 0;
+        $profit = 0;
+        $missingCost = 0;
+        foreach ($rows as $r) {
+            $gmv += $r['gmv'];
+            $revenue += $r['revenue'];
+            $fees += $r['fees'];
+            $netRevenue += $r['net_revenue'];
+            $cogs += $r['cogs'];
+            $ads += $r['ad_cost'];
+            $grossProfit += $r['gross_profit'];
+            $profit += $r['profit'];
+            if ($r['missing_cost']) {
+                $missingCost++;
+            }
+        }
 
         return [
+            'rows' => $request->boolean('all_rows') ? ($baseRows->count() <= 3000 ? Analytics::attachFeeBreakdowns($baseRows) : $baseRows) : null,
             'transactions' => [
-                'data' => $rows->forPage($page, $perPage)->values(), 'current_page' => $page,
+                'data' => $pageRows, 'current_page' => $page,
                 'last_page' => max(1, (int) ceil($rows->count() / $perPage)), 'total' => $rows->count(),
             ],
             'summary' => [
-                'gmv' => (int) $rows->sum('gmv'), 'revenue' => (int) $rows->sum('revenue'), 'fees' => (int) $rows->sum('fees'),
-                'net_revenue' => (int) $rows->sum('net_revenue'), 'cogs' => (int) $rows->sum('cogs'),
-                'ads' => (int) $rows->sum('ad_cost'), 'gross_profit' => (int) $rows->sum('gross_profit'),
-                'profit' => (int) $rows->sum('profit'), 'missing_cost' => $rows->where('missing_cost', true)->count(),
+                'gmv' => $gmv, 'revenue' => $revenue, 'fees' => $fees,
+                'net_revenue' => $netRevenue, 'cogs' => $cogs,
+                'ads' => $ads, 'gross_profit' => $grossProfit,
+                'profit' => $profit, 'missing_cost' => $missingCost,
             ],
             'tab_counts' => $tabCounts,
             'backfilling' => $backfilling,

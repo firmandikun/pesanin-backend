@@ -99,7 +99,7 @@ Route::middleware(['auth:sanctum', 'member', 'subscribed'])->group(function () {
     Route::post('/marketplace/shopee/share-link', [MarketplaceController::class, 'shareLink']);
     Route::post('/marketplace/shopee/complete', [MarketplaceController::class, 'completeFromUrl']);
     Route::post('/marketplace/shopee/demo', [MarketplaceController::class, 'demo']);
-    Route::post('/marketplace/shops/{shop}/sync', [MarketplaceController::class, 'sync'])->middleware('throttle:10,1');
+    Route::post('/marketplace/shops/{shop}/sync', [MarketplaceController::class, 'sync'])->middleware('throttle:60,1');
     Route::get('/marketplace/returns', [MarketplaceController::class, 'returns']);
     Route::get('/marketplace/balance', [MarketplaceController::class, 'balance']);
     Route::get('/marketplace/shops/{shop}/transactions', [MarketplaceController::class, 'transactions']);

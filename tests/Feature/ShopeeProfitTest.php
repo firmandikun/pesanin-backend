@@ -211,4 +211,167 @@ class ShopeeProfitTest extends TestCase
         $this->assertSame(3805, $res['summary']['ads']);
         $this->assertSame(20000 + 42000 - 3805, $res['summary']['profit']);
     }
+
+    public function test_twenty_thousand_transactions_performance_and_tab_consistency(): void
+    {
+        $camp = new \App\Models\ShopeeAdCampaign([
+            'marketplace_shop_id' => $this->shop->id,
+            'campaign_id' => 901,
+            'name' => 'Iklan Produk Otomatis',
+            'ad_type' => 'auto',
+            'status' => 'ongoing',
+            'bidding_method' => 'auto',
+            'item_ids' => [101],
+        ]);
+        $camp->user_id = $this->user->id;
+        $camp->save();
+
+        \App\Models\ShopeeAdStat::create([
+            'shopee_ad_campaign_id' => $camp->id,
+            'date' => '2026-10-15',
+            'impressions' => 50000,
+            'clicks' => 2000,
+            'expense' => 400000,
+            'gmv' => 4000000,
+            'orders' => 100,
+            'items_sold' => 105,
+        ]);
+
+        \App\Models\MarketplaceListing::forceCreate([
+            'user_id' => $this->user->id,
+            'marketplace_shop_id' => $this->shop->id,
+            'item_id' => 101,
+            'model_id' => 0,
+            'name' => 'Cover Knalpot Airblade',
+            'price' => 25000,
+            'cost_price' => 8000,
+            'stock' => 500,
+            'status' => 'NORMAL',
+        ]);
+
+        // Bulk insert 20,000 orders across October 2026 in chunks of 500
+        $itemsJson = json_encode([['item_id' => 101, 'model_id' => 0, 'name' => 'Cover Knalpot Airblade', 'qty' => 1, 'price' => 25000]]);
+        $distribution = [
+            ['COMPLETED', 'completed', 'delivered', 19000, true, 14000],
+            ['CANCELLED', 'cancelled', 'not_shipped', null, true, 2000],
+            ['TO_CONFIRM_RECEIVE', 'processing', 'in_transit', 19000, false, 1500],
+            ['PROCESSED', 'processing', 'not_shipped', 19000, false, 1500],
+            ['READY_TO_SHIP', 'processing', 'not_shipped', 19000, false, 800],
+            ['TO_RETURN', 'refunded', 'returned', -3500, true, 200],
+        ];
+
+        $batch = [];
+        $seq = 0;
+        foreach ($distribution as [$extStatus, $status, $shipStatus, $escrow, $escrowFinal, $count]) {
+            for ($i = 0; $i < $count; $i++) {
+                $seq++;
+                $day = str_pad((string) (($seq % 31) + 1), 2, '0', STR_PAD_LEFT);
+                $ts = "2026-10-{$day} 10:00:00";
+                $batch[] = [
+                    'user_id' => $this->user->id,
+                    'marketplace_shop_id' => $this->shop->id,
+                    'code' => "SP2610{$seq}",
+                    'channel' => 'shopee',
+                    'source' => 'marketplace',
+                    'external_order_sn' => "2610{$seq}",
+                    'external_status' => $extStatus,
+                    'status' => $status,
+                    'shipping_status' => $shipStatus,
+                    'payment_status' => 'paid',
+                    'payment_method' => 'marketplace',
+                    'customer_name' => "Buyer {$seq}",
+                    'tracking_number' => $extStatus === 'READY_TO_SHIP' ? null : "SPXID{$seq}",
+                    'courier' => 'SPX Hemat',
+                    'quantity' => 1,
+                    'unit_price' => 25000,
+                    'subtotal' => 25000,
+                    'total' => 25000,
+                    'escrow_amount' => $escrow,
+                    'escrow_final' => $escrowFinal,
+                    'is_abandoned' => false,
+                    'items' => $itemsJson,
+                    'created_at' => $ts,
+                    'updated_at' => $ts,
+                ];
+                if (count($batch) === 500) {
+                    \Illuminate\Support\Facades\DB::table('orders')->insert($batch);
+                    $batch = [];
+                }
+            }
+        }
+        if ($batch) {
+            \Illuminate\Support\Facades\DB::table('orders')->insert($batch);
+        }
+
+        $this->assertSame(20000, Order::where('marketplace_shop_id', $this->shop->id)->count());
+
+        Sanctum::actingAs($this->user);
+        $t0 = microtime(true);
+        $res = $this->getJson("/api/marketplace/shops/{$this->shop->id}/transactions?from=2026-10-01&to=2026-10-31&all_rows=1")
+            ->assertOk()
+            ->json();
+        $elapsedMs = (microtime(true) - $t0) * 1000;
+
+        // Verify all 20,000 rows and exact tab counts
+        $this->assertCount(20000, $res['rows']);
+        $this->assertSame(20000, $res['tab_counts']['']);
+        $this->assertSame(14000, $res['tab_counts']['COMPLETED']);
+        $this->assertSame(2000, $res['tab_counts']['CANCELLED']);
+        $this->assertSame(1500, $res['tab_counts']['SHIPPED']);
+        $this->assertSame(1500, $res['tab_counts']['PROCESSED']);
+        $this->assertSame(800, $res['tab_counts']['READY_TO_SHIP']);
+        $this->assertSame(200, $res['tab_counts']['TO_RETURN']);
+        $this->assertLessThan(3000, $elapsedMs, "20,000 transactions should be processed in under 3s (took {$elapsedMs}ms)");
+
+        // Verify status tab filtering for COMPLETED vs CANCELLED never mixes rows
+        $completedRes = $this->getJson("/api/marketplace/shops/{$this->shop->id}/transactions?from=2026-10-01&to=2026-10-31&status=COMPLETED")
+            ->assertOk()->json();
+        $this->assertSame(14000, $completedRes['transactions']['total']);
+        foreach ($completedRes['transactions']['data'] as $r) {
+            $this->assertSame('COMPLETED', $r['status']);
+        }
+
+        $cancelledRes = $this->getJson("/api/marketplace/shops/{$this->shop->id}/transactions?from=2026-10-01&to=2026-10-31&status=CANCELLED")
+            ->assertOk()->json();
+        $this->assertSame(2000, $cancelledRes['transactions']['total']);
+        $this->assertSame(0, $cancelledRes['summary']['revenue']);
+        foreach ($cancelledRes['transactions']['data'] as $r) {
+            $this->assertSame('CANCELLED', $r['status']);
+        }
+
+        // Also test syncRange against 20,000 existing orders (verifying chunked whereIn with 20,000 order_sns)
+        $pageOrders = [];
+        for ($i = 1; $i <= 20000; $i++) {
+            $st = $i <= 14000 ? 'COMPLETED' : ($i <= 16000 ? 'CANCELLED' : ($i <= 17500 ? 'TO_CONFIRM_RECEIVE' : ($i <= 19000 ? 'PROCESSED' : ($i <= 19800 ? 'READY_TO_SHIP' : 'TO_RETURN'))));
+            $pageOrders[] = ['order_sn' => "2610{$i}", 'order_status' => $st];
+        }
+        $chunks = array_chunk($pageOrders, 5000);
+        $callIdx = 0;
+        Http::fake([
+            '*get_order_list*' => function () use ($chunks, &$callIdx) {
+                $idx = $callIdx++;
+                if ($idx < count($chunks)) {
+                    return Http::response([
+                        'response' => [
+                            'order_list' => $chunks[$idx],
+                            'more' => $idx + 1 < count($chunks),
+                            'next_cursor' => (string) (($idx + 1) * 5000),
+                        ],
+                    ]);
+                }
+
+                return Http::response(['response' => ['order_list' => [], 'more' => false, 'next_cursor' => '']]);
+            },
+            '*get_escrow_detail*' => Http::response($this->income(19000, 3500)),
+        ]);
+
+        $syncRes = (new ShopeeSync)->syncRange(
+            $this->shop,
+            \Illuminate\Support\Carbon::parse('2026-10-01'),
+            \Illuminate\Support\Carbon::parse('2026-10-31')
+        );
+        $this->assertSame(20000, $syncRes['shopee_total']);
+        $this->assertSame(0, $syncRes['orders'], 'All 20,000 orders already match local status so 0 need re-fetching order_detail');
+        $this->assertSame(40, $syncRes['settled'], 'Settles 40 escrow breakdowns per batch');
+    }
 }
