@@ -461,17 +461,26 @@ class ShopeeClient
     /** All product-ads campaign ids of the shop. */
     public function adCampaignIds(MarketplaceShop $shop): array
     {
-        $ids = [];
+        return array_column($this->adCampaignList($shop), 'campaign_id');
+    }
+
+    /** All product-ads campaigns [{campaign_id, ad_type}] of the shop. */
+    public function adCampaignList(MarketplaceShop $shop): array
+    {
+        $list = [];
         $offset = 0;
         do {
             $r = $this->get($shop, '/api/v2/ads/get_product_level_campaign_id_list', ['ad_type' => 'all', 'offset' => $offset, 'limit' => 100])['response'] ?? [];
             foreach ($r['campaign_list'] ?? [] as $c) {
-                $ids[] = (int) $c['campaign_id'];
+                $list[] = [
+                    'campaign_id' => (int) $c['campaign_id'],
+                    'ad_type' => $c['ad_type'] ?? null,
+                ];
             }
             $offset += 100;
         } while (! empty($r['has_next_page']) && $offset < 5000);
 
-        return $ids;
+        return $list;
     }
 
     /** Name, status, budget and promoted item ids per campaign (max 100 ids per call). */

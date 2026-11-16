@@ -241,14 +241,44 @@ class MarketplaceController extends Controller
             ->get();
         $listings = MarketplaceListing::whereIn('marketplace_shop_id', $shopIds)->whereIn('item_id', $campaigns->pluck('item_ids')->flatten()->unique())
             ->get()->groupBy('item_id')->map(fn ($g) => ['item_id' => (int) $g->first()->item_id, 'name' => $g->first()->name, 'image' => $g->first()->image, 'product_id' => $g->firstWhere('product_id')?->product_id]);
+        $shopNormalListings = MarketplaceListing::whereIn('marketplace_shop_id', $shopIds)->where('status', 'NORMAL')
+            ->get()->groupBy('marketplace_shop_id')
+            ->map(fn ($g) => $g->groupBy('item_id')->map(fn ($ig) => [
+                'item_id' => (int) $ig->first()->item_id,
+                'name' => $ig->first()->name,
+                'image' => $ig->first()->image,
+                'product_id' => $ig->firstWhere('product_id')?->product_id,
+            ])->values()->all());
 
         $row = fn ($c) => [
             'expense' => (int) $c->expense, 'gmv' => (int) $c->gmv, 'clicks' => (int) $c->clicks, 'impressions' => (int) $c->impressions,
             'orders' => (int) $c->orders, 'items_sold' => (int) $c->items_sold,
         ];
-        $campaignRows = $campaigns->map(fn ($c) => ['id' => $c->id, 'campaign_id' => $c->campaign_id, 'name' => $c->name ?: "Kampanye {$c->campaign_id}", 'status' => $c->status, 'ad_type' => $c->ad_type, 'bidding_method' => $c->bidding_method, 'budget' => $c->budget,
-            'items' => collect($c->item_ids ?? [])->map(fn ($id) => $listings[$id] ?? ['item_id' => $id, 'name' => "Produk {$id}", 'image' => null, 'product_id' => null])->values()] + $row($c))
-            ->sortByDesc('expense')->values();
+        $campaignRows = $campaigns->map(function ($c) use ($listings, $shopNormalListings, $row) {
+            $explicitItems = collect($c->item_ids ?? [])->map(fn ($id) => $listings[$id] ?? ['item_id' => $id, 'name' => "Produk {$id}", 'image' => null, 'product_id' => null])->values();
+            $nameLower = mb_strtolower((string) ($c->name ?? ''));
+            $isAuto = $c->ad_type === 'auto' || str_contains($nameLower, 'otomatis');
+            $isGroup = ! $isAuto && ($c->ad_type === 'group' || $explicitItems->count() > 1 || str_contains($nameLower, 'grup') || str_contains($nameLower, 'group'));
+            $kind = $isAuto ? 'auto' : ($isGroup ? 'group' : 'manual');
+            $autoItems = $isAuto
+                ? ($explicitItems->isNotEmpty() ? $explicitItems : collect($shopNormalListings[$c->marketplace_shop_id] ?? []))
+                : collect();
+
+            return [
+                'id' => $c->id,
+                'marketplace_shop_id' => $c->marketplace_shop_id,
+                'campaign_id' => $c->campaign_id,
+                'name' => $c->name ?: ($isAuto ? 'Iklan Produk Otomatis' : ($isGroup ? "Grup Iklan #{$c->campaign_id}" : "Kampanye {$c->campaign_id}")),
+                'status' => $c->status,
+                'ad_type' => $c->ad_type,
+                'kind' => $kind,
+                'bidding_method' => $c->bidding_method,
+                'budget' => $c->budget,
+                'items' => $explicitItems,
+                'auto_items' => $autoItems->values(),
+                'auto_product_count' => $isAuto ? $autoItems->count() : $explicitItems->count(),
+            ] + $row($c);
+        })->sortByDesc('expense')->values();
         $allCampaignRows = $campaignRows;
         if ($activeOnly) {
             $campaignRows = $campaignRows->where('status', 'ongoing')->values();
@@ -314,6 +344,12 @@ class MarketplaceController extends Controller
                 'paused' => $allCampaignRows->where('status', 'paused')->count(),
                 'ended' => $allCampaignRows->where('status', 'ended')->count(),
                 'closed' => $allCampaignRows->where('status', 'closed')->count(),
+            ],
+            'kind_counts' => [
+                'all' => $allCampaignRows->count(),
+                'manual' => $allCampaignRows->where('kind', 'manual')->count(),
+                'group' => $allCampaignRows->where('kind', 'group')->count(),
+                'auto' => $allCampaignRows->where('kind', 'auto')->count(),
             ],
             'daily' => $dailyRows,
             'campaigns' => $campaignRows, 'products' => $products,

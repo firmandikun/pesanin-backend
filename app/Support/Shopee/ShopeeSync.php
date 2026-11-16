@@ -867,27 +867,41 @@ class ShopeeSync
     /** Product-ads campaigns, the items they promote, and their daily spend/results. */
     public function adCampaigns(MarketplaceShop $shop, int $days = 29): int
     {
-        $ids = $this->api->adCampaignIds($shop);
-        if (! $ids) {
+        $list = $this->api->adCampaignList($shop);
+        if (! $list) {
             return 0;
         }
+        $typeById = collect($list)->pluck('ad_type', 'campaign_id')->all();
+        $ids = array_keys($typeById);
         $byId = [];
         foreach ($this->api->adCampaignSettings($shop, $ids) as $c) {
+            $cid = (int) $c['campaign_id'];
             $info = $c['common_info'] ?? $c;
             $budget = $info['campaign_budget'] ?? null;
-            $byId[(int) $c['campaign_id']] = ShopeeAdCampaign::updateOrCreate(
-                ['marketplace_shop_id' => $shop->id, 'campaign_id' => (int) $c['campaign_id']],
+            $adType = $info['ad_type'] ?? $c['ad_type'] ?? ($typeById[$cid] ?? null);
+            $rawItems = collect($info['item_id_list'] ?? [])
+                ->merge($c['auto_product_ads_info'] ?? [])
+                ->merge($c['manual_product_ads_info'] ?? [])
+                ->merge($c['product_list'] ?? [])
+                ->merge($c['group_info']['item_id_list'] ?? [])
+                ->map(fn ($x) => is_array($x) ? ($x['item_id'] ?? null) : $x)
+                ->filter()
+                ->map(fn ($id) => (int) $id)
+                ->unique()
+                ->values()
+                ->all();
+            $defaultName = $adType === 'auto' ? 'Iklan Produk Otomatis' : (count($rawItems) > 1 ? "Grup Iklan #{$cid}" : null);
+            $byId[$cid] = ShopeeAdCampaign::updateOrCreate(
+                ['marketplace_shop_id' => $shop->id, 'campaign_id' => $cid],
                 [
                     'user_id' => $shop->user_id,
-                    'name' => $info['ad_name'] ?? $info['campaign_name'] ?? null,
-                    'ad_type' => $info['ad_type'] ?? $c['ad_type'] ?? null,
-                    'bidding_method' => $info['bidding_method'] ?? null,
+                    'name' => ($info['ad_name'] ?? $info['campaign_name'] ?? null) ?: $defaultName,
+                    'ad_type' => $adType,
+                    'bidding_method' => $info['bidding_method'] ?? ($adType === 'auto' ? 'auto' : null),
                     'status' => $info['campaign_status'] ?? null,
                     'placement' => $info['campaign_placement'] ?? null,
                     'budget' => is_numeric($budget) ? (int) round($budget) : null,
-                    // Auto-selection campaigns may list their products only in auto_product_ads_info.
-                    'item_ids' => collect($info['item_id_list'] ?? [])->merge(collect($c['auto_product_ads_info'] ?? [])->pluck('item_id'))
-                        ->filter()->map(fn ($id) => (int) $id)->unique()->values()->all(),
+                    'item_ids' => $rawItems,
                 ],
             );
         }

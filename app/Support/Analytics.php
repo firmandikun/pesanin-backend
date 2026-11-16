@@ -298,13 +298,19 @@ class Analytics
             ->groupBy('shopee_ad_campaign_id')
             ->get()->keyBy('shopee_ad_campaign_id');
 
+        $shopActiveItems = null;
         $agg = [];
         foreach ($campaigns as $c) {
             $ids = array_values(array_filter(array_map('intval', $c->item_ids ?? [])));
+            if (! $ids && $c->ad_type === 'auto') {
+                $shopActiveItems ??= MarketplaceListing::where('marketplace_shop_id', $shopId)
+                    ->where('status', 'NORMAL')
+                    ->pluck('item_id')->map(fn ($id) => (int) $id)->unique()->values()->all();
+                $ids = $shopActiveItems;
+            }
             if (! $ids) {
                 continue;
             }
-            $share = 1 / count($ids);
             $rStat = $rangeSums[$c->id] ?? null;
             $tStat = $totalSums[$c->id] ?? null;
             foreach ($ids as $itemId) {
@@ -316,14 +322,14 @@ class Analytics
                     'total_expense' => 0.0,
                     'total_orders' => 0.0,
                 ];
-                $agg[$itemId]['campaigns'][] = $c->name ?: "Kampanye {$c->campaign_id}";
+                $agg[$itemId]['campaigns'][] = $c->name ?: ($c->ad_type === 'auto' ? 'Iklan Produk Otomatis' : "Kampanye {$c->campaign_id}");
                 if ($c->status === 'ongoing') {
                     $agg[$itemId]['ongoing'] = true;
                 }
-                $agg[$itemId]['range_expense'] += ((float) ($rStat->expense ?? 0)) * $share;
-                $agg[$itemId]['range_orders'] += ((float) ($rStat->orders ?? 0)) * $share;
-                $agg[$itemId]['total_expense'] += ((float) ($tStat->expense ?? 0)) * $share;
-                $agg[$itemId]['total_orders'] += ((float) ($tStat->orders ?? 0)) * $share;
+                $agg[$itemId]['range_expense'] += (float) ($rStat->expense ?? 0);
+                $agg[$itemId]['range_orders'] += (float) ($rStat->orders ?? 0);
+                $agg[$itemId]['total_expense'] += (float) ($tStat->expense ?? 0);
+                $agg[$itemId]['total_orders'] += (float) ($tStat->orders ?? 0);
             }
         }
 
