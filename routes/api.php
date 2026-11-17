@@ -104,6 +104,7 @@ Route::middleware(['auth:sanctum', 'member', 'subscribed'])->group(function () {
     Route::get('/marketplace/balance', [MarketplaceController::class, 'balance']);
     Route::get('/marketplace/shops/{shop}/transactions', [MarketplaceController::class, 'transactions']);
     Route::get('/marketplace/shops/{shop}/transactions/export', [MarketplaceController::class, 'exportTransactions']);
+    Route::get('/marketplace/shops/{shop}/statement', [MarketplaceController::class, 'statement']);
     Route::delete('/marketplace/shops/{shop}', [MarketplaceController::class, 'disconnect']);
     // Chat inbox (all sources). Shopee for now; Meta channels plug in next to it.
     Route::get('/chat', [\App\Http\Controllers\Api\ShopeeChatController::class, 'conversations']);
