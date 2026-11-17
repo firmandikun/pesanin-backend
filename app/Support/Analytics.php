@@ -221,7 +221,22 @@ class Analytics
 
         $rawOrders = $user->orders()->where('channel', 'shopee')->where('marketplace_shop_id', $shopId)
             ->where('is_abandoned', false)
-            ->whereBetween('created_at', [$from, $to])
+            ->when($byOrderDate, fn ($q) => $q->whereBetween('created_at', [$from, $to]))
+            ->when(! $byOrderDate, fn ($q) => $q->where(function ($q) use ($from, $to) {
+                $q->where(function ($c) use ($from, $to) {
+                    $c->where('external_status', 'COMPLETED')
+                        ->where(function ($w) use ($from, $to) {
+                            $w->whereBetween('completed_at', [$from, $to])
+                                ->orWhere(function ($fb) use ($from, $to) {
+                                    $fb->whereNull('completed_at')->whereBetween('created_at', [$from, $to]);
+                                });
+                        });
+                })->orWhere(function ($nc) use ($from, $to) {
+                    $nc->where(function ($st) {
+                        $st->whereNull('external_status')->orWhere('external_status', '!=', 'COMPLETED');
+                    })->whereBetween('created_at', [$from, $to]);
+                });
+            }))
             ->select($cols)
             ->orderByDesc('created_at')
             ->toBase()

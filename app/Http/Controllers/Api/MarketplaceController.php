@@ -832,8 +832,10 @@ class MarketplaceController extends Controller
         $basis = $data['basis'] ?? 'settled_cogs_completed';
         $user = $request->user();
 
-        // Same rows as the Transaksi page (order-created date), with Shopee fee lines attached.
-        $rows = Analytics::attachFeeBreakdowns(Analytics::transactions($user, $from, $to, $shop->id, false));
+        // For "Hanya Pesanan Sudah Cair" (settled), match orders by settlement/completion date;
+        // for active/HPP-completed bases, match by order creation date (same as Transaksi).
+        $byOrderDate = $basis !== 'settled';
+        $rows = Analytics::attachFeeBreakdowns(Analytics::transactions($user, $from, $to, $shop->id, false, $byOrderDate));
 
         $s = self::statementTotals($rows, $basis);
 
