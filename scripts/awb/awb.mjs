@@ -48,6 +48,13 @@ function redrawItemTable(page, items, fonts, own, settings) {
   const hash = onHeader(/^#$|^No\.?$/i), sku = onHeader(/^SKU$/i), variant = onHeader(/^(Variasi|Variation)$/i), qty = onHeader(/^(Qty|Jumlah|Total)$/i);
   if (!qty) return false;
 
+  const { width: pw } = page.getSize();
+
+  // Content frame borders (outer box of Shopee label: 5mm = 14.17pt margin)
+  const detectedLeft = hash ? hash.transform[4] : name.transform[4] - 20;
+  const frameLeft = detectedLeft >= 15 ? 14.17 : Math.max(10, detectedLeft - 2);
+  const frameRight = pw - frameLeft;
+
   const x = {
     name: name.transform[4] - 1,
     sku: sku ? sku.transform[4] - 1 : null,
@@ -146,27 +153,45 @@ function redrawItemTable(page, items, fonts, own, settings) {
     return { no: it.no, qty: it.qty, cells };
   });
 
-  const { width: pw } = page.getSize();
-  const left = hash ? hash.transform[4] : Math.max(10, name.transform[4] - 22);
-  const right = pw - left;
-  const qtyX = right - 18;
-  const hasMultipleCols = heads.length > 2;
-  const colX = hasMultipleCols
-    ? [left + 14, left + 14 + (qtyX - left - 14) * 0.66]
-    : [left + 14];
-  const headX = [...colX, qtyX];
+  const hashWidth = 14;
+  const qtyColWidth = 22;
+  const divHash = frameLeft + hashWidth;
+  const divQty = frameRight - qtyColWidth;
+  const qtyX = divQty + 4;
+
+  let colX;
+  let headX;
+  let divVar = null;
+
+  if (allSku) {
+    colX = [divHash + 3];
+    headX = [colX[0], qtyX];
+  } else if (showVariant) {
+    const avail = divQty - divHash;
+    const nameWidth = Math.round(avail * 0.65);
+    divVar = divHash + nameWidth;
+    colX = [divHash + 3, divVar + 3];
+    headX = [colX[0], colX[1], qtyX];
+  } else {
+    colX = [divHash + 3];
+    headX = [colX[0], qtyX];
+  }
+
   const ink = rgb(0, 0, 0);
   const rule = rgb(0.1, 0.1, 0.1);
   const stroke = 0.6;
   const showBorders = settings?.show_table_border !== false;
 
-  const tableLeft = left - 3;
-  const tableRight = right + 2;
-  const line = (yy) => page.drawLine({ start: { x: tableLeft, y: yy }, end: { x: tableRight, y: yy }, thickness: stroke, color: rule });
+  const line = (yy) => page.drawLine({ start: { x: frameLeft, y: yy }, end: { x: frameRight, y: yy }, thickness: stroke, color: rule });
   const vLine = (vx, y1, y2) => page.drawLine({ start: { x: vx, y: y1 }, end: { x: vx, y: y2 }, thickness: stroke, color: rule });
 
-  const lh = size * 1.18;
-  const widthFor = (k) => (k + 1 < colX.length ? colX[k + 1] : qtyX) - colX[k] - 6;
+  const lh = size * 1.16;
+  const widthFor = (k) => {
+    if (k === 0) {
+      return (divVar ?? divQty) - colX[0] - 5;
+    }
+    return divQty - colX[1] - 5;
+  };
 
   const rowsWithLines = body2.map((r) => {
     const cols = r.cells.map((c, k) => wrap(c, fonts.bold, size, widthFor(k)));
@@ -174,28 +199,32 @@ function redrawItemTable(page, items, fonts, own, settings) {
     return { ...r, cols, n };
   });
 
-  const totalItemHeight = rowsWithLines.reduce((acc, r) => acc + (size + 2.5 + (r.n - 1) * lh + 3), 0);
-  const top = hy + headerSize + 3;
-  const topY = hy + headerSize + 2.5;
-  const headerBottomY = hy - 2.5;
+  const topY = hy + 6.0;
+  const headerBottomY = hy - 3.5;
   const minSafeY = 20;
 
+  const totalItemHeight = rowsWithLines.reduce((acc, r) => acc + (size + 2.5 + (r.n - 1) * lh + 3.0), 0);
   const lowest = body.length ? Math.min(...body.map((i) => i.transform[5])) : hy - size * 3;
   const origBottom = stop ? stop.transform[5] + (stop.height || size) * 0.8 : lowest - size * 0.4;
-  const neededBottom = Math.max(minSafeY, headerBottomY - totalItemHeight - 8);
+  const neededBottom = Math.max(minSafeY, headerBottomY - totalItemHeight - 6);
   const targetBottom = Math.min(origBottom, neededBottom);
 
-  page.drawRectangle({ x: 1.5, y: targetBottom, width: pw - 3, height: top - targetBottom, color: rgb(1, 1, 1) });
+  page.drawRectangle({
+    x: frameLeft + 0.5,
+    y: targetBottom,
+    width: frameRight - frameLeft - 1,
+    height: topY - targetBottom,
+    color: rgb(1, 1, 1),
+  });
 
-  let y = hy;
-  page.drawText("#", { x: left, y, size: headerSize, font: fonts.bold, color: ink });
-  heads.forEach((t, k) => page.drawText(t, { x: headX[k], y, size: headerSize, font: fonts.bold, color: ink }));
+  page.drawText("#", { x: frameLeft + 3, y: hy, size: headerSize, font: fonts.bold, color: ink });
+  heads.forEach((t, k) => page.drawText(t, { x: headX[k], y: hy, size: headerSize, font: fonts.bold, color: ink }));
 
   if (showBorders) {
     line(topY);
     line(headerBottomY);
   } else {
-    page.drawLine({ start: { x: left, y: headerBottomY }, end: { x: right, y: headerBottomY }, thickness: 0.5, color: rule });
+    page.drawLine({ start: { x: frameLeft, y: headerBottomY }, end: { x: frameRight, y: headerBottomY }, thickness: 0.5, color: rule });
   }
 
   y = headerBottomY;
@@ -203,7 +232,7 @@ function redrawItemTable(page, items, fonts, own, settings) {
   rowsWithLines.forEach((r, i) => {
     const first = y - size - 2.5;
     if (first - (r.n - 1) * lh < minSafeY) return;
-    page.drawText(r.no, { x: left, y: first, size: headerSize, font: fonts.regular, color: ink });
+    page.drawText(r.no, { x: frameLeft + 3, y: first, size: headerSize, font: fonts.regular, color: ink });
     const qtyText = sanitize(fonts.regular, r.qty);
     page.drawText(qtyText, { x: qtyX, y: first, size: Math.max(size, 7), font: fonts.bold, color: ink });
     if ((parseInt(r.qty, 10) || 1) > 1) {
@@ -211,29 +240,29 @@ function redrawItemTable(page, items, fonts, own, settings) {
       page.drawEllipse({ x: qtyX + tw / 2, y: first + size * 0.33, xScale: tw / 2 + 4, yScale: size * 0.72, borderColor: ink, borderWidth: 1.1 });
     }
     r.cols.forEach((col, k) => col.forEach((ln, j) => page.drawText(ln, { x: colX[k], y: first - j * lh, size, font: fonts.bold, color: ink })));
-    y = first - (r.n - 1) * lh - 3;
+    y = first - (r.n - 1) * lh - 3.0;
     if (showBorders) {
       line(y);
     } else if (i < rowsWithLines.length - 1) {
-      page.drawLine({ start: { x: left, y }, end: { x: right, y }, thickness: 0.5, color: rule });
+      page.drawLine({ start: { x: frameLeft, y }, end: { x: frameRight, y }, thickness: 0.5, color: rule });
     }
   });
 
   const bottomY = y;
 
   if (showBorders) {
-    vLine(tableLeft, topY, bottomY);
-    vLine(colX[0] - 4, topY, bottomY);
-    if (!allSku && colX.length > 1) {
-      vLine(colX[1] - 4, topY, bottomY);
+    vLine(frameLeft, topY, bottomY);
+    vLine(frameRight, topY, bottomY);
+    vLine(divHash, topY, bottomY);
+    if (divVar !== null) {
+      vLine(divVar, topY, bottomY);
     }
-    vLine(qtyX - 4, topY, bottomY);
-    vLine(tableRight, topY, bottomY);
+    vLine(divQty, topY, bottomY);
   }
 
   if (stop && bottomY < stop.transform[5] + 5 && bottomY > minSafeY + 14) {
     page.drawText(sanitize(fonts.regular, stop.str), {
-      x: left,
+      x: frameLeft + 3,
       y: bottomY - 10,
       size: Math.min(size, 7),
       font: fonts.regular,
