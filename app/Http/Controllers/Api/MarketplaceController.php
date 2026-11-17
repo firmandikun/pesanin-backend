@@ -520,8 +520,11 @@ class MarketplaceController extends Controller
         $filtered = [];
 
         foreach ($baseRows as $r) {
-            if ($needle !== null && ! str_contains(mb_strtolower(($r['order_sn'] ?? '').' '.($r['customer_name'] ?? '').' '.($r['tracking_number'] ?? '')), $needle)) {
-                continue;
+            if ($needle !== null) {
+                $itemsText = collect($r['items'] ?? [])->map(fn ($i) => ($i['name'] ?? '').' '.($i['variant'] ?? '').' '.($i['sku'] ?? ''))->implode(' ');
+                if (! str_contains(mb_strtolower(($r['order_sn'] ?? '').' '.($r['customer_name'] ?? '').' '.($r['tracking_number'] ?? '').' '.$itemsText), $needle)) {
+                    continue;
+                }
             }
             $tabCounts['']++;
             $st = (string) ($r['status'] ?? '');
