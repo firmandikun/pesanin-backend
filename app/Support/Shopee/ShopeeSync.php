@@ -768,6 +768,7 @@ class ShopeeSync
                 'courier_service' => ($d['checkout_shipping_carrier'] ?? '') ?: $order->courier_service,
                 'custom_fields' => array_filter([
                     'buyer_username' => $d['buyer_username'] ?? null,
+                    'buyer_user_id' => $d['buyer_user_id'] ?? null,
                     'ship_by' => ! empty($d['ship_by_date']) ? Carbon::createFromTimestamp($d['ship_by_date'])->toIso8601String() : null,
                     'cancel_reason' => ($d['cancel_reason'] ?? '') ?: (($d['buyer_cancel_reason'] ?? '') ?: null),
                 ]) + (array) ($order->custom_fields ?? []),
@@ -835,6 +836,8 @@ class ShopeeSync
             && ($order->escrow_amount === null || $status === 'COMPLETED' || $existing?->external_status !== $status)) {
             $this->fees($shop, $order);
         }
+
+        ShopeeChatAutomation::onOrderUpdated($shop, $order, $existing?->external_status);
 
         return $order;
     }

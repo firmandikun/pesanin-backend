@@ -38,7 +38,7 @@ function wrap(text, font, size, max) {
 }
 
 /** Redraw Shopee's "# | Nama Produk | SKU | Variasi | Qty" as "# | SKU | Qty". Returns false when not recognised. */
-function redrawItemTable(page, items, fonts, own) {
+function redrawItemTable(page, items, fonts, own, settings) {
   const name = items.find((i) => HEADER.test(i.str.trim()));
   if (!name) return false;
   const hy = name.transform[5];
@@ -47,7 +47,9 @@ function redrawItemTable(page, items, fonts, own) {
   if (!hash || !sku || !variant || !qty) return false;
 
   const x = { name: name.transform[4] - 1, sku: sku.transform[4] - 1, variant: variant.transform[4] - 1, qty: qty.transform[4] - 1 };
-  const size = name.height || name.transform[3] || 7;
+  const customSize = settings?.sku_font_size ? Number(settings.sku_font_size) : undefined;
+  const size = (customSize && customSize >= 5 && customSize <= 16) ? customSize : (name.height || name.transform[3] || 7);
+  const headerSize = Math.min(size, 8);
 
   const below = items.filter((i) => i.str.trim() && i.transform[5] < hy - 1).sort((a, b) => b.transform[5] - a.transform[5]);
   const stop = below.find((i) => i.transform[4] < x.name && !/^\d+$/.test(i.str.trim()));
@@ -86,7 +88,7 @@ function redrawItemTable(page, items, fonts, own) {
   const rows = cells.map((c) => ({ no: c.no, sku: join(c.sku) || "-", qty: join(c.qty) || "1", name: join(c.name), vname: join(c.vname) }));
 
   const { width: pw } = page.getSize();
-  const top = hy + size + 1.5;
+  const top = hy + headerSize + 3;
   const lowest = Math.min(...body.map((i) => i.transform[5]));
   const bottom = stop ? stop.transform[5] + (stop.height || size) * 0.8 : lowest - size * 0.4;
   page.drawRectangle({ x: 1.5, y: bottom, width: pw - 3, height: top - bottom, color: rgb(1, 1, 1) });
@@ -108,32 +110,67 @@ function redrawItemTable(page, items, fonts, own) {
   const qtyX = right - 18;
   const colX = allSku ? [left + 14] : [left + 14, left + 14 + (qtyX - left - 14) * 0.66];
   const widthFor = (k) => (k + 1 < colX.length ? colX[k + 1] : qtyX) - colX[k] - 6;
-  const ink = rgb(0, 0, 0), rule = rgb(0.6, 0.6, 0.6);
-  const line = (yy) => page.drawLine({ start: { x: left, y: yy }, end: { x: right, y: yy }, thickness: 0.5, color: rule });
+  const ink = rgb(0, 0, 0);
+  const rule = rgb(0.1, 0.1, 0.1);
+  const stroke = 0.6;
+  const showBorders = settings?.show_table_border !== false;
+
+  const tableLeft = left - 3;
+  const tableRight = right + 2;
+  const line = (yy) => page.drawLine({ start: { x: tableLeft, y: yy }, end: { x: tableRight, y: yy }, thickness: stroke, color: rule });
+  const vLine = (vx, y1, y2) => page.drawLine({ start: { x: vx, y: y1 }, end: { x: vx, y: y2 }, thickness: stroke, color: rule });
+
   const lh = size * 1.18;
+  const topY = hy + headerSize + 2.5;
+  const headerBottomY = hy - 2.5;
 
   let y = hy;
-  page.drawText("#", { x: left, y, size, font: fonts.bold, color: ink });
-  heads.forEach((t, k) => page.drawText(t, { x: colX[k], y, size, font: fonts.bold, color: ink }));
-  page.drawText("Qty", { x: qtyX, y, size, font: fonts.bold, color: ink });
-  y -= size * 0.32;
-  line(y);
+  page.drawText("#", { x: left, y, size: headerSize, font: fonts.bold, color: ink });
+  heads.forEach((t, k) => page.drawText(t, { x: colX[k], y, size: headerSize, font: fonts.bold, color: ink }));
+  page.drawText("Qty", { x: qtyX, y, size: headerSize, font: fonts.bold, color: ink });
+
+  if (showBorders) {
+    line(topY);
+    line(headerBottomY);
+  } else {
+    page.drawLine({ start: { x: left, y: headerBottomY }, end: { x: right, y: headerBottomY }, thickness: 0.5, color: rule });
+  }
+
+  y = headerBottomY;
+
   body2.forEach((r, i) => {
     const cols = r.cells.map((c, k) => wrap(c, fonts.bold, size, widthFor(k)));
     const n = Math.max(1, ...cols.map((l) => l.length));
-    const first = y - size * 1.0;
+    const first = y - size - 2.5;
     if (first - (n - 1) * lh < bottom) return;
-    page.drawText(r.no, { x: left, y: first, size, font: fonts.regular, color: ink });
+    page.drawText(r.no, { x: left, y: first, size: headerSize, font: fonts.regular, color: ink });
     const q = sanitize(fonts.regular, r.qty);
-    page.drawText(q, { x: qtyX, y: first, size, font: fonts.bold, color: ink });
+    page.drawText(q, { x: qtyX, y: first, size: Math.max(size, 7), font: fonts.bold, color: ink });
     if ((parseInt(r.qty, 10) || 1) > 1) {
       const tw = safeWidth(fonts.bold, q, size);
       page.drawEllipse({ x: qtyX + tw / 2, y: first + size * 0.33, xScale: tw / 2 + 4, yScale: size * 0.72, borderColor: ink, borderWidth: 1.1 });
     }
     cols.forEach((col, k) => col.forEach((ln, j) => page.drawText(ln, { x: colX[k], y: first - j * lh, size, font: fonts.bold, color: ink })));
-    y = first - (n - 1) * lh - size * 0.32;
-    if (i < body2.length - 1) line(y);
+    y = first - (n - 1) * lh - 3;
+    if (showBorders) {
+      line(y);
+    } else if (i < body2.length - 1) {
+      page.drawLine({ start: { x: left, y }, end: { x: right, y }, thickness: 0.5, color: rule });
+    }
   });
+
+  const bottomY = y;
+
+  if (showBorders) {
+    vLine(tableLeft, topY, bottomY);
+    vLine(colX[0] - 4, topY, bottomY);
+    if (!allSku && colX.length > 1) {
+      vLine(colX[1] - 4, topY, bottomY);
+    }
+    vLine(qtyX - 4, topY, bottomY);
+    vLine(tableRight, topY, bottomY);
+  }
+
   return true;
 }
 
@@ -153,7 +190,7 @@ function coverNames(page, items) {
   }
 }
 
-async function processPart(merged, part) {
+async function processPart(merged, part, printSettings = {}) {
   const bytes = new Uint8Array(await readFile(part.pdf));
   const doc = await pdfjs.getDocument({ data: bytes.slice(), isEvalSupported: false, disableFontFace: true, standardFontDataUrl }).promise;
   const out = await PDFDocument.load(bytes);
@@ -165,14 +202,51 @@ async function processPart(merged, part) {
     const items = (await (await doc.getPage(i + 1)).getTextContent()).items.filter((it) => "str" in it);
     const text = items.map((it) => it.str).join("").replace(/\s+/g, "").toUpperCase();
     const match = keyed.find(([sn]) => text.includes(sn))?.[1] ?? (orders.length === doc.numPages ? orders[i] : undefined);
-    if (!redrawItemTable(out.getPage(i), items, fonts, match?.items)) coverNames(out.getPage(i), items);
+    if (!redrawItemTable(out.getPage(i), items, fonts, match?.items, printSettings)) coverNames(out.getPage(i), items);
   }
-  const pages = await merged.copyPages(out, out.getPageIndices());
-  pages.forEach((p) => merged.addPage(p));
+
+  if (printSettings.paper_size === "100x100") {
+    const targetW = 283.46;
+    const targetH = 283.46;
+    for (const srcPage of out.getPages()) {
+      const embedded = await merged.embedPage(srcPage);
+      const page = merged.addPage([targetW, targetH]);
+      const origW = srcPage.getWidth();
+      const origH = srcPage.getHeight();
+      const scale = Math.min(targetW / origW, targetH / origH);
+      const w = origW * scale;
+      const h = origH * scale;
+      page.drawPage(embedded, {
+        x: (targetW - w) / 2,
+        y: (targetH - h) / 2,
+        width: w,
+        height: h,
+      });
+    }
+  } else if (printSettings.paper_size === "a4") {
+    const targetW = 595.28;
+    const targetH = 841.89;
+    for (const srcPage of out.getPages()) {
+      const embedded = await merged.embedPage(srcPage);
+      const page = merged.addPage([targetW, targetH]);
+      const origW = srcPage.getWidth();
+      const origH = srcPage.getHeight();
+      page.drawPage(embedded, {
+        x: 42,
+        y: targetH - origH - 42,
+        width: origW,
+        height: origH,
+      });
+    }
+  } else {
+    const pages = await merged.copyPages(out, out.getPageIndices());
+    pages.forEach((p) => merged.addPage(p));
+  }
 }
 
 const job = JSON.parse(await readFile(process.argv[2], "utf8"));
+const printSettings = job.print_settings || {};
 const merged = await PDFDocument.create();
-for (const part of job.parts) await processPart(merged, part);
+for (const part of job.parts) await processPart(merged, part, printSettings);
 await writeFile(job.output, await merged.save());
 console.log(JSON.stringify({ ok: true, pages: merged.getPageCount() }));

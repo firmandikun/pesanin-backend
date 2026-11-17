@@ -95,4 +95,80 @@ class ShopeeChatTest extends TestCase
         \App\Support\Shopee\ShopeeChatWatch::check($this->shop);
         Http::assertSentCount(1);
     }
+
+    public function test_shopee_buyer_profile_and_quick_replies(): void
+    {
+        // 1. Create Shopee orders for buyer "rina"
+        $user = $this->shop->user;
+        $order1 = new \App\Models\Order([
+            'code' => 'SP2611RINA1',
+            'external_order_sn' => '2611RINA1',
+            'channel' => 'shopee',
+            'marketplace_shop_id' => $this->shop->id,
+            'customer_name' => 'rina',
+            'external_status' => 'SHIPPED',
+            'status' => 'processing',
+            'total' => 25000,
+            'subtotal' => 25000,
+            'tracking_number' => 'SPX12345',
+            'courier_service' => 'SPX Hemat',
+            'items' => [['name' => 'Cover Knalpot Vario', 'qty' => 1, 'price' => 25000]],
+            'custom_fields' => ['buyer_username' => 'rina', 'buyer_user_id' => 501],
+        ]);
+        $order1->user_id = $user->id;
+        $order1->save();
+
+        $order2 = new \App\Models\Order([
+            'code' => 'SP2611RINA2',
+            'external_order_sn' => '2611RINA2',
+            'channel' => 'shopee',
+            'marketplace_shop_id' => $this->shop->id,
+            'customer_name' => 'rina',
+            'external_status' => 'COMPLETED',
+            'status' => 'completed',
+            'total' => 35000,
+            'subtotal' => 35000,
+            'items' => [['name' => 'Tombol Sen Hazard', 'qty' => 1, 'price' => 35000]],
+            'custom_fields' => ['buyer_username' => 'rina', 'buyer_user_id' => 501],
+        ]);
+        $order2->user_id = $user->id;
+        $order2->save();
+
+        // 2. Query chat thread side panel: should return shopee_buyer profile with LTV and active order
+        $r = $this->getJson("/api/chat/thread?channel=shopee&source={$this->shop->id}&conversation=11&name=rina")
+            ->assertOk()
+            ->json();
+
+        $this->assertNotNull($r['shopee_buyer']);
+        $buyer = $r['shopee_buyer'];
+        $this->assertSame('rina', $buyer['username']);
+        $this->assertSame(2, $buyer['orders_count']);
+        $this->assertSame(60000, $buyer['spent']);
+        $this->assertSame('SPX12345', $buyer['active_order']['tracking_number']);
+        $this->assertSame('SHIPPED', $buyer['active_order']['status']);
+        $this->assertCount(2, $buyer['orders']);
+
+        // 3. Quick replies: seeded defaults should be present
+        $qr = $this->getJson('/api/quick-replies')->assertOk()->json('data');
+        $shortcuts = array_column($qr, 'shortcut');
+        $this->assertContains('stok', $shortcuts);
+        $this->assertContains('resi', $shortcuts);
+        $this->assertContains('retur', $shortcuts);
+        $this->assertContains('terimakasih', $shortcuts);
+
+        // 4. Shopee chat automation settings
+        $this->putJson('/api/user-settings', [
+            'key' => 'shopee_chat_automation',
+            'value' => [
+                'unpaid_reminder' => true,
+                'unpaid_text' => 'Halo Kak {nama}, mohon selesaikan pesanan {order_sn}',
+                'delivered_review' => true,
+                'delivered_text' => 'Halo Kak {nama}, mohon ulasan bintang 5 {order_sn}',
+            ],
+        ])->assertOk();
+
+        $settings = \App\Support\Shopee\ShopeeChatAutomation::settings($user->fresh());
+        $this->assertTrue($settings['unpaid_reminder']);
+        $this->assertTrue($settings['delivered_review']);
+    }
 }

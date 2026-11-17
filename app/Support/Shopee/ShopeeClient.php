@@ -147,7 +147,7 @@ class ShopeeClient
             // Report Shopee's "Tertunda" orders (still under Shopee review) as PENDING instead of READY_TO_SHIP,
             // so they are not arranged until Shopee releases them.
             'request_order_status_pending' => 'true',
-            'response_optional_fields' => 'pending_terms,buyer_username,recipient_address,item_list,total_amount,shipping_carrier,checkout_shipping_carrier,payment_method,estimated_shipping_fee,actual_shipping_fee,pay_time,package_list,cod,cancel_reason,buyer_cancel_reason,fulfillment_flag',
+            'response_optional_fields' => 'buyer_user_id,pending_terms,buyer_username,recipient_address,item_list,total_amount,shipping_carrier,checkout_shipping_carrier,payment_method,estimated_shipping_fee,actual_shipping_fee,pay_time,package_list,cod,cancel_reason,buyer_cancel_reason,fulfillment_flag',
         ])['response']['order_list'] ?? [];
     }
 

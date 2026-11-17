@@ -7,6 +7,7 @@ use App\Models\ChatLabel;
 use App\Models\ChatNote;
 use App\Models\ChatThread;
 use App\Models\Customer;
+use App\Models\Order;
 use App\Models\QuickReply;
 use App\Models\TeamMember;
 use App\Models\User;
@@ -91,6 +92,83 @@ class InboxController extends Controller
             ? Customer::where('user_id', $request->user()->id)->get()->first(fn ($c) => Customer::normalizePhone($c->phone) === $phone)
             : null;
 
+        $shopeeBuyer = null;
+        $isShopee = ($request->query('channel') === 'shopee') || ($t?->channel === 'shopee');
+        if ($isShopee) {
+            $name = trim((string) $request->query('name'));
+            $shopId = (int) ($request->query('source') ?: $t?->source_id);
+            $userId = $request->user()->id;
+
+            $q = Order::where('user_id', $userId)
+                ->where('channel', 'shopee')
+                ->when($shopId > 0, fn ($sq) => $sq->where('marketplace_shop_id', $shopId));
+
+            if ($name !== '') {
+                $q->where(function ($wq) use ($name) {
+                    $wq->where('customer_name', $name)
+                        ->orWhere('custom_fields->buyer_username', $name)
+                        ->orWhere('external_order_sn', $name);
+                });
+            }
+
+            $orders = $q->orderByDesc('created_at')->take(10)->get();
+
+            if ($orders->isNotEmpty()) {
+                $totalOrders = (clone $q)->count();
+                $totalSpent = (int) (clone $q)->whereNotIn('external_status', ['CANCELLED', 'IN_CANCEL', 'TO_RETURN'])->sum('total');
+                $hasCancelOrReturn = (clone $q)->whereIn('external_status', ['CANCELLED', 'IN_CANCEL', 'TO_RETURN'])->exists();
+                $activeOrder = $orders->first(fn ($o) => in_array($o->external_status, ['READY_TO_SHIP', 'PROCESSED', 'SHIPPED', 'TO_CONFIRM_RECEIVE', 'PENDING', 'UNPAID'], true)) ?? $orders->first();
+
+                // Product specs lookup for the active order
+                $productSpecs = null;
+                if ($activeOrder && $activeOrder->product_id) {
+                    $prod = Product::find($activeOrder->product_id);
+                    if ($prod) {
+                        $productSpecs = [
+                            'name' => $prod->name,
+                            'description' => $prod->description,
+                            'features' => $prod->features ?: [],
+                            'sku' => $prod->sku,
+                            'stock' => $prod->stock,
+                        ];
+                    }
+                }
+
+                $shopeeBuyer = [
+                    'username' => $name ?: ($orders->first()->customer_name ?? 'Pembeli Shopee'),
+                    'orders_count' => $totalOrders,
+                    'spent' => $totalSpent,
+                    'badge' => $totalOrders >= 3 ? 'Pelanggan Setia' : ($totalOrders === 1 ? 'Pelanggan Baru' : 'Pelanggan'),
+                    'has_issue' => $hasCancelOrReturn,
+                    'active_order' => $activeOrder ? [
+                        'code' => $activeOrder->external_order_sn ?: $activeOrder->code,
+                        'status' => $activeOrder->external_status ?: $activeOrder->status,
+                        'total' => (int) $activeOrder->total,
+                        'tracking_number' => $activeOrder->tracking_number,
+                        'courier' => $activeOrder->courier_service ?: $activeOrder->courier,
+                        'items' => collect($activeOrder->items ?? [])->map(fn ($i) => [
+                            'name' => $i['name'] ?? 'Produk',
+                            'variant' => $i['variant'] ?? ($i['model_name'] ?? null),
+                            'sku' => $i['sku'] ?? ($i['item_sku'] ?? null),
+                            'qty' => (int) ($i['qty'] ?? 1),
+                            'price' => (int) ($i['price'] ?? 0),
+                        ])->values()->all(),
+                        'product_specs' => $productSpecs,
+                        'created_at' => $activeOrder->created_at?->toIso8601String(),
+                    ] : null,
+                    'orders' => $orders->map(fn ($o) => [
+                        'id' => $o->id,
+                        'code' => $o->external_order_sn ?: $o->code,
+                        'status' => $o->external_status ?: $o->status,
+                        'total' => (int) $o->total,
+                        'tracking_number' => $o->tracking_number,
+                        'courier' => $o->courier_service ?: $o->courier,
+                        'created_at' => $o->created_at?->toIso8601String(),
+                    ])->values()->all(),
+                ];
+            }
+        }
+
         return [
             'thread' => [
                 'status' => $t?->status ?? 'open', 'assigned_to' => $t?->assigned_to, 'labels' => $t?->labels ?? [],
@@ -98,6 +176,7 @@ class InboxController extends Controller
             'notes' => $t ? $t->notes()->get(['id', 'author', 'body', 'created_at']) : [],
             'customer' => $t?->customer ? $this->customerCard($t->customer) : null,
             'suggest' => $suggest ? $this->customerCard($suggest) : null,
+            'shopee_buyer' => $shopeeBuyer,
         ];
     }
 
@@ -216,7 +295,25 @@ class InboxController extends Controller
 
     public function quickReplies(Request $request)
     {
-        return ['data' => QuickReply::where('user_id', $request->user()->id)->orderBy('category')->orderBy('shortcut')->get(['id', 'shortcut', 'category', 'body'])];
+        $existing = QuickReply::where('user_id', $request->user()->id)->orderBy('category')->orderBy('shortcut')->get(['id', 'shortcut', 'category', 'body']);
+        if ($existing->isEmpty()) {
+            $defaults = [
+                ['shortcut' => 'stok', 'category' => 'Cek Stok', 'body' => 'Halo Kak, untuk produk ini stoknya selalu ready dan siap dikirim ya kak! Silakan langsung diorder kak 🙏'],
+                ['shortcut' => 'resi', 'category' => 'Pengiriman & Resi', 'body' => 'Halo Kak, pesanan Kakak saat ini sedang diproses/dalam pengiriman oleh pihak ekspedisi ya kak. Resi pengiriman bisa dicek langsung di rincian pesanan. Ditunggu paketnya tiba dengan selamat ya kak! 😊'],
+                ['shortcut' => 'retur', 'category' => 'Solusi Kendala & Retur', 'body' => 'Halo Kak, mohon maaf sekali atas ketidaknyamanannya. Toko kami bergaransi penuh ya kak. Silakan kirimkan video unboxing paketnya di sini, tim kami akan segera bantu solusi terbaik atau penggantian produk secepatnya 🙏'],
+                ['shortcut' => 'tukar', 'category' => 'Solusi Kendala & Retur', 'body' => 'Halo Kak, untuk penukaran produk / part yang kurang akan kami kirimkan ulang hari ini ya kak tanpa biaya tambahan. Mohon konfirmasi alamat lengkap dan nomor HP penerimanya ya kak 🙏'],
+                ['shortcut' => 'spek', 'category' => 'Spesifikasi Produk', 'body' => 'Halo Kak, untuk spesifikasi produk ini dijamin 100% original, presisi, dan sesuai foto & deskripsi ya kak. Bahan berkualitas tinggi dan langsung pas saat dipasang. Silakan diorder kak 🙏'],
+                ['shortcut' => 'terimakasih', 'category' => 'Ulasan & Rating', 'body' => 'Terima kasih banyak sudah berbelanja di toko kami kak! Semoga produknya cocok dan bermanfaat. Jika puas, jangan lupa bantu ulas bintang 5 ⭐⭐⭐⭐⭐ ya kak 🙏'],
+            ];
+            foreach ($defaults as $d) {
+                $r = new QuickReply($d);
+                $r->user_id = $request->user()->id;
+                $r->save();
+            }
+            $existing = QuickReply::where('user_id', $request->user()->id)->orderBy('category')->orderBy('shortcut')->get(['id', 'shortcut', 'category', 'body']);
+        }
+
+        return ['data' => $existing];
     }
 
     private function replyRules(Request $request, ?int $ignore = null): array

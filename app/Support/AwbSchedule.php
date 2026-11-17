@@ -141,7 +141,8 @@ class AwbSchedule
             }
             $stamp = now()->setTimezone(Dates::TZ)->format('Ymd-Hi');
             $out = "{$dir}/resi.pdf";
-            if (self::render($parts, $out)) {
+            $printSettings = $user->settings['print_settings'] ?? [];
+            if (self::render($parts, $out, $printSettings)) {
                 $tg->sendDocument($chat, $out, "resi-shopee-{$stamp}.pdf", $caption);
             } else {
                 // Post-processing failed: still deliver Shopee's own labels rather than nothing.
@@ -219,8 +220,7 @@ class AwbSchedule
         ])->values()->all();
     }
 
-    /** Merge + post-process with the Node script (scripts/awb). False when Node or the script isn't available. */
-    private static function render(array $parts, string $out): bool
+    private static function render(array $parts, string $out, array $printSettings = []): bool
     {
         $node = config('services.node.binary') ?: (new ExecutableFinder)->find('node', null, ['/usr/local/bin', '/usr/bin']);
         $script = base_path('scripts/awb/awb.mjs');
@@ -228,7 +228,7 @@ class AwbSchedule
             return false;
         }
         $job = dirname($out).'/job.json';
-        file_put_contents($job, json_encode(['output' => $out, 'parts' => $parts]));
+        file_put_contents($job, json_encode(['output' => $out, 'parts' => $parts, 'print_settings' => $printSettings]));
         $p = new Process([$node, $script, $job], base_path('scripts/awb'));
         $p->setTimeout(180);
         $p->run();
