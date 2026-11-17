@@ -565,11 +565,12 @@ class MarketplaceController extends Controller
             fputcsv($out, $head, ';');
             foreach ($rows as $r) {
                 $fees = collect($r['fee_breakdown'])->groupBy('label')->map(fn ($g) => $g->sum('amount'));
-                $createdStr = $r['created_at'] instanceof \DateTimeInterface
-                    ? $r['created_at']->format('Y-m-d H:i')
-                    : substr((string) $r['created_at'], 0, 16);
+                $dateVal = ($r['status'] === 'COMPLETED' && ! empty($r['completed_at'])) ? $r['completed_at'] : $r['created_at'];
+                $dateStr = $dateVal instanceof \DateTimeInterface
+                    ? $dateVal->format('Y-m-d H:i')
+                    : substr((string) $dateVal, 0, 16);
                 fputcsv($out, [
-                    $r['order_sn'], $createdStr, $statusLabel[$r['status']] ?? $r['status'],
+                    $r['order_sn'], $dateStr, $statusLabel[$r['status']] ?? $r['status'],
                     collect($r['items'])->pluck('name')->implode(' | '), collect($r['items'])->pluck('variant')->filter()->implode(' | '),
                     $r['quantity'], $r['revenue'], ...array_map(fn ($c) => $fees[$c] ?? 0, $feeCols),
                     -$r['fees'], $r['net_revenue'], $r['cogs'], -($r['ad_cost'] ?? 0), $r['profit'], $r['margin'],
