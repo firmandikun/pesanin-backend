@@ -1,50 +1,52 @@
-// Server-side Shopee AWB post-processing for the scheduled Telegram send.
-//
+// Background job: redraw each parcel's item table as "# | SKU | Qty", merge all parts, and save.
+// Invoked by backend/app/Support/AwbSchedule.php as:
 //   node awb.mjs <job.json>
 //
-// job.json: { "output": "/abs/out.pdf", "parts": [ { "pdf": "/abs/in.pdf", "orders": [ { "sns": ["2611149ABC"], "items": [ { "sku": "SKU-1", "name": "Kaos", "variant": "Hitam,XL" } ] } ] } ] }
-//
-// Every part's pages are copied into one merged PDF. On each page the product names are hidden and Shopee's item
-// table is redrawn as "# | SKU | Qty" (qty > 1 circled). The page's order is found by the order / reservation
-// number printed on it. KEEP IN SYNC with frontend/src/lib/awb.ts + awbTable.ts (the manual print path).
+// Expects input JSON:
+//   {
+//     "output": "/absolute/path/to/result.pdf",
+//     "parts": [
+//       { "pdf": "/path/to/raw.pdf", "orders": [{ "external_order_sn": "...", "booking_sn": "...", "order_sn": "...", "items": [...] }] }
+//     ],
+//     "print_settings": { "paper_size": "...", "sku_font_size": 8, "show_table_border": true }
+//   }
 import { readFile, writeFile } from "node:fs/promises";
-import { fileURLToPath } from "node:url";
-import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
+import { PDFDocument, rgb, StandardFonts } from "pdf-lib";
 import * as pdfjs from "pdfjs-dist/legacy/build/pdf.mjs";
 
-pdfjs.GlobalWorkerOptions.workerSrc = import.meta.resolve("pdfjs-dist/legacy/build/pdf.worker.mjs");
-const standardFontDataUrl = fileURLToPath(import.meta.resolve("pdfjs-dist/standard_fonts/FoxitSans.pfb")).replace(/FoxitSans\.pfb$/, "");
-
+const standardFontDataUrl = new URL("./node_modules/pdfjs-dist/standard_fonts/", import.meta.url).href;
 const HEADER = /^(Nama\s*Produk|Product\s*Name)$/i;
 
 function sanitize(font, s) {
-  return [...s].map((c) => { try { font.widthOfTextAtSize(c, 1); return c; } catch { return "?"; } }).join("");
+  return [...String(s ?? "")].map((c) => { try { font.widthOfTextAtSize(c, 1); return c; } catch { return "?"; } }).join("");
 }
 function safeWidth(font, c, size) {
   try { return font.widthOfTextAtSize(c, size); } catch { return size * 0.5; }
 }
 function wrap(text, font, size, max) {
-  const out = [];
+  const words = sanitize(font, text).split(/\s+/).filter(Boolean);
+  const lines = [];
   let cur = "";
-  for (const ch of [...sanitize(font, text)]) {
-    if (font.widthOfTextAtSize(cur + ch, size) > max && cur) {
-      const cut = Math.max(cur.lastIndexOf(" "), cur.lastIndexOf("-"));
-      if (cut > 0) { out.push(cur.slice(0, cut + 1).trimEnd()); cur = cur.slice(cut + 1).trimStart() + ch; }
-      else { out.push(cur); cur = ch; }
-    } else cur += ch;
+  for (const w of words) {
+    const next = cur ? `${cur} ${w}` : w;
+    if (safeWidth(font, next, size) <= max) cur = next;
+    else {
+      if (cur) lines.push(cur);
+      cur = w;
+    }
   }
-  if (cur) out.push(cur);
-  return out;
+  if (cur) lines.push(cur);
+  return lines.length ? lines : ["-"];
 }
 
-/** Redraw Shopee's "# | Nama Produk | SKU | Variasi | Qty" as "# | SKU | Qty". Returns false when not recognised. */
+/** Redraw Shopee's item table as "# | SKU | Qty" or "# | SKU / Nama Produk | Variasi | Qty". Returns false when not recognised. */
 function redrawItemTable(page, items, fonts, own, settings) {
   const name = items.find((i) => HEADER.test(i.str.trim()));
   if (!name) return false;
   const hy = name.transform[5];
-  const onHeader = (re) => items.find((i) => re.test(i.str.trim()) && Math.abs(i.transform[5] - hy) < 3);
-  const hash = onHeader(/^#$/), sku = onHeader(/^SKU$/i), variant = onHeader(/^(Variasi|Variation)$/i), qty = onHeader(/^(Qty|Jumlah)$/i);
-  if (!hash || !qty) return false;
+  const onHeader = (re) => items.find((i) => re.test(i.str.trim()) && Math.abs(i.transform[5] - hy) < 12);
+  const hash = onHeader(/^#$|^No\.?$/i), sku = onHeader(/^SKU$/i), variant = onHeader(/^(Variasi|Variation)$/i), qty = onHeader(/^(Qty|Jumlah|Total)$/i);
+  if (!qty) return false;
 
   const x = {
     name: name.transform[4] - 1,
@@ -68,18 +70,16 @@ function redrawItemTable(page, items, fonts, own, settings) {
 
   const cells = numbers.map((n) => ({ y: n.transform[5], no: n.str.trim(), name: [], sku: [], vname: [], qty: [] }));
   for (const it of body) {
-    if (numbers.includes(it)) continue;
-    const y = it.transform[5];
-    const row = [...cells].reverse().find((c) => c.y >= y - 1) ?? cells[0];
-    const chars = [...it.str];
-    const widths = chars.map((c) => safeWidth(fonts.regular, c, size));
-    const total = widths.reduce((a, b) => a + b, 0) || 1;
-    const scale = it.width ? it.width / total : 1;
-    let cx = it.transform[4];
-    chars.forEach((c, k) => {
+    const row = cells.find((c) => Math.abs(c.y - it.transform[5]) < (it.height || 8) * 0.75);
+    if (!row) continue;
+    const [, , , , x0, y] = it.transform;
+    const widths = [...it.str].map((c) => safeWidth(fonts.regular, c, it.height || 7));
+    const total = widths.reduce((a, b) => a + b, 0);
+    const scale = total > 0 ? (it.width || total) / total : 1;
+    let cx = x0;
+    [...it.str].forEach((c, k) => {
       const mid = cx + (widths[k] * scale) / 2;
       cx += widths[k] * scale;
-      // Product and variant names are only printed when the item has no SKU.
       const col = mid >= x.qty
         ? "qty"
         : (x.variant !== null && mid >= x.variant)
@@ -104,24 +104,18 @@ function redrawItemTable(page, items, fonts, own, settings) {
   };
   const rows = cells.map((c) => ({ no: c.no, sku: join(c.sku) || "-", qty: join(c.qty) || "1", name: join(c.name), vname: join(c.vname) }));
 
-  const { width: pw } = page.getSize();
-  const top = hy + headerSize + 3;
-  const lowest = body.length ? Math.min(...body.map((i) => i.transform[5])) : hy - size * 3;
-  const bottom = stop ? stop.transform[5] + (stop.height || size) * 0.8 : lowest - size * 0.4;
-  page.drawRectangle({ x: 1.5, y: bottom, width: pw - 3, height: top - bottom, color: rgb(1, 1, 1) });
-
   // With Pesanin's own order items, show all items from the order.
   const mine = Array.isArray(own) && own.length > 0;
   const has = (s) => !!s && String(s).trim() !== "" && String(s).trim() !== "-";
   const info = mine
     ? own.map((d, i) => {
-        const sku = has(d.variant) ? d.variant : has(d.sku) ? d.sku : "";
+        const sku = has(d.variant) ? d.variant : has(d.sku) ? d.sku : has(d.parent) ? d.parent : "";
         return {
           no: String(i + 1),
           sku,
-          name: ((d && d.name) || "").trim(),
-          variant: ((d && d.variant) || "").trim(),
-          qty: String((d && (d.qty || d.quantity)) || (rows[i]?.qty || "1")),
+          name: (d.name || "").trim(),
+          variant: (d.variant || d.varName || "").trim(),
+          qty: String(d.qty ?? (rows[i]?.qty || "1")),
         };
       })
     : rows.map((r, i) => {
@@ -152,7 +146,8 @@ function redrawItemTable(page, items, fonts, own, settings) {
     return { no: it.no, qty: it.qty, cells };
   });
 
-  const left = hash.transform[4];
+  const { width: pw } = page.getSize();
+  const left = hash ? hash.transform[4] : Math.max(10, name.transform[4] - 22);
   const right = pw - left;
   const qtyX = right - 18;
   const hasMultipleCols = heads.length > 2;
@@ -160,7 +155,6 @@ function redrawItemTable(page, items, fonts, own, settings) {
     ? [left + 14, left + 14 + (qtyX - left - 14) * 0.66]
     : [left + 14];
   const headX = [...colX, qtyX];
-  const widthFor = (k) => (k + 1 < colX.length ? colX[k + 1] : qtyX) - colX[k] - 6;
   const ink = rgb(0, 0, 0);
   const rule = rgb(0.1, 0.1, 0.1);
   const stroke = 0.6;
@@ -172,8 +166,26 @@ function redrawItemTable(page, items, fonts, own, settings) {
   const vLine = (vx, y1, y2) => page.drawLine({ start: { x: vx, y: y1 }, end: { x: vx, y: y2 }, thickness: stroke, color: rule });
 
   const lh = size * 1.18;
+  const widthFor = (k) => (k + 1 < colX.length ? colX[k + 1] : qtyX) - colX[k] - 6;
+
+  const rowsWithLines = body2.map((r) => {
+    const cols = r.cells.map((c, k) => wrap(c, fonts.bold, size, widthFor(k)));
+    const n = Math.max(1, ...cols.map((l) => l.length));
+    return { ...r, cols, n };
+  });
+
+  const totalItemHeight = rowsWithLines.reduce((acc, r) => acc + (size + 2.5 + (r.n - 1) * lh + 3), 0);
+  const top = hy + headerSize + 3;
   const topY = hy + headerSize + 2.5;
   const headerBottomY = hy - 2.5;
+  const minSafeY = 20;
+
+  const lowest = body.length ? Math.min(...body.map((i) => i.transform[5])) : hy - size * 3;
+  const origBottom = stop ? stop.transform[5] + (stop.height || size) * 0.8 : lowest - size * 0.4;
+  const neededBottom = Math.max(minSafeY, headerBottomY - totalItemHeight - 8);
+  const targetBottom = Math.min(origBottom, neededBottom);
+
+  page.drawRectangle({ x: 1.5, y: targetBottom, width: pw - 3, height: top - targetBottom, color: rgb(1, 1, 1) });
 
   let y = hy;
   page.drawText("#", { x: left, y, size: headerSize, font: fonts.bold, color: ink });
@@ -188,23 +200,21 @@ function redrawItemTable(page, items, fonts, own, settings) {
 
   y = headerBottomY;
 
-  body2.forEach((r, i) => {
-    const cols = r.cells.map((c, k) => wrap(c, fonts.bold, size, widthFor(k)));
-    const n = Math.max(1, ...cols.map((l) => l.length));
+  rowsWithLines.forEach((r, i) => {
     const first = y - size - 2.5;
-    if (first - (n - 1) * lh < bottom) return;
+    if (first - (r.n - 1) * lh < minSafeY) return;
     page.drawText(r.no, { x: left, y: first, size: headerSize, font: fonts.regular, color: ink });
-    const q = sanitize(fonts.regular, r.qty);
-    page.drawText(q, { x: qtyX, y: first, size: Math.max(size, 7), font: fonts.bold, color: ink });
+    const qtyText = sanitize(fonts.regular, r.qty);
+    page.drawText(qtyText, { x: qtyX, y: first, size: Math.max(size, 7), font: fonts.bold, color: ink });
     if ((parseInt(r.qty, 10) || 1) > 1) {
-      const tw = safeWidth(fonts.bold, q, size);
+      const tw = safeWidth(fonts.bold, qtyText, size);
       page.drawEllipse({ x: qtyX + tw / 2, y: first + size * 0.33, xScale: tw / 2 + 4, yScale: size * 0.72, borderColor: ink, borderWidth: 1.1 });
     }
-    cols.forEach((col, k) => col.forEach((ln, j) => page.drawText(ln, { x: colX[k], y: first - j * lh, size, font: fonts.bold, color: ink })));
-    y = first - (n - 1) * lh - 3;
+    r.cols.forEach((col, k) => col.forEach((ln, j) => page.drawText(ln, { x: colX[k], y: first - j * lh, size, font: fonts.bold, color: ink })));
+    y = first - (r.n - 1) * lh - 3;
     if (showBorders) {
       line(y);
-    } else if (i < body2.length - 1) {
+    } else if (i < rowsWithLines.length - 1) {
       page.drawLine({ start: { x: left, y }, end: { x: right, y }, thickness: 0.5, color: rule });
     }
   });
@@ -221,23 +231,32 @@ function redrawItemTable(page, items, fonts, own, settings) {
     vLine(tableRight, topY, bottomY);
   }
 
+  if (stop && bottomY < stop.transform[5] + 5 && bottomY > minSafeY + 14) {
+    page.drawText(sanitize(fonts.regular, stop.str), {
+      x: left,
+      y: bottomY - 10,
+      size: Math.min(size, 7),
+      font: fonts.regular,
+      color: ink,
+    });
+  }
+
   return true;
 }
 
-/** Fallback when the table isn't recognised: cover the product-name column. */
+/** Fallback: if redrawItemTable can't read the table, cover only the product name column. */
 function coverNames(page, items) {
-  const header = items.find((it) => /^Nama\s*Produk/i.test(it.str.trim()) || /^Product\s*Name/i.test(it.str.trim()));
+  const header = items.find((it) => HEADER.test(it.str.trim()));
   if (!header) return;
   const hy = header.transform[5];
-  const sku = items.find((it) => it.str.trim() === "SKU" && Math.abs(it.transform[5] - hy) < 4);
+  const sku = items.find((it) => it.str.trim() === "SKU" && Math.abs(it.transform[5] - hy) < 12);
   if (!sku) return; // Never erase product names when there is no SKU on the label
   const x0 = header.transform[4] - 1;
   const x1 = sku.transform[4] - 2;
   for (const it of items) {
     const [, , , d, x, y] = it.transform;
     if (!it.str.trim() || x < x0 || x >= x1 || y > hy + 1) continue;
-    const h = it.height || Math.abs(d) || 8;
-    page.drawRectangle({ x: x - 0.5, y: y - h * 0.3, width: Math.min(it.width, x1 - x) + 1, height: h * 1.4, color: rgb(1, 1, 1) });
+    page.drawRectangle({ x: x - 1, y: y - 1, width: it.width + 2, height: (it.height || d || 8) + 2, color: rgb(1, 1, 1) });
   }
 }
 
@@ -246,9 +265,9 @@ async function processPart(merged, part, printSettings = {}) {
   const doc = await pdfjs.getDocument({ data: bytes.slice(), isEvalSupported: false, disableFontFace: true, standardFontDataUrl }).promise;
   const out = await PDFDocument.load(bytes);
   const fonts = { regular: await out.embedFont(StandardFonts.Helvetica), bold: await out.embedFont(StandardFonts.HelveticaBold) };
-  const orders = part.orders ?? [];
-  const keyed = orders.flatMap((o) => (o.sns ?? []).filter(Boolean).map((sn) => [String(sn).toUpperCase(), o]));
 
+  const orders = part.orders || [];
+  const keyed = orders.flatMap((o) => [o.external_order_sn, o.booking_sn, o.order_sn, o.tracking_number].filter(Boolean).map((sn) => [sn.toUpperCase(), o]));
   for (let i = 0; i < doc.numPages; i++) {
     const items = (await (await doc.getPage(i + 1)).getTextContent()).items.filter((it) => "str" in it);
     const text = items.map((it) => it.str).join("").replace(/\s+/g, "").toUpperCase();
