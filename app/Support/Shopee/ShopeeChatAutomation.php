@@ -43,12 +43,47 @@ class ShopeeChatAutomation
 
         $custom = (array) ($order->custom_fields ?? []);
         $buyerUserId = $custom['buyer_user_id'] ?? null;
-        if (! $buyerUserId) {
-            throw new \RuntimeException('Buyer User ID Shopee tidak ditemukan pada pesanan ini.');
-        }
-
         $buyerName = $custom['buyer_username'] ?? $order->customer_name ?? 'Kak';
         $orderSn = $order->external_order_sn ?: $order->code;
+
+        // Fallback 1: Query Shopee order detail to fetch buyer_user_id if missing
+        if (! $buyerUserId && $order->external_order_sn) {
+            try {
+                $details = (new ShopeeClient)->orderDetail($shop, [$order->external_order_sn]);
+                if (! empty($details[0]['buyer_user_id'])) {
+                    $buyerUserId = (int) $details[0]['buyer_user_id'];
+                    $custom['buyer_user_id'] = $buyerUserId;
+                    if (! empty($details[0]['buyer_username'])) {
+                        $buyerName = $details[0]['buyer_username'];
+                        $custom['buyer_username'] = $buyerName;
+                    }
+                    $order->update(['custom_fields' => $custom]);
+                }
+            } catch (\Throwable) {
+                // proceed to next fallback
+            }
+        }
+
+        // Fallback 2: Match buyer_username from existing chat conversations
+        if (! $buyerUserId && $buyerName && $buyerName !== 'Kak') {
+            try {
+                $convs = (new ShopeeClient)->chatConversations($shop);
+                foreach ($convs['conversations'] ?? [] as $c) {
+                    if (strcasecmp((string) ($c['to_name'] ?? ''), (string) $buyerName) === 0 && ! empty($c['to_id'])) {
+                        $buyerUserId = (int) $c['to_id'];
+                        $custom['buyer_user_id'] = $buyerUserId;
+                        $order->update(['custom_fields' => $custom]);
+                        break;
+                    }
+                }
+            } catch (\Throwable) {
+                // proceed
+            }
+        }
+
+        if (! $buyerUserId) {
+            throw new \RuntimeException("Buyer User ID Shopee tidak ditemukan pada pesanan {$orderSn}.");
+        }
 
         $user = $shop->user;
         $cfg = $user ? self::settings($user) : ['unpaid_text' => self::DEFAULT_UNPAID_TEXT];

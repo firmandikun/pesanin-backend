@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Models\ActivityLog;
 use App\Models\MarketplaceListing;
 use App\Models\MarketplaceShop;
+use App\Models\Order;
 use App\Models\User;
 use App\Support\Plans;
 use App\Support\Shopee\ShopeeClient;
