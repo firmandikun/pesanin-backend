@@ -332,11 +332,15 @@ class Analytics
                 $fb = is_string($row->fee_breakdown) ? json_decode($row->fee_breakdown, true) : $row->fee_breakdown;
             }
 
+            $isoUtc = static fn (?string $dt): ?string => $dt
+                ? (strlen($dt) === 19 && $dt[10] === ' ' ? substr($dt, 0, 10).'T'.substr($dt, 11).'Z' : $dt)
+                : null;
+
             $out[] = [
                 'id' => (int) $row->id,
                 'order_sn' => $row->external_order_sn,
-                'created_at' => $row->created_at,
-                'completed_at' => $row->completed_at,
+                'created_at' => $isoUtc($row->created_at),
+                'completed_at' => $isoUtc($row->completed_at),
                 'status' => $shopeeStatus,
                 'customer_name' => $row->customer_name,
                 'tracking_number' => $row->tracking_number,
