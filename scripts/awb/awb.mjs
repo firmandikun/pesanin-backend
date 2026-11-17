@@ -44,18 +44,27 @@ function redrawItemTable(page, items, fonts, own, settings) {
   const hy = name.transform[5];
   const onHeader = (re) => items.find((i) => re.test(i.str.trim()) && Math.abs(i.transform[5] - hy) < 3);
   const hash = onHeader(/^#$/), sku = onHeader(/^SKU$/i), variant = onHeader(/^(Variasi|Variation)$/i), qty = onHeader(/^(Qty|Jumlah)$/i);
-  if (!hash || !sku || !variant || !qty) return false;
+  if (!hash || !qty) return false;
 
-  const x = { name: name.transform[4] - 1, sku: sku.transform[4] - 1, variant: variant.transform[4] - 1, qty: qty.transform[4] - 1 };
+  const x = {
+    name: name.transform[4] - 1,
+    sku: sku ? sku.transform[4] - 1 : null,
+    variant: variant ? variant.transform[4] - 1 : null,
+    qty: qty.transform[4] - 1,
+  };
   const customSize = settings?.sku_font_size ? Number(settings.sku_font_size) : undefined;
   const size = (customSize && customSize >= 5 && customSize <= 16) ? customSize : (name.height || name.transform[3] || 7);
   const headerSize = Math.min(size, 8);
 
   const below = items.filter((i) => i.str.trim() && i.transform[5] < hy - 1).sort((a, b) => b.transform[5] - a.transform[5]);
-  const stop = below.find((i) => i.transform[4] < x.name && !/^\d+$/.test(i.str.trim()));
+  const stop = below.find((i) =>
+    /^(Pesan|Komentar|Catatan|Note)/i.test(i.str.trim()) ||
+    (i.transform[4] < x.name && !/^\d+$/.test(i.str.trim()) && i.transform[5] < hy - size * 2.5)
+  );
   const body = below.filter((i) => !stop || i.transform[5] > stop.transform[5] + 1);
-  const numbers = body.filter((i) => i.transform[4] < x.name && /^\d+$/.test(i.str.trim()));
-  if (!numbers.length) return false;
+  const numericCandidates = body.filter((i) => i.transform[4] < x.name && /^\d+$/.test(i.str.trim()));
+  const numbers = own?.length ? numericCandidates.slice(0, own.length) : numericCandidates;
+  if (!numbers.length && (!own || !own.length)) return false;
 
   const cells = numbers.map((n) => ({ y: n.transform[5], no: n.str.trim(), name: [], sku: [], vname: [], qty: [] }));
   for (const it of body) {
@@ -71,7 +80,15 @@ function redrawItemTable(page, items, fonts, own, settings) {
       const mid = cx + (widths[k] * scale) / 2;
       cx += widths[k] * scale;
       // Product and variant names are only printed when the item has no SKU.
-      const col = mid >= x.qty ? "qty" : mid >= x.variant ? "vname" : mid >= x.sku ? "sku" : mid >= x.name ? "name" : null;
+      const col = mid >= x.qty
+        ? "qty"
+        : (x.variant !== null && mid >= x.variant)
+        ? "vname"
+        : (x.sku !== null && mid >= x.sku)
+        ? "sku"
+        : mid >= x.name
+        ? "name"
+        : null;
       if (col) row[col].push([y, c]);
     });
   }
@@ -89,26 +106,60 @@ function redrawItemTable(page, items, fonts, own, settings) {
 
   const { width: pw } = page.getSize();
   const top = hy + headerSize + 3;
-  const lowest = Math.min(...body.map((i) => i.transform[5]));
+  const lowest = body.length ? Math.min(...body.map((i) => i.transform[5])) : hy - size * 3;
   const bottom = stop ? stop.transform[5] + (stop.height || size) * 0.8 : lowest - size * 0.4;
   page.drawRectangle({ x: 1.5, y: bottom, width: pw - 3, height: top - bottom, color: rgb(1, 1, 1) });
 
-  // Every item has a SKU → "# | SKU | Qty". Any item without one → "# | Nama Produk | Variasi | Qty" (an item that
-  // does have a SKU shows it in the first column). Pesanin's own data first, else what Shopee printed. Same as awbTable.ts.
-  const mine = Array.isArray(own) && own.length === rows.length && rows.length > 0;
+  // With Pesanin's own order items, show all items from the order.
+  const mine = Array.isArray(own) && own.length > 0;
   const has = (s) => !!s && String(s).trim() !== "" && String(s).trim() !== "-";
-  const info = rows.map((r, i) => {
-    const d = mine ? own[i] : null;
-    return { sku: d ? (has(d.sku) ? d.sku : "") : has(r.sku) ? r.sku : "", name: ((d && d.name) || r.name || "").trim(), variant: ((d ? d.variant : r.vname) || "").trim() };
-  });
+  const info = mine
+    ? own.map((d, i) => {
+        const sku = has(d.variant) ? d.variant : has(d.sku) ? d.sku : "";
+        return {
+          no: String(i + 1),
+          sku,
+          name: ((d && d.name) || "").trim(),
+          variant: ((d && d.variant) || "").trim(),
+          qty: String((d && (d.qty || d.quantity)) || (rows[i]?.qty || "1")),
+        };
+      })
+    : rows.map((r, i) => {
+        const sku = has(r.sku) ? r.sku : "";
+        return {
+          no: r.no || String(i + 1),
+          sku,
+          name: (r.name || "").trim(),
+          variant: (r.vname || "").trim(),
+          qty: r.qty || "1",
+        };
+      });
+
   const allSku = info.every((x) => x.sku);
-  const heads = allSku ? ["SKU"] : [info.some((x) => x.sku) ? "SKU / Nama Produk" : "Nama Produk", "Variasi"];
-  const body2 = rows.map((r, i) => ({ no: r.no, qty: r.qty, cells: allSku ? [info[i].sku] : [info[i].sku || info[i].name || "-", info[i].sku ? "-" : info[i].variant || "-"] }));
+  const showVariant = (variant !== undefined) || info.some((x) => has(x.variant));
+  const heads = allSku
+    ? ["SKU", "Qty"]
+    : showVariant
+    ? [info.some((x) => x.sku) ? "SKU / Nama Produk" : "Nama Produk", "Variasi", "Qty"]
+    : [info.some((x) => x.sku) ? "SKU / Nama Produk" : "Nama Produk", "Qty"];
+
+  const body2 = info.map((it) => {
+    const cells = allSku
+      ? [it.sku]
+      : showVariant
+      ? [it.sku || it.name || "-", it.variant || "-"]
+      : [it.sku || it.name || "-"];
+    return { no: it.no, qty: it.qty, cells };
+  });
 
   const left = hash.transform[4];
   const right = pw - left;
   const qtyX = right - 18;
-  const colX = allSku ? [left + 14] : [left + 14, left + 14 + (qtyX - left - 14) * 0.66];
+  const hasMultipleCols = heads.length > 2;
+  const colX = hasMultipleCols
+    ? [left + 14, left + 14 + (qtyX - left - 14) * 0.66]
+    : [left + 14];
+  const headX = [...colX, qtyX];
   const widthFor = (k) => (k + 1 < colX.length ? colX[k + 1] : qtyX) - colX[k] - 6;
   const ink = rgb(0, 0, 0);
   const rule = rgb(0.1, 0.1, 0.1);
@@ -126,8 +177,7 @@ function redrawItemTable(page, items, fonts, own, settings) {
 
   let y = hy;
   page.drawText("#", { x: left, y, size: headerSize, font: fonts.bold, color: ink });
-  heads.forEach((t, k) => page.drawText(t, { x: colX[k], y, size: headerSize, font: fonts.bold, color: ink }));
-  page.drawText("Qty", { x: qtyX, y, size: headerSize, font: fonts.bold, color: ink });
+  heads.forEach((t, k) => page.drawText(t, { x: headX[k], y, size: headerSize, font: fonts.bold, color: ink }));
 
   if (showBorders) {
     line(topY);
@@ -180,8 +230,9 @@ function coverNames(page, items) {
   if (!header) return;
   const hy = header.transform[5];
   const sku = items.find((it) => it.str.trim() === "SKU" && Math.abs(it.transform[5] - hy) < 4);
+  if (!sku) return; // Never erase product names when there is no SKU on the label
   const x0 = header.transform[4] - 1;
-  const x1 = sku ? sku.transform[4] - 2 : x0 + 180;
+  const x1 = sku.transform[4] - 2;
   for (const it of items) {
     const [, , , d, x, y] = it.transform;
     if (!it.str.trim() || x < x0 || x >= x1 || y > hy + 1) continue;
@@ -205,7 +256,25 @@ async function processPart(merged, part, printSettings = {}) {
     if (!redrawItemTable(out.getPage(i), items, fonts, match?.items, printSettings)) coverNames(out.getPage(i), items);
   }
 
-  if (printSettings.paper_size === "100x100") {
+  if (printSettings.paper_size === "78x100") {
+    const targetW = 221.10;
+    const targetH = 283.46;
+    for (const srcPage of out.getPages()) {
+      const embedded = await merged.embedPage(srcPage);
+      const page = merged.addPage([targetW, targetH]);
+      const origW = srcPage.getWidth();
+      const origH = srcPage.getHeight();
+      const scale = Math.min(targetW / origW, targetH / origH);
+      const w = origW * scale;
+      const h = origH * scale;
+      page.drawPage(embedded, {
+        x: (targetW - w) / 2,
+        y: (targetH - h) / 2,
+        width: w,
+        height: h,
+      });
+    }
+  } else if (printSettings.paper_size === "100x100") {
     const targetW = 283.46;
     const targetH = 283.46;
     for (const srcPage of out.getPages()) {
