@@ -21,6 +21,11 @@ class AccountsSeeder extends Seeder
         ]);
         $admin->forceFill(['is_admin' => true, 'suspended_at' => null])->save();
 
+        $adminId = User::updateOrCreate(['email' => 'admin@pesanin.id'], [
+            'name' => 'Admin Pesanin', 'store_name' => 'Pesanin Admin ID', 'store_slug' => 'pesanin-admin-id', 'password' => self::PASSWORD,
+        ]);
+        $adminId->forceFill(['is_admin' => true, 'suspended_at' => null])->save();
+
         $sellers = [
             1 => ['gratis', null, 'Rina Kartika', 'Rina Beauty'],
             2 => ['starter', 'monthly', 'Budi Santoso', 'Budi Sparepart Motor'],
