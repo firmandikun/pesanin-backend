@@ -365,13 +365,15 @@ class ShopeeProfitTest extends TestCase
             '*get_escrow_detail*' => Http::response($this->income(19000, 3500)),
         ]);
 
-        $syncRes = (new ShopeeSync)->syncRange(
-            $this->shop,
-            \Illuminate\Support\Carbon::parse('2026-10-01'),
-            \Illuminate\Support\Carbon::parse('2026-10-31')
-        );
+        $sync = new ShopeeSync;
+        $fromOct = \Illuminate\Support\Carbon::parse('2026-10-01');
+        $toOct = \Illuminate\Support\Carbon::parse('2026-10-31');
+        $syncRes = $sync->syncRange($this->shop, $fromOct, $toOct, true);
+        while ($syncRes['remaining'] > 0) {
+            $syncRes = $sync->syncRange($this->shop, $fromOct, $toOct);
+        }
         $this->assertSame(20000, $syncRes['shopee_total']);
         $this->assertSame(0, $syncRes['orders'], 'All 20,000 orders already match local status so 0 need re-fetching order_detail');
-        $this->assertSame(40, $syncRes['settled'], 'Settles 40 escrow breakdowns per batch');
+        $this->assertSame(15, $syncRes['settled'], 'Settles 15 escrow breakdowns when all windows finish');
     }
 }

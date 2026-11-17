@@ -133,23 +133,27 @@ class ShopeeSync
             return 0;
         }
         $count = 0;
-        for ($w = $from->copy(); $w < $covered; $w->addDays(15)) {
-            $count += $this->pull($shop, $w->timestamp, $w->copy()->addDays(15)->min($covered)->timestamp, 'create_time');
+        // Walk backwards from $covered to $from in 5-day windows, updating orders_backfilled_from after each window
+        // and deferring per-order escrow calls so 30 days of orders pull in seconds instead of timing out.
+        for ($wEnd = $covered->copy(); $wEnd > $from; $wEnd->subDays(5)) {
+            $wStart = $wEnd->copy()->subDays(5)->max($from);
+            $count += $this->pull($shop, $wStart->timestamp, $wEnd->timestamp, 'create_time', deferEscrow: true);
+            $shop->update(['orders_backfilled_from' => $wStart->toDateString()]);
         }
-        $shop->update(['orders_backfilled_from' => $from->toDateString()]);
-        $this->settle($shop, 200);
+        $this->settle($shop, 30);
 
         return $count;
     }
 
     /**
-     * Sync orders for a specific date range [$from, $to] chosen in the UI date filter.
-     * Lists orders in 15-day windows from Shopee, fetches missing/changed order details in fast 50-order batches,
-     * and settles missing escrow breakdowns progressively.
+     * Progressive, time-boxed (<= 2.5s per request) sync for a date range [$from, $to] chosen in the UI date filter.
+     * Prioritizes date sub-windows in [$from, $to] that have 0 orders locally (e.g. dates before 9 Nov when filtering
+     * 30 days) so missing historical days appear immediately on the first step, and bookmarks {winIdx, cursor} in Cache
+     * so large months never time out or re-list already scanned pages.
      *
-     * @return array{orders: int, settled: int, remaining_orders: int, remaining_escrow: int, remaining: int, shopee_total: int}
+     * @return array{orders: int, settled: int, remaining_orders: int, remaining_escrow: int, remaining: int, shopee_total: int, progress_date?: string}
      */
-    public function syncRange(MarketplaceShop $shop, Carbon $from, Carbon $to): array
+    public function syncRange(MarketplaceShop $shop, Carbon $from, Carbon $to, bool $force = false): array
     {
         @set_time_limit(0);
         if ($shop->is_demo) {
@@ -162,104 +166,151 @@ class ShopeeSync
             return ['orders' => 0, 'settled' => 0, 'remaining_orders' => 0, 'remaining_escrow' => 0, 'remaining' => 0, 'shopee_total' => 0];
         }
 
-        $listed = []; // order_sn => order_status on Shopee
-        for ($w = $start->copy(); $w < $end; $w->addDays(15)) {
-            $wEnd = $w->copy()->addDays(15)->min($end);
-            $cursor = '';
-            do {
-                $page = $this->api->orderList($shop, $w->timestamp, $wEnd->timestamp, $cursor, 'create_time');
-                foreach ($page['order_list'] ?? [] as $o) {
-                    if (! empty($o['order_sn'])) {
-                        $listed[$o['order_sn']] = $o['order_status'] ?? null;
+        $stateKey = "shopee:range_cursor:{$shop->id}:{$start->toDateString()}:{$end->toDateString()}";
+        if ($force) {
+            Cache::forget($stateKey);
+        }
+
+        $state = Cache::get($stateKey);
+        if (! is_array($state) || ! isset($state['windows'])) {
+            // Build 5-day windows from $end backwards to $start.
+            $emptyWindows = [];
+            $populatedWindows = [];
+            for ($wEnd = $end->copy(); $wEnd > $start; $wEnd->subDays(5)) {
+                $wStart = $wEnd->copy()->subDays(5)->max($start);
+                $localCount = Order::where('marketplace_shop_id', $shop->id)
+                    ->whereBetween('created_at', [$wStart, $wEnd])
+                    ->count();
+                $win = ['from' => $wStart->timestamp, 'to' => $wEnd->timestamp, 'label' => $wStart->format('d M').' - '.$wEnd->format('d M')];
+                // Prioritize windows that have 0 orders locally (e.g. before 9 Nov when 9-16 Nov is already synced)!
+                if ($localCount === 0) {
+                    $emptyWindows[] = $win;
+                } else {
+                    $populatedWindows[] = $win;
+                }
+            }
+            $windows = array_values([...$emptyWindows, ...$populatedWindows]);
+            $state = [
+                'windows' => $windows,
+                'win_idx' => 0,
+                'cursor' => '',
+                'seen_total' => 0,
+            ];
+        }
+
+        $windows = $state['windows'];
+        $totalWins = count($windows);
+        $winIdx = (int) ($state['win_idx'] ?? 0);
+        $cursor = (string) ($state['cursor'] ?? '');
+        $seenTotal = (int) ($state['seen_total'] ?? 0);
+
+        $listingsCache = null;
+        $upserted = 0;
+        $pagesScanned = 0;
+        $t0 = microtime(true);
+        $currentLabel = '';
+
+        // Time-box each HTTP request to ~2.5s and at most 3 orderList pages / 150 upserted orders so it never hangs.
+        while ($winIdx < $totalWins && $pagesScanned < 3 && $upserted < 150 && (microtime(true) - $t0) < 2.5) {
+            $win = $windows[$winIdx];
+            $currentLabel = $win['label'] ?? '';
+            $page = $this->api->orderList($shop, (int) $win['from'], (int) $win['to'], $cursor, 'create_time');
+            $pagesScanned++;
+
+            $pageMap = [];
+            foreach ($page['order_list'] ?? [] as $o) {
+                if (! empty($o['order_sn'])) {
+                    $pageMap[$o['order_sn']] = $o['order_status'] ?? null;
+                }
+            }
+            $seenTotal += count($pageMap);
+
+            if ($pageMap) {
+                $local = Order::where('marketplace_shop_id', $shop->id)
+                    ->whereIn('external_order_sn', array_keys($pageMap))
+                    ->toBase()
+                    ->pluck('external_status', 'external_order_sn');
+
+                $needSns = [];
+                foreach ($pageMap as $sn => $st) {
+                    if (! isset($local[$sn]) || ($st && $local[$sn] !== $st)) {
+                        $needSns[] = $sn;
                     }
                 }
-                $cursor = $page['next_cursor'] ?? '';
-            } while (! empty($page['more']));
-        }
 
-        // If the selected range includes recent days, also check update_time so older orders completed in this range are updated.
-        if ($end->gte(now()->subDays(15))) {
-            $uStart = $start->copy()->max(now()->subDays(15)->startOfDay());
-            if ($uStart->lt($end)) {
-                $cursor = '';
-                do {
-                    $page = $this->api->orderList($shop, $uStart->timestamp, $end->timestamp, $cursor, 'update_time');
-                    foreach ($page['order_list'] ?? [] as $o) {
-                        if (! empty($o['order_sn'])) {
-                            $listed[$o['order_sn']] = $o['order_status'] ?? ($listed[$o['order_sn']] ?? null);
+                if ($needSns) {
+                    $listingsCache ??= MarketplaceListing::where('marketplace_shop_id', $shop->id)->get()->keyBy(fn ($l) => $l->item_id.':'.$l->model_id);
+                    $deferEscrow = count($needSns) > 5;
+                    foreach (array_chunk($needSns, 50) as $chunk) {
+                        $existingMap = Order::where('marketplace_shop_id', $shop->id)
+                            ->whereIn('external_order_sn', $chunk)
+                            ->get()
+                            ->keyBy('external_order_sn');
+                        foreach ($this->api->orderDetail($shop, $chunk) as $detail) {
+                            $this->upsertOrder($shop, $detail, $deferEscrow, $listingsCache, $existingMap[$detail['order_sn'] ?? ''] ?? null);
+                            $upserted++;
                         }
                     }
-                    $cursor = $page['next_cursor'] ?? '';
-                } while (! empty($page['more']));
+                }
+            }
+
+            if (! empty($page['more']) && ! empty($page['next_cursor'])) {
+                $cursor = (string) $page['next_cursor'];
+            } else {
+                $winIdx++;
+                $cursor = '';
             }
         }
 
-        if (! $listed) {
-            return ['orders' => 0, 'settled' => 0, 'remaining_orders' => 0, 'remaining_escrow' => 0, 'remaining' => 0, 'shopee_total' => 0];
-        }
-
-        // Chunk whereIn by 500 to avoid SQLite/MySQL parameter limits when a month has 1,000+ orders.
-        $local = collect(array_keys($listed))->chunk(500)->flatMap(fn ($chunk) => Order::where('marketplace_shop_id', $shop->id)
-            ->whereIn('external_order_sn', $chunk->all())
-            ->get(['id', 'external_order_sn', 'external_status', 'payment_status', 'escrow_amount', 'escrow_final', 'fee_breakdown'])
-        )->keyBy('external_order_sn');
-
-        // 1. Orders missing locally or whose status on Shopee changed.
-        $needOrder = [];
-        foreach ($listed as $sn => $st) {
-            $row = $local[$sn] ?? null;
-            if (! $row || ($st && $row->external_status !== $st)) {
-                $needOrder[] = $sn;
+        $remainingWindows = max(0, $totalWins - $winIdx);
+        if ($remainingWindows > 0) {
+            Cache::put($stateKey, [
+                'windows' => $windows,
+                'win_idx' => $winIdx,
+                'cursor' => $cursor,
+                'seen_total' => $seenTotal,
+            ], 600);
+        } else {
+            Cache::forget($stateKey);
+            if (! $shop->orders_backfilled_from || $start->lt($shop->orders_backfilled_from)) {
+                $shop->update(['orders_backfilled_from' => $start->toDateString()]);
             }
         }
 
-        // Fetch up to 500 missing/changed orders per batch (10 API calls of 50 orders).
-        // When pulling > 15 orders at once, defer per-order escrow/tracking calls so all orders enter the DB in seconds.
-        $batchOrderSns = array_slice($needOrder, 0, 500);
-        $deferEscrow = count($batchOrderSns) > 15;
-        $listingsCache = MarketplaceListing::where('marketplace_shop_id', $shop->id)->get()->keyBy(fn ($l) => $l->item_id.':'.$l->model_id);
-        $upserted = 0;
-        foreach (array_chunk($batchOrderSns, 50) as $chunk) {
-            foreach ($this->api->orderDetail($shop, $chunk) as $detail) {
-                $this->upsertOrder($shop, $detail, $deferEscrow, $listingsCache);
-                $upserted++;
-            }
-        }
-        $remainingOrders = max(0, count($needOrder) - count($batchOrderSns));
-
-        // 2. Paid orders in this range that still need escrow_detail (fee_breakdown or final COMPLETED escrow).
-        $needEscrowQuery = Order::where('marketplace_shop_id', $shop->id)
-            ->where('payment_status', 'paid')
-            ->whereIn('external_status', self::INCOME_STATUSES)
-            ->whereBetween('created_at', [$start, $end])
-            ->where(fn ($q) => $q->whereNull('fee_breakdown')->orWhereNull('escrow_amount')->orWhere(fn ($w) => $w->where('external_status', 'COMPLETED')->where('escrow_final', false)));
-
-        $totalNeedEscrow = (clone $needEscrowQuery)->count();
-        // Settle a batch of escrow details if we didn't just spend the whole request pulling 500 orders.
-        $escrowLimit = count($batchOrderSns) >= 250 ? 15 : 40;
-        $toSettle = $needEscrowQuery->latest('created_at')->limit($escrowLimit)->get();
+        // When all windows are scanned, settle a small batch of missing escrow details.
         $settled = 0;
-        foreach ($toSettle as $order) {
-            $this->fees($shop, $order);
-            $settled++;
+        if ($remainingWindows === 0 && $upserted === 0) {
+            $toSettle = Order::where('marketplace_shop_id', $shop->id)
+                ->where('payment_status', 'paid')
+                ->whereIn('external_status', self::INCOME_STATUSES)
+                ->whereBetween('created_at', [$start, $end])
+                ->where(fn ($q) => $q->whereNull('fee_breakdown')->orWhereNull('escrow_amount')->orWhere(fn ($w) => $w->where('external_status', 'COMPLETED')->where('escrow_final', false)))
+                ->latest('created_at')
+                ->limit(15)
+                ->get();
+            foreach ($toSettle as $order) {
+                $this->fees($shop, $order);
+                $settled++;
+            }
         }
-        $remainingEscrow = max(0, $totalNeedEscrow - $settled);
 
         return [
             'orders' => $upserted,
             'settled' => $settled,
-            'remaining_orders' => $remainingOrders,
-            'remaining_escrow' => $remainingEscrow,
-            'remaining' => $remainingOrders + $remainingEscrow,
-            'shopee_total' => count($listed),
+            'remaining_orders' => $remainingWindows,
+            'remaining_escrow' => 0,
+            'remaining' => $remainingWindows,
+            'shopee_total' => $seenTotal,
+            'progress_date' => $currentLabel,
         ];
     }
 
     /** List orders in one window (optionally one status) and upsert their details. */
-    private function pull(MarketplaceShop $shop, int $from, int $to, string $field = 'create_time', ?string $status = null, ?array &$seen = null): int
+    private function pull(MarketplaceShop $shop, int $from, int $to, string $field = 'create_time', ?string $status = null, ?array &$seen = null, bool $deferEscrow = false): int
     {
         $count = 0;
         $cursor = '';
+        $listingsCache = $deferEscrow ? MarketplaceListing::where('marketplace_shop_id', $shop->id)->get()->keyBy(fn ($l) => $l->item_id.':'.$l->model_id) : null;
         do {
             $page = $this->api->orderList($shop, $from, $to, $cursor, $field, $status);
             $sns = array_column($page['order_list'] ?? [], 'order_sn');
@@ -267,8 +318,11 @@ class ShopeeSync
                 array_push($seen, ...$sns);
             }
             foreach (array_chunk($sns, 50) as $chunk) {
+                $existingMap = $deferEscrow
+                    ? Order::where('marketplace_shop_id', $shop->id)->whereIn('external_order_sn', $chunk)->get()->keyBy('external_order_sn')
+                    : collect();
                 foreach ($this->api->orderDetail($shop, $chunk) as $detail) {
-                    $this->upsertOrder($shop, $detail);
+                    $this->upsertOrder($shop, $detail, $deferEscrow, $listingsCache, $existingMap[$detail['order_sn'] ?? ''] ?? null);
                     $count++;
                 }
             }
@@ -647,7 +701,7 @@ class ShopeeSync
         }
     }
 
-    public function upsertOrder(MarketplaceShop $shop, array $d, bool $deferEscrow = false, ?\Illuminate\Support\Collection $listingsCache = null): Order
+    public function upsertOrder(MarketplaceShop $shop, array $d, bool $deferEscrow = false, ?\Illuminate\Support\Collection $listingsCache = null, ?Order $existingOrder = null): Order
     {
         $listings = $listingsCache ?? MarketplaceListing::where('marketplace_shop_id', $shop->id)->get()->keyBy(fn ($l) => $l->item_id.':'.$l->model_id);
         $items = collect($d['item_list'] ?? [])->map(function ($i) use ($listings) {
@@ -670,7 +724,7 @@ class ShopeeSync
 
         // Right after "Atur pengiriman" Shopee can still report READY_TO_SHIP for a while;
         // don't let that stale read move an arranged order back to "Perlu dikirim".
-        $existing = Order::where('marketplace_shop_id', $shop->id)->where('external_order_sn', $d['order_sn'])->first();
+        $existing = $existingOrder ?? Order::where('marketplace_shop_id', $shop->id)->where('external_order_sn', $d['order_sn'])->first();
         if (($d['order_status'] ?? null) === 'READY_TO_SHIP' && $existing && Cache::has(self::arrangedKey($existing->id))) {
             $d['order_status'] = 'PROCESSED';
         }
@@ -684,11 +738,11 @@ class ShopeeSync
         $addr = $d['recipient_address'] ?? [];
         $subtotal = $items->sum(fn ($i) => $i['qty'] * $i['price']);
 
-        $build = function () use ($shop, $d, $items, $addr, $subtotal, $status, $shipping, $released) {
-            $order = Order::firstOrNew(['marketplace_shop_id' => $shop->id, 'external_order_sn' => $d['order_sn']]);
+        $build = function (bool $reRead = false) use ($shop, $d, $items, $addr, $subtotal, $status, $shipping, $released, $existing) {
+            $order = (! $reRead && $existing) ? $existing : Order::firstOrNew(['marketplace_shop_id' => $shop->id, 'external_order_sn' => $d['order_sn']]);
             $order->user_id = $shop->user_id;
             $order->fill([
-                'code' => $order->code ?? self::orderCode($shop, $d['order_sn']),
+                'code' => $order->code ?? ('SP'.$d['order_sn']),
                 'channel' => 'shopee', 'source' => 'marketplace', 'external_status' => $d['order_status'] ?? null,
                 // Shopee-fulfilled / Advance Fulfilment orders are shipped by Shopee; the seller must not arrange
                 // them manually. Never clear a flag a failed manual-arrange already set.
@@ -739,7 +793,7 @@ class ShopeeSync
                 if ($try >= 2) {
                     throw $e;
                 }
-                $order = $build();
+                $order = $build(true);
                 if (! $order->exists) {
                     $order->code = 'SP'.$d['order_sn'].'-'.$shop->id.($try ? '-'.Str::lower(Str::random(4)) : '');
                 }

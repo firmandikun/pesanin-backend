@@ -430,14 +430,15 @@ class MarketplaceController extends Controller
                         $result['settled'] = 0;
                         $result['remaining'] = 0;
                     } else {
-                        $rangeRes = $sync->syncRange($shop, $rf, $rt);
+                        $rangeRes = $sync->syncRange($shop, $rf, $rt, $force);
                         $result['orders'] = $rangeRes['orders'];
                         $result['settled'] = $rangeRes['settled'];
                         $result['remaining_orders'] = $rangeRes['remaining_orders'];
                         $result['remaining_escrow'] = $rangeRes['remaining_escrow'];
                         $result['remaining'] = $rangeRes['remaining'];
                         $result['shopee_total'] = $rangeRes['shopee_total'];
-                        // Only mark this range as settled for 45s once 100% of orders & escrow in the range are synced.
+                        $result['progress_date'] = $rangeRes['progress_date'] ?? null;
+                        // Only mark this range as settled for 45s once 100% of windows in the range are scanned.
                         if ($rangeRes['remaining'] === 0) {
                             \Illuminate\Support\Facades\Cache::put($doneKey, 1, 45);
                         }
@@ -581,11 +582,14 @@ class MarketplaceController extends Controller
 
     public function transactions(Request $request, MarketplaceShop $shop)
     {
+        $allRowsMode = $request->boolean('all_rows');
         [$rows, $data, $from, , $tabCounts, $baseRows] = $this->transactionRows($request, $shop, false);
-        $backfilling = \App\Support\Shopee\ShopeeBackfill::ensureShop($shop, $from);
+        $backfilling = ! $allRowsMode && \App\Support\Shopee\ShopeeBackfill::ensureShop($shop, $from);
         $perPage = (int) ($data['per_page'] ?? 10);
         $page = (int) ($data['page'] ?? 1);
-        $pageRows = Analytics::attachFeeBreakdowns($rows->forPage($page, $perPage)->values());
+        $pageRows = $allRowsMode
+            ? $rows->forPage($page, min($perPage, 50))->values()
+            : Analytics::attachFeeBreakdowns($rows->forPage($page, $perPage)->values());
 
         $gmv = 0;
         $revenue = 0;
@@ -611,7 +615,7 @@ class MarketplaceController extends Controller
         }
 
         return [
-            'rows' => $request->boolean('all_rows') ? ($baseRows->count() <= 3000 ? Analytics::attachFeeBreakdowns($baseRows) : $baseRows) : null,
+            'rows' => $allRowsMode ? ($baseRows->count() <= 300 ? Analytics::attachFeeBreakdowns($baseRows) : $baseRows) : null,
             'transactions' => [
                 'data' => $pageRows, 'current_page' => $page,
                 'last_page' => max(1, (int) ceil($rows->count() / $perPage)), 'total' => $rows->count(),
