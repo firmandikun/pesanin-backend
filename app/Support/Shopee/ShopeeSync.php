@@ -969,32 +969,99 @@ class ShopeeSync
         $typeById = collect($list)->pluck('ad_type', 'campaign_id')->all();
         $ids = array_keys($typeById);
         $byId = [];
+
+        $extractIds = function ($source) use (&$extractIds): array {
+            if (empty($source)) return [];
+            if (is_numeric($source)) return [(int) $source];
+            if (is_string($source) && str_contains($source, ',')) {
+                return array_map('intval', array_filter(explode(',', $source)));
+            }
+            if (! is_array($source)) return [];
+            $ids = [];
+            if (isset($source['item_id']) && is_numeric($source['item_id'])) {
+                $ids[] = (int) $source['item_id'];
+            }
+            if (isset($source['item_id_list'])) {
+                $ids = array_merge($ids, $extractIds($source['item_id_list']));
+            }
+            if (isset($source['item_list'])) {
+                $ids = array_merge($ids, $extractIds($source['item_list']));
+            }
+            if (isset($source['auto_item_list'])) {
+                $ids = array_merge($ids, $extractIds($source['auto_item_list']));
+            }
+            if (isset($source['product_list'])) {
+                $ids = array_merge($ids, $extractIds($source['product_list']));
+            }
+            foreach ($source as $k => $v) {
+                if (is_numeric($k)) {
+                    if (is_numeric($v)) {
+                        $ids[] = (int) $v;
+                    } elseif (is_array($v)) {
+                        $ids = array_merge($ids, $extractIds($v));
+                    }
+                }
+            }
+            return array_values(array_unique(array_filter($ids)));
+        };
+
         foreach ($this->api->adCampaignSettings($shop, $ids) as $c) {
-            $cid = (int) $c['campaign_id'];
+            $cid = (int) ($c['campaign_id'] ?? $c['common_info']['campaign_id'] ?? 0);
+            if (! $cid) {
+                continue;
+            }
+
             $info = $c['common_info'] ?? $c;
-            $budget = $info['campaign_budget'] ?? null;
-            $adType = $info['ad_type'] ?? $c['ad_type'] ?? ($typeById[$cid] ?? null);
-            $rawItems = collect($info['item_id_list'] ?? [])
-                ->merge($c['auto_product_ads_info'] ?? [])
-                ->merge($c['manual_product_ads_info'] ?? [])
-                ->merge($c['product_list'] ?? [])
-                ->merge($c['group_info']['item_id_list'] ?? [])
-                ->map(fn ($x) => is_array($x) ? ($x['item_id'] ?? null) : $x)
-                ->filter()
-                ->map(fn ($id) => (int) $id)
-                ->unique()
-                ->values()
-                ->all();
-            $defaultName = $adType === 'auto' ? 'Iklan Produk Otomatis' : (count($rawItems) > 1 ? "Grup Iklan #{$cid}" : null);
+            $autoInfo = $c['auto_product_ads_info'] ?? [];
+            $manualInfo = $c['manual_product_ads_info'] ?? [];
+            $autoBiddingInfo = $c['auto_bidding_info'] ?? [];
+
+            $name = ($info['ad_name'] ?? $info['campaign_name'] ?? $c['ad_name'] ?? $c['campaign_name'] ?? null);
+            $nameLower = mb_strtolower((string) $name);
+
+            // Determine if campaign is an auto product ad (mode otomatis di Shopee)
+            $isAuto = ($info['ad_type'] ?? null) === 'auto'
+                || ($c['ad_type'] ?? null) === 'auto'
+                || ($typeById[$cid] ?? null) === 'auto'
+                || ! empty($autoInfo)
+                || ! empty($autoBiddingInfo)
+                || ($info['bidding_method'] ?? null) === 'auto'
+                || str_contains($nameLower, 'otomatis');
+
+            $adType = $isAuto ? 'auto' : ($info['ad_type'] ?? $c['ad_type'] ?? ($typeById[$cid] ?? 'manual'));
+            $biddingMethod = $info['bidding_method'] ?? ($isAuto ? 'auto' : null);
+
+            // Extract budget from auto_product_ads_info or common_info
+            $budget = (is_array($autoInfo) ? ($autoInfo['budget'] ?? $autoInfo['daily_budget'] ?? $autoInfo['total_budget'] ?? $autoInfo['campaign_budget'] ?? null) : null)
+                ?? $info['campaign_budget'] ?? $info['budget'] ?? $info['daily_budget'] ?? $info['total_budget']
+                ?? $c['budget'] ?? $c['campaign_budget'] ?? null;
+
+            // Status normalization (Shopee returns 'status' in common_info or top-level)
+            $rawStatus = $info['status'] ?? $info['campaign_status'] ?? $c['status'] ?? $c['campaign_status'] ?? (is_array($autoInfo) ? ($autoInfo['status'] ?? null) : null);
+            $status = $rawStatus ? strtolower((string) $rawStatus) : 'ongoing';
+
+            // Extract promoted items robustly
+            $rawItems = array_values(array_unique(array_filter(array_merge(
+                $extractIds($info['item_id_list'] ?? null),
+                $extractIds($info['item_list'] ?? null),
+                $extractIds($info['item_id'] ?? null),
+                $extractIds($autoInfo),
+                $extractIds($manualInfo),
+                $extractIds($c['product_list'] ?? null),
+                $extractIds($c['group_info'] ?? null)
+            ))));
+
+            $defaultName = $isAuto ? 'Iklan Produk Otomatis' : (count($rawItems) > 1 ? "Grup Iklan #{$cid}" : "Kampanye #{$cid}");
+
             $byId[$cid] = ShopeeAdCampaign::updateOrCreate(
                 ['marketplace_shop_id' => $shop->id, 'campaign_id' => $cid],
                 [
                     'user_id' => $shop->user_id,
-                    'name' => ($info['ad_name'] ?? $info['campaign_name'] ?? null) ?: $defaultName,
+                    'name' => $name ?: $defaultName,
                     'ad_type' => $adType,
-                    'bidding_method' => $info['bidding_method'] ?? ($adType === 'auto' ? 'auto' : null),
-                    'status' => $info['campaign_status'] ?? null,
-                    'placement' => $info['campaign_placement'] ?? null,
+                    'bidding_method' => $biddingMethod,
+                    'status' => $status,
+                    'placement' => $info['campaign_placement'] ?? $info['placement'] ?? null,
                     'budget' => is_numeric($budget) ? (int) round($budget) : null,
                     'item_ids' => $rawItems,
                 ],
@@ -1021,8 +1088,16 @@ class ShopeeSync
         foreach ($this->api->adCampaignDailyPerformance($shop, array_keys($byId), $from, $today->format('d-m-Y')) as $c) {
             $campaign = $byId[(int) $c['campaign_id']] ?? null;
             foreach ($campaign ? ($c['metrics_list'] ?? []) : [] as $m) {
+                if (empty($m['date'])) {
+                    continue;
+                }
+                try {
+                    $dateStr = Carbon::parse($m['date'])->toDateString();
+                } catch (\Throwable) {
+                    continue;
+                }
                 ShopeeAdStat::updateOrCreate(
-                    ['shopee_ad_campaign_id' => $campaign->id, 'date' => Carbon::createFromFormat('d-m-Y', $m['date'])->toDateString()],
+                    ['shopee_ad_campaign_id' => $campaign->id, 'date' => $dateStr],
                     [
                         'impressions' => (int) ($m['impression'] ?? 0), 'clicks' => (int) ($m['clicks'] ?? 0),
                         'expense' => (int) round($m['expense'] ?? 0), 'gmv' => (int) round($m['broad_gmv'] ?? 0),

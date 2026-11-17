@@ -468,17 +468,32 @@ class ShopeeClient
     public function adCampaignList(MarketplaceShop $shop): array
     {
         $list = [];
-        $offset = 0;
-        do {
-            $r = $this->get($shop, '/api/v2/ads/get_product_level_campaign_id_list', ['ad_type' => 'all', 'offset' => $offset, 'limit' => 100])['response'] ?? [];
-            foreach ($r['campaign_list'] ?? [] as $c) {
-                $list[] = [
-                    'campaign_id' => (int) $c['campaign_id'],
-                    'ad_type' => $c['ad_type'] ?? null,
-                ];
-            }
-            $offset += 100;
-        } while (! empty($r['has_next_page']) && $offset < 5000);
+        $seen = [];
+        // Query both 'all' and 'auto' to ensure automated product campaigns are always discovered.
+        foreach (['all', 'auto'] as $type) {
+            $offset = 0;
+            do {
+                $r = $this->get($shop, '/api/v2/ads/get_product_level_campaign_id_list', [
+                    'ad_type' => $type, 'offset' => $offset, 'limit' => 100,
+                ])['response'] ?? [];
+                foreach ($r['campaign_list'] ?? [] as $c) {
+                    $cid = (int) ($c['campaign_id'] ?? 0);
+                    if (! $cid) {
+                        continue;
+                    }
+                    if (! isset($seen[$cid])) {
+                        $seen[$cid] = count($list);
+                        $list[] = [
+                            'campaign_id' => $cid,
+                            'ad_type' => $type === 'auto' ? 'auto' : ($c['ad_type'] ?? null),
+                        ];
+                    } elseif ($type === 'auto') {
+                        $list[$seen[$cid]]['ad_type'] = 'auto';
+                    }
+                }
+                $offset += 100;
+            } while (! empty($r['has_next_page']) && $offset < 5000);
+        }
 
         return $list;
     }

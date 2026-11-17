@@ -258,7 +258,7 @@ class MarketplaceController extends Controller
         $campaignRows = $campaigns->map(function ($c) use ($listings, $shopNormalListings, $row) {
             $explicitItems = collect($c->item_ids ?? [])->map(fn ($id) => $listings[$id] ?? ['item_id' => $id, 'name' => "Produk {$id}", 'image' => null, 'product_id' => null])->values();
             $nameLower = mb_strtolower((string) ($c->name ?? ''));
-            $isAuto = $c->ad_type === 'auto' || str_contains($nameLower, 'otomatis');
+            $isAuto = $c->ad_type === 'auto' || $c->bidding_method === 'auto' || str_contains($nameLower, 'otomatis');
             $isGroup = ! $isAuto && ($c->ad_type === 'group' || $explicitItems->count() > 1 || str_contains($nameLower, 'grup') || str_contains($nameLower, 'group'));
             $kind = $isAuto ? 'auto' : ($isGroup ? 'group' : 'manual');
             $autoItems = $isAuto
@@ -270,8 +270,8 @@ class MarketplaceController extends Controller
                 'marketplace_shop_id' => $c->marketplace_shop_id,
                 'campaign_id' => $c->campaign_id,
                 'name' => $c->name ?: ($isAuto ? 'Iklan Produk Otomatis' : ($isGroup ? "Grup Iklan #{$c->campaign_id}" : "Kampanye {$c->campaign_id}")),
-                'status' => $c->status,
-                'ad_type' => $c->ad_type,
+                'status' => $c->status ?: 'ongoing',
+                'ad_type' => $c->ad_type ?: ($isAuto ? 'auto' : null),
                 'kind' => $kind,
                 'bidding_method' => $c->bidding_method,
                 'budget' => $c->budget,

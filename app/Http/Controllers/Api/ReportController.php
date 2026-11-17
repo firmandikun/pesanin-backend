@@ -18,7 +18,7 @@ class ReportController extends Controller
     public function dashboard(Request $request)
     {
         $user = $request->user();
-        $days = in_array($request->integer('days', 7), [1, 7, 30, 90], true) ? $request->integer('days', 7) : 7;
+        $days = in_array($request->integer('days', 1), [1, 7, 30, 90], true) ? $request->integer('days', 1) : 1;
         [$from, $to] = \App\Support\Dates::lastDays($days);
         $prevTo = $from->copy()->subSecond();
         $prevFrom = $prevTo->copy()->subDays($days - 1)->startOfDay();

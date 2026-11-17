@@ -376,4 +376,89 @@ class ShopeeProfitTest extends TestCase
         $this->assertSame(0, $syncRes['orders'], 'All 20,000 orders already match local status so 0 need re-fetching order_detail');
         $this->assertSame(15, $syncRes['settled'], 'Settles 15 escrow breakdowns when all windows finish');
     }
+
+    public function test_auto_product_ads_campaign_sync_and_marketplace_ads_api(): void
+    {
+        Sanctum::actingAs($this->user);
+
+        Http::fake([
+            '*get_product_level_campaign_id_list*' => Http::response([
+                'response' => [
+                    'campaign_list' => [
+                        ['campaign_id' => 9999, 'ad_type' => 'auto'],
+                    ],
+                    'has_next_page' => false,
+                ],
+            ]),
+            '*get_product_level_campaign_setting_info*' => Http::response([
+                'response' => [
+                    'campaign_list' => [
+                        [
+                            'campaign_id' => 9999,
+                            'common_info' => [
+                                'campaign_id' => 9999,
+                                'ad_name' => 'Iklan Produk Otomatis Toko',
+                                'status' => 'ongoing',
+                                'ad_type' => 'auto',
+                            ],
+                            'auto_product_ads_info' => [
+                                'daily_budget' => 50000,
+                                'item_id_list' => [8881, 8882],
+                            ],
+                        ],
+                    ],
+                ],
+            ]),
+            '*get_product_campaign_daily_performance*' => Http::response([
+                'response' => [
+                    'campaign_list' => [
+                        [
+                            'campaign_id' => 9999,
+                            'metrics_list' => [
+                                [
+                                    'date' => today()->format('d-m-Y'),
+                                    'impression' => 1200,
+                                    'clicks' => 85,
+                                    'expense' => 35000,
+                                    'broad_gmv' => 250000,
+                                    'broad_order' => 5,
+                                    'broad_order_amount' => 6,
+                                ],
+                            ],
+                        ],
+                    ],
+                ],
+            ]),
+            '*get_all_cpc_ads_daily_performance*' => Http::response([
+                'response' => [
+                    [
+                        'date' => today()->format('d-m-Y'),
+                        'expense' => 35000,
+                    ],
+                ],
+            ]),
+            '*get_total_balance*' => Http::response(['response' => ['total_balance' => 150000]]),
+            '*get_item_base_info*' => Http::response(['response' => ['item_list' => []]]),
+        ]);
+
+        $sync = new ShopeeSync;
+        $count = $sync->adCampaigns($this->shop, 7);
+        $this->assertSame(1, $count);
+
+        $camp = \App\Models\ShopeeAdCampaign::where('campaign_id', 9999)->first();
+        $this->assertNotNull($camp);
+        $this->assertSame('auto', $camp->ad_type);
+        $this->assertSame('auto', $camp->bidding_method);
+        $this->assertSame('ongoing', $camp->status);
+        $this->assertSame(50000, $camp->budget);
+        $this->assertSame([8881, 8882], $camp->item_ids);
+
+        $res = $this->getJson('/api/marketplace/ads?all=1');
+        $res->assertOk();
+        $res->assertJsonPath('counts.active', 1);
+        $res->assertJsonPath('campaigns.0.kind', 'auto');
+        $res->assertJsonPath('campaigns.0.name', 'Iklan Produk Otomatis Toko');
+        $res->assertJsonPath('campaigns.0.budget', 50000);
+        $res->assertJsonPath('campaigns.0.expense', 35000);
+    }
 }
