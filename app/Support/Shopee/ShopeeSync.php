@@ -190,6 +190,13 @@ class ShopeeSync
                 }
             }
             $windows = array_values([...$emptyWindows, ...$populatedWindows]);
+            // Also scan update_time windows so orders created earlier that completed/settled in this range are updated.
+            $updateWindows = [];
+            for ($wEnd = $end->copy(); $wEnd > $start; $wEnd->subDays(5)) {
+                $wStart = $wEnd->copy()->subDays(5)->max($start);
+                $updateWindows[] = ['from' => $wStart->timestamp, 'to' => $wEnd->timestamp, 'label' => $wStart->format('d M').' - '.$wEnd->format('d M'), 'type' => 'update_time'];
+            }
+            $windows = array_values([...$windows, ...$updateWindows]);
             $state = [
                 'windows' => $windows,
                 'win_idx' => 0,
@@ -214,7 +221,8 @@ class ShopeeSync
         while ($winIdx < $totalWins && $pagesScanned < 3 && $upserted < 150 && (microtime(true) - $t0) < 2.5) {
             $win = $windows[$winIdx];
             $currentLabel = $win['label'] ?? '';
-            $page = $this->api->orderList($shop, (int) $win['from'], (int) $win['to'], $cursor, 'create_time');
+            $timeField = $win['type'] ?? 'create_time';
+            $page = $this->api->orderList($shop, (int) $win['from'], (int) $win['to'], $cursor, $timeField);
             $pagesScanned++;
 
             $pageMap = [];

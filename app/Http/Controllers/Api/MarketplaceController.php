@@ -832,10 +832,8 @@ class MarketplaceController extends Controller
         $basis = $data['basis'] ?? 'settled_cogs_completed';
         $user = $request->user();
 
-        // For "Hanya Pesanan Sudah Cair" (settled), match orders by settlement/completion date;
-        // for active/HPP-completed bases, match by order creation date (same as Transaksi).
-        $byOrderDate = $basis !== 'settled';
-        $rows = Analytics::attachFeeBreakdowns(Analytics::transactions($user, $from, $to, $shop->id, false, $byOrderDate));
+        // Include orders completed/settled in [$from, $to] (even if created earlier) plus active orders created in [$from, $to].
+        $rows = Analytics::attachFeeBreakdowns(Analytics::transactions($user, $from, $to, $shop->id, false, false));
 
         $s = self::statementTotals($rows, $basis);
 
