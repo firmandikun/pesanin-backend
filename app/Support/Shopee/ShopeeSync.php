@@ -560,12 +560,6 @@ class ShopeeSync
             \Illuminate\Support\Facades\Log::warning("Shopee recent bookings {$shop->id}: {$e->getMessage()}");
         }
 
-        try {
-            ShopeeChatAutomation::checkPendingUnpaidOrders($shop);
-        } catch (\Throwable $e) {
-            \Illuminate\Support\Facades\Log::warning("Shopee auto-remind unpaid {$shop->id}: {$e->getMessage()}");
-        }
-
         return $count;
     }
 
@@ -842,8 +836,6 @@ class ShopeeSync
             && ($order->escrow_amount === null || $status === 'COMPLETED' || $existing?->external_status !== $status)) {
             $this->fees($shop, $order);
         }
-
-        ShopeeChatAutomation::onOrderUpdated($shop, $order, $existing?->external_status);
 
         return $order;
     }

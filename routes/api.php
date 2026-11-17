@@ -172,7 +172,6 @@ Route::middleware(['auth:sanctum', 'member', 'subscribed'])->group(function () {
     Route::put('/marketplace/listings/{listing}/cost', [MarketplaceController::class, 'cost']);
     Route::get('/marketplace/listing-costs', [MarketplaceController::class, 'costGroups']);
     Route::post('/marketplace/listing-costs', [MarketplaceController::class, 'bulkCost']);
-    Route::post('/marketplace/orders/{order}/shopee-followup', [MarketplaceController::class, 'shopeeFollowup']);
     Route::get('/labels', [LabelController::class, 'data']);
     Route::get('/labels/shopee/options', [LabelController::class, 'shopeeOptions']);
     Route::post('/labels/shopee/ship', [LabelController::class, 'shopeeShip']);
