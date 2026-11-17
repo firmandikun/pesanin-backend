@@ -221,31 +221,9 @@ class Analytics
 
         $rawOrders = $user->orders()->where('channel', 'shopee')->where('marketplace_shop_id', $shopId)
             ->where('is_abandoned', false)
-            ->where(function ($q) use ($from, $to, $byOrderDate) {
-                if ($byOrderDate) {
-                    $q->whereBetween('created_at', [$from, $to])
-                        ->orWhere(function ($c) use ($from, $to) {
-                            $c->where('external_status', 'COMPLETED')
-                                ->whereBetween('completed_at', [$from, $to]);
-                        });
-                } else {
-                    $q->where(function ($c) use ($from, $to) {
-                        $c->where('external_status', 'COMPLETED')
-                            ->where(function ($w) use ($from, $to) {
-                                $w->whereBetween('completed_at', [$from, $to])
-                                    ->orWhere(function ($fb) use ($from, $to) {
-                                        $fb->whereNull('completed_at')->whereBetween('created_at', [$from, $to]);
-                                    });
-                            });
-                    })->orWhere(function ($nc) use ($from, $to) {
-                        $nc->where(function ($st) {
-                            $st->whereNull('external_status')->orWhere('external_status', '!=', 'COMPLETED');
-                        })->whereBetween('created_at', [$from, $to]);
-                    });
-                }
-            })
+            ->whereBetween('created_at', [$from, $to])
             ->select($cols)
-            ->orderByRaw('COALESCE(CASE WHEN external_status = "COMPLETED" THEN completed_at END, created_at) DESC')
+            ->orderByDesc('created_at')
             ->toBase()
             ->get();
 
