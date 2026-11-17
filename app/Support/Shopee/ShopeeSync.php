@@ -1019,17 +1019,22 @@ class ShopeeSync
             $name = ($info['ad_name'] ?? $info['campaign_name'] ?? $c['ad_name'] ?? $c['campaign_name'] ?? null);
             $nameLower = mb_strtolower((string) $name);
 
-            // Determine if campaign is an auto product ad (mode otomatis di Shopee)
-            $isAuto = ($info['ad_type'] ?? null) === 'auto'
-                || ($c['ad_type'] ?? null) === 'auto'
-                || ($typeById[$cid] ?? null) === 'auto'
-                || ! empty($autoInfo)
-                || ! empty($autoBiddingInfo)
-                || ($info['bidding_method'] ?? null) === 'auto'
-                || str_contains($nameLower, 'otomatis');
+            // Determine if campaign is a store-wide auto product ad (mode otomatis toko tanpa produk manual)
+            $isStoreWideAuto = ($info['ad_type'] ?? null) === 'shop_auto'
+                || (empty($info['item_id_list']) && empty($c['item_ids']) && ! empty($autoInfo) && str_contains($nameLower, 'otomatis'));
 
-            $adType = $isAuto ? 'auto' : ($info['ad_type'] ?? $c['ad_type'] ?? ($typeById[$cid] ?? 'manual'));
-            $biddingMethod = $info['bidding_method'] ?? ($isAuto ? 'auto' : null);
+            $isAutoBidding = ($info['bidding_method'] ?? null) === 'auto'
+                || ! empty($autoBiddingInfo)
+                || ! empty($autoInfo);
+
+            $adType = $isStoreWideAuto ? 'auto' : ($info['ad_type'] ?? $c['ad_type'] ?? ($typeById[$cid] ?? 'manual'));
+            $biddingMethod = $isAutoBidding ? 'auto' : ($info['bidding_method'] ?? null);
+
+            // Target ROAS from Shopee API (GMV Max ROAS)
+            $roasTarget = (is_array($autoBiddingInfo) ? ($autoBiddingInfo['roas_target'] ?? $autoBiddingInfo['target'] ?? null) : null)
+                ?? (is_array($autoInfo) ? ($autoInfo['roas_target'] ?? $autoInfo['target'] ?? null) : null)
+                ?? ($info['roas_target'] ?? $info['target_roas'] ?? $c['roas_target'] ?? null);
+            $roasTarget = is_numeric($roasTarget) ? (float) $roasTarget : null;
 
             // Extract budget from auto_product_ads_info or common_info
             $budget = (is_array($autoInfo) ? ($autoInfo['budget'] ?? $autoInfo['daily_budget'] ?? $autoInfo['total_budget'] ?? $autoInfo['campaign_budget'] ?? null) : null)
@@ -1051,7 +1056,7 @@ class ShopeeSync
                 $extractIds($c['group_info'] ?? null)
             ))));
 
-            $defaultName = $isAuto ? 'Iklan Produk Otomatis' : (count($rawItems) > 1 ? "Grup Iklan #{$cid}" : "Kampanye #{$cid}");
+            $defaultName = $isStoreWideAuto ? 'Iklan Produk Otomatis' : (count($rawItems) > 1 ? "Grup Iklan #{$cid}" : "Kampanye #{$cid}");
 
             $byId[$cid] = ShopeeAdCampaign::updateOrCreate(
                 ['marketplace_shop_id' => $shop->id, 'campaign_id' => $cid],
@@ -1063,6 +1068,7 @@ class ShopeeSync
                     'status' => $status,
                     'placement' => $info['campaign_placement'] ?? $info['placement'] ?? null,
                     'budget' => is_numeric($budget) ? (int) round($budget) : null,
+                    'roas_target' => $roasTarget,
                     'item_ids' => $rawItems,
                 ],
             );

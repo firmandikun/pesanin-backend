@@ -403,6 +403,7 @@ class ShopeeProfitTest extends TestCase
                             ],
                             'auto_product_ads_info' => [
                                 'daily_budget' => 50000,
+                                'roas_target' => 7.7,
                                 'item_id_list' => [8881, 8882],
                             ],
                         ],
@@ -447,18 +448,19 @@ class ShopeeProfitTest extends TestCase
 
         $camp = \App\Models\ShopeeAdCampaign::where('campaign_id', 9999)->first();
         $this->assertNotNull($camp);
-        $this->assertSame('auto', $camp->ad_type);
         $this->assertSame('auto', $camp->bidding_method);
         $this->assertSame('ongoing', $camp->status);
         $this->assertSame(50000, $camp->budget);
+        $this->assertEquals(7.7, (float) $camp->roas_target);
         $this->assertSame([8881, 8882], $camp->item_ids);
 
         $res = $this->getJson('/api/marketplace/ads?all=1');
         $res->assertOk();
         $res->assertJsonPath('counts.active', 1);
-        $res->assertJsonPath('campaigns.0.kind', 'auto');
+        $res->assertJsonPath('campaigns.0.kind', 'group');
         $res->assertJsonPath('campaigns.0.name', 'Iklan Produk Otomatis Toko');
         $res->assertJsonPath('campaigns.0.budget', 50000);
+        $res->assertJsonPath('campaigns.0.roas_target', 7.7);
         $res->assertJsonPath('campaigns.0.expense', 35000);
     }
 }

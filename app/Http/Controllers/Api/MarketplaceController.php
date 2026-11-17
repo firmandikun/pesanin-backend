@@ -258,26 +258,26 @@ class MarketplaceController extends Controller
         $campaignRows = $campaigns->map(function ($c) use ($listings, $shopNormalListings, $row) {
             $explicitItems = collect($c->item_ids ?? [])->map(fn ($id) => $listings[$id] ?? ['item_id' => $id, 'name' => "Produk {$id}", 'image' => null, 'product_id' => null])->values();
             $nameLower = mb_strtolower((string) ($c->name ?? ''));
-            $isAuto = $c->ad_type === 'auto' || $c->bidding_method === 'auto' || str_contains($nameLower, 'otomatis');
-            $isGroup = ! $isAuto && ($c->ad_type === 'group' || $explicitItems->count() > 1 || str_contains($nameLower, 'grup') || str_contains($nameLower, 'group'));
-            $kind = $isAuto ? 'auto' : ($isGroup ? 'group' : 'manual');
-            $autoItems = $isAuto
-                ? ($explicitItems->isNotEmpty() ? $explicitItems : collect($shopNormalListings[$c->marketplace_shop_id] ?? []))
-                : collect();
+            // Store-wide automated product ads have no specific item list
+            $isStoreWideAuto = ($c->ad_type === 'auto' || $c->ad_type === 'shop_auto') && $explicitItems->isEmpty();
+            $isGroup = ! $isStoreWideAuto && ($c->ad_type === 'group' || $explicitItems->count() > 1 || str_contains($nameLower, 'grup') || str_contains($nameLower, 'group'));
+            $kind = $isStoreWideAuto ? 'auto' : ($isGroup ? 'group' : 'manual');
+            $autoItems = $isStoreWideAuto ? collect($shopNormalListings[$c->marketplace_shop_id] ?? []) : collect();
 
             return [
                 'id' => $c->id,
                 'marketplace_shop_id' => $c->marketplace_shop_id,
                 'campaign_id' => $c->campaign_id,
-                'name' => $c->name ?: ($isAuto ? 'Iklan Produk Otomatis' : ($isGroup ? "Grup Iklan #{$c->campaign_id}" : "Kampanye {$c->campaign_id}")),
+                'name' => $c->name ?: ($isStoreWideAuto ? 'Iklan Produk Otomatis' : ($isGroup ? "Grup Iklan #{$c->campaign_id}" : "Kampanye {$c->campaign_id}")),
                 'status' => $c->status ?: 'ongoing',
-                'ad_type' => $c->ad_type ?: ($isAuto ? 'auto' : null),
+                'ad_type' => $c->ad_type ?: ($isStoreWideAuto ? 'auto' : 'manual'),
                 'kind' => $kind,
                 'bidding_method' => $c->bidding_method,
                 'budget' => $c->budget,
+                'roas_target' => $c->roas_target ? (float) $c->roas_target : null,
                 'items' => $explicitItems,
                 'auto_items' => $autoItems->values(),
-                'auto_product_count' => $isAuto ? $autoItems->count() : $explicitItems->count(),
+                'auto_product_count' => $isStoreWideAuto ? $autoItems->count() : $explicitItems->count(),
             ] + $row($c);
         })->sortByDesc('expense')->values();
         $allCampaignRows = $campaignRows;
