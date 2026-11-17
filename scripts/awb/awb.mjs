@@ -114,42 +114,86 @@ function redrawItemTable(page, items, fonts, own, settings) {
   // With Pesanin's own order items, show all items from the order.
   const mine = Array.isArray(own) && own.length > 0;
   const has = (s) => !!s && String(s).trim() !== "" && String(s).trim() !== "-";
+  const textMode = settings?.product_text_mode || "sku_first";
+
   const info = mine
     ? own.map((d, i) => {
-        const sku = has(d.variant) ? d.variant : has(d.sku) ? d.sku : has(d.parent) ? d.parent : "";
+        const skuVal = has(d.variant) ? d.variant : has(d.sku) ? d.sku : has(d.parent) ? d.parent : "";
+        let primary = "";
+        let variant = (d.variant || d.varName || "").trim();
+
+        if (textMode === "name_only") {
+          primary = (d.name || "").trim() || skuVal || "-";
+        } else if (textMode === "sku_only") {
+          primary = skuVal || "-";
+          variant = "";
+        } else {
+          // sku_first: utamakan SKU, jika tidak ada baru nama produk
+          primary = skuVal || (d.name || "").trim() || "-";
+        }
+
         return {
           no: String(i + 1),
-          sku,
+          sku: textMode === "name_only" ? "" : skuVal,
           name: (d.name || "").trim(),
-          variant: (d.variant || d.varName || "").trim(),
+          variant,
           qty: String(d.qty ?? (rows[i]?.qty || "1")),
+          cellMain: primary,
         };
       })
     : rows.map((r, i) => {
-        const sku = has(r.sku) ? r.sku : "";
+        const skuVal = has(r.sku) ? r.sku : "";
+        let primary = "";
+        let variant = (r.vname || "").trim();
+
+        if (textMode === "name_only") {
+          primary = (r.name || "").trim() || skuVal || "-";
+        } else if (textMode === "sku_only") {
+          primary = skuVal || "-";
+          variant = "";
+        } else {
+          primary = skuVal || (r.name || "").trim() || "-";
+        }
+
         return {
           no: r.no || String(i + 1),
-          sku,
+          sku: textMode === "name_only" ? "" : skuVal,
           name: (r.name || "").trim(),
-          variant: (r.vname || "").trim(),
+          variant,
           qty: r.qty || "1",
+          cellMain: primary,
         };
       });
 
-  const allSku = info.every((x) => x.sku);
-  const showVariant = (variant !== undefined) || info.some((x) => has(x.variant));
-  const heads = allSku
-    ? ["SKU", "Qty"]
-    : showVariant
-    ? [info.some((x) => x.sku) ? "SKU / Nama Produk" : "Nama Produk", "Variasi", "Qty"]
-    : [info.some((x) => x.sku) ? "SKU / Nama Produk" : "Nama Produk", "Qty"];
+  let allSku = false;
+  let showVariant = false;
+  let heads = [];
+
+  if (textMode === "sku_only") {
+    allSku = true;
+    showVariant = false;
+    heads = ["SKU", "Qty"];
+  } else if (textMode === "name_only") {
+    allSku = false;
+    showVariant = (variant !== undefined) || info.some((x) => has(x.variant));
+    heads = showVariant ? ["Nama Produk", "Variasi", "Qty"] : ["Nama Produk", "Qty"];
+  } else {
+    // sku_first: jika semua punya SKU -> 2 kolom (SKU, Qty), jika sebagian tidak ada SKU -> 3 kolom
+    allSku = info.every((x) => has(x.sku));
+    showVariant = !allSku && ((variant !== undefined) || info.some((x) => has(x.variant)));
+    heads = allSku
+      ? ["SKU", "Qty"]
+      : showVariant
+      ? [info.some((x) => has(x.sku)) ? "SKU / Nama Produk" : "Nama Produk", "Variasi", "Qty"]
+      : [info.some((x) => has(x.sku)) ? "SKU / Nama Produk" : "Nama Produk", "Qty"];
+  }
 
   const body2 = info.map((it) => {
     const cells = allSku
-      ? [it.sku]
+      ? [it.cellMain]
       : showVariant
-      ? [it.sku || it.name || "-", it.variant || "-"]
-      : [it.sku || it.name || "-"];
+      ? [it.cellMain, it.variant || "-"]
+      : [it.cellMain];
     return { no: it.no, qty: it.qty, cells };
   });
 
@@ -274,7 +318,8 @@ function redrawItemTable(page, items, fonts, own, settings) {
 }
 
 /** Fallback: if redrawItemTable can't read the table, cover only the product name column. */
-function coverNames(page, items) {
+function coverNames(page, items, settings) {
+  if (settings?.product_text_mode === "name_only") return;
   const header = items.find((it) => HEADER.test(it.str.trim()));
   if (!header) return;
   const hy = header.transform[5];
@@ -301,7 +346,7 @@ async function processPart(merged, part, printSettings = {}) {
     const items = (await (await doc.getPage(i + 1)).getTextContent()).items.filter((it) => "str" in it);
     const text = items.map((it) => it.str).join("").replace(/\s+/g, "").toUpperCase();
     const match = keyed.find(([sn]) => text.includes(sn))?.[1] ?? (orders.length === doc.numPages ? orders[i] : undefined);
-    if (!redrawItemTable(out.getPage(i), items, fonts, match?.items, printSettings)) coverNames(out.getPage(i), items);
+    if (!redrawItemTable(out.getPage(i), items, fonts, match?.items, printSettings)) coverNames(out.getPage(i), items, printSettings);
   }
 
   if (printSettings.paper_size === "78x100") {

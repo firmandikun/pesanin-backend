@@ -809,6 +809,32 @@ class MarketplaceController extends Controller
         return $listing;
     }
 
+    /** Send unpaid reminder or follow-up chat to Shopee buyer. */
+    public function shopeeFollowup(Request $request, Order $order)
+    {
+        abort_unless($order->user_id === $request->user()->id, 404);
+        abort_unless($order->channel === 'shopee', 422, 'Bukan pesanan Shopee.');
+
+        $customMessage = $request->input('message');
+
+        try {
+            $res = \App\Support\Shopee\ShopeeChatAutomation::remindOrder($order, $customMessage);
+            \App\Models\ActivityLog::record(
+                $request->user(),
+                'order.shopee_followup',
+                "Kirim pengingat bayar Shopee Chat ke {$res['buyer']} (Pesanan {$res['order_sn']})"
+            );
+
+            return response()->json([
+                'ok' => true,
+                'message' => "Pesan pengingat berhasil dikirim ke {$res['buyer']} di Shopee Chat.",
+                'order' => $order->fresh(),
+            ]);
+        } catch (\Throwable $e) {
+            abort(422, $e->getMessage());
+        }
+    }
+
     private function own(Request $request, MarketplaceShop $shop): void
     {
         abort_unless($shop->user_id === $request->user()->id, 404);

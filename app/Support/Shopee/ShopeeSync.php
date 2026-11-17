@@ -560,6 +560,12 @@ class ShopeeSync
             \Illuminate\Support\Facades\Log::warning("Shopee recent bookings {$shop->id}: {$e->getMessage()}");
         }
 
+        try {
+            ShopeeChatAutomation::checkPendingUnpaidOrders($shop);
+        } catch (\Throwable $e) {
+            \Illuminate\Support\Facades\Log::warning("Shopee auto-remind unpaid {$shop->id}: {$e->getMessage()}");
+        }
+
         return $count;
     }
 

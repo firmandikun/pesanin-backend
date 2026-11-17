@@ -31,6 +31,91 @@ class ShopeeChatAutomation
         ];
     }
 
+    /**
+     * Send a single unpaid reminder chat to a buyer on Shopee.
+     */
+    public static function remindOrder(Order $order, ?string $customMessage = null): array
+    {
+        $shop = $order->marketplaceShop;
+        if (! $shop || $shop->is_demo) {
+            throw new \RuntimeException('Toko Shopee tidak aktif atau toko contoh.');
+        }
+
+        $custom = (array) ($order->custom_fields ?? []);
+        $buyerUserId = $custom['buyer_user_id'] ?? null;
+        if (! $buyerUserId) {
+            throw new \RuntimeException('Buyer User ID Shopee tidak ditemukan pada pesanan ini.');
+        }
+
+        $buyerName = $custom['buyer_username'] ?? $order->customer_name ?? 'Kak';
+        $orderSn = $order->external_order_sn ?: $order->code;
+
+        $user = $shop->user;
+        $cfg = $user ? self::settings($user) : ['unpaid_text' => self::DEFAULT_UNPAID_TEXT];
+
+        $tmpl = $customMessage ?: ($cfg['unpaid_text'] ?: self::DEFAULT_UNPAID_TEXT);
+        $text = str_replace(
+            ['{{nama}}', '{{order_sn}}', '{nama}', '{order_sn}'],
+            [$buyerName, $orderSn, $buyerName, $orderSn],
+            $tmpl
+        );
+
+        (new ShopeeClient)->chatSend($shop, (int) $buyerUserId, $text);
+        $order->increment('followup_count');
+
+        return [
+            'ok' => true,
+            'buyer' => $buyerName,
+            'order_sn' => $orderSn,
+            'text' => $text,
+        ];
+    }
+
+    /**
+     * Scan recent unpaid orders for a shop and send reminders if enabled.
+     */
+    public static function checkPendingUnpaidOrders(MarketplaceShop $shop): int
+    {
+        if ($shop->is_demo) {
+            return 0;
+        }
+
+        $user = $shop->user;
+        if (! $user) {
+            return 0;
+        }
+
+        $cfg = self::settings($user);
+        if (! $cfg['unpaid_reminder']) {
+            return 0;
+        }
+
+        $orders = Order::where('marketplace_shop_id', $shop->id)
+            ->where('channel', 'shopee')
+            ->where(function ($q) {
+                $q->where('external_status', 'UNPAID')
+                    ->orWhere('payment_status', 'unpaid');
+            })
+            ->where('created_at', '>=', now()->subHours(24))
+            ->get();
+
+        $sent = 0;
+        foreach ($orders as $order) {
+            $lockKey = "shopee:auto_chat:unpaid:{$order->id}";
+            if (Cache::add($lockKey, 1, now()->addDays(7))) {
+                try {
+                    self::remindOrder($order);
+                    $sent++;
+                } catch (\Throwable $e) {
+                    Cache::forget($lockKey);
+                    Log::warning("Shopee auto-remind failed for order {$order->id}: {$e->getMessage()}");
+                }
+            }
+        }
+
+        return $sent;
+    }
+
     public static function onOrderUpdated(MarketplaceShop $shop, Order $order, ?string $prevStatus = null): void
     {
         if ($shop->is_demo) {
