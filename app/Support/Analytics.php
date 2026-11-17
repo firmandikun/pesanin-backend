@@ -207,7 +207,7 @@ class Analytics
      * Uses a base query (stdClass) without Eloquent hydration and defers loading `fee_breakdown` JSON
      * unless $withFeeBreakdown is true, so 20,000+ orders process in ~100ms with minimal memory.
      */
-    public static function transactions(User $user, Carbon $from, Carbon $to, int $shopId, bool $withFeeBreakdown = false): Collection
+    public static function transactions(User $user, Carbon $from, Carbon $to, int $shopId, bool $withFeeBreakdown = false, bool $byOrderDate = true): Collection
     {
         $cols = [
             'id', 'marketplace_shop_id', 'channel', 'status', 'external_status', 'external_order_sn',
@@ -221,7 +221,9 @@ class Analytics
 
         $rawOrders = $user->orders()->where('channel', 'shopee')->where('marketplace_shop_id', $shopId)
             ->where('is_abandoned', false)
-            ->where(function ($q) use ($from, $to) {
+            // Same basis as Seller Centre / FinKami: the date the order was created.
+            ->when($byOrderDate, fn ($q) => $q->whereBetween('created_at', [$from, $to]))
+            ->when(! $byOrderDate, fn ($q) => $q->where(function ($q) use ($from, $to) {
                 $q->where(function ($c) use ($from, $to) {
                     $c->where('external_status', 'COMPLETED')
                         ->where(function ($w) use ($from, $to) {
@@ -235,9 +237,9 @@ class Analytics
                         $st->whereNull('external_status')->orWhere('external_status', '!=', 'COMPLETED');
                     })->whereBetween('created_at', [$from, $to]);
                 });
-            })
+            }))
             ->select($cols)
-            ->orderByRaw('COALESCE(CASE WHEN external_status = "COMPLETED" THEN completed_at END, created_at) DESC')
+            ->orderByDesc('created_at')
             ->toBase()
             ->get();
 
@@ -372,7 +374,12 @@ class Analytics
             return $rows;
         }
         $ids = $rows->pluck('id')->all();
-        $rawBreakdowns = collect($ids)->chunk(500)->flatMap(fn ($chunk) => Order::whereIn('id', $chunk->all())->toBase()->pluck('fee_breakdown', 'id'))->all();
+        $rawBreakdowns = [];
+        foreach (array_chunk($ids, 500) as $chunk) {
+            foreach (Order::whereIn('id', $chunk)->toBase()->pluck('fee_breakdown', 'id') as $id => $fb) {
+                $rawBreakdowns[(int) $id] = $fb;
+            }
+        }
 
         return $rows->map(function (array $r) use ($rawBreakdowns) {
             $raw = $rawBreakdowns[$r['id']] ?? null;

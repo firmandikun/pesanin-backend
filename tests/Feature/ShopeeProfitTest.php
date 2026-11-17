@@ -377,6 +377,36 @@ class ShopeeProfitTest extends TestCase
         $this->assertSame(15, $syncRes['settled'], 'Settles 15 escrow breakdowns when all windows finish');
     }
 
+    public function test_statement_matches_finkami_basis(): void
+    {
+        \App\Models\MarketplaceListing::forceCreate(['user_id' => $this->user->id, 'marketplace_shop_id' => $this->shop->id,
+            'item_id' => 1, 'model_id' => 0, 'name' => 'X', 'price' => 50000, 'cost_price' => 20000, 'stock' => 5, 'status' => 'NORMAL']);
+        $make = function (string $sn, string $status, string $ext, ?int $escrow, bool $final) {
+            $o = new Order(['code' => $sn, 'channel' => 'shopee', 'source' => 'marketplace', 'marketplace_shop_id' => $this->shop->id,
+                'external_order_sn' => $sn, 'external_status' => $ext, 'status' => $status, 'payment_status' => 'paid', 'payment_method' => 'marketplace',
+                'quantity' => 1, 'subtotal' => 50000, 'total' => 55000, 'escrow_amount' => $escrow, 'escrow_final' => $final,
+                'fee_breakdown' => $escrow ? [['key' => 'commission_fee', 'label' => 'Biaya Admin', 'amount' => $escrow - 50000]] : null,
+                'items' => [['item_id' => 1, 'model_id' => 0, 'name' => 'X', 'qty' => 1, 'price' => 50000]]]);
+            $o->user_id = $this->user->id;
+            $o->save();
+        };
+        $make('DONE', 'completed', 'COMPLETED', 44000, true);
+        $make('SHIP', 'processing', 'SHIPPED', 45000, false);
+        $make('BATAL', 'cancelled', 'CANCELLED', null, true);
+
+        Sanctum::actingAs($this->user);
+        $r = $this->getJson("/api/marketplace/shops/{$this->shop->id}/statement")->assertOk()->json();
+        $this->assertSame(100000, $r['revenue']['gmv'], 'cancelled excluded');
+        $this->assertSame(-11000, $r['fees']['total']);
+        $this->assertSame(20000, $r['cogs']['total'], 'HPP only for completed');
+        $this->assertSame(100000 - 11000 - 20000, $r['net_profit']);
+
+        $settled = $this->getJson("/api/marketplace/shops/{$this->shop->id}/statement?basis=settled")->assertOk()->json();
+        $this->assertSame(50000, $settled['revenue']['gmv']);
+        $all = $this->getJson("/api/marketplace/shops/{$this->shop->id}/statement?basis=all_active")->assertOk()->json();
+        $this->assertSame(40000, $all['cogs']['total']);
+    }
+
     public function test_auto_product_ads_campaign_sync_and_marketplace_ads_api(): void
     {
         Sanctum::actingAs($this->user);

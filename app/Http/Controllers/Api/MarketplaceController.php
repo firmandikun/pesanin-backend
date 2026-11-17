@@ -824,185 +824,102 @@ class MarketplaceController extends Controller
     public function statement(Request $request, MarketplaceShop $shop)
     {
         $this->own($request, $shop);
-        $from = Carbon::parse($request->query('from', now()->startOfMonth()->toDateString()))->startOfDay();
-        $to = Carbon::parse($request->query('to', now()->toDateString()))->endOfDay();
-        $basis = $request->query('basis', 'settled_cogs_completed'); // 'settled' | 'settled_cogs_completed' | 'all_active'
-
-        $ordersQuery = Order::where('marketplace_shop_id', $shop->id)
-            ->where(function ($q) use ($from, $to) {
-                $q->whereBetween('order_created_at', [$from, $to])
-                    ->orWhere(fn ($sub) => $sub->whereNull('order_created_at')->whereBetween('created_at', [$from, $to]));
-            });
-
-        if ($basis === 'settled') {
-            $ordersQuery->where('external_status', 'COMPLETED');
-        } else {
-            $ordersQuery->where(function ($q) {
-                $q->whereNotIn('external_status', ['CANCELLED', 'IN_CANCEL'])
-                    ->orWhereNotNull('escrow_amount');
-            });
-        }
-
-        $orders = $ordersQuery->get();
-
+        $data = $request->validate([
+            'from' => 'nullable|date', 'to' => 'nullable|date',
+            'basis' => 'nullable|in:settled,settled_cogs_completed,all_active',
+        ]);
+        [$from, $to] = \App\Support\Dates::range($data['from'] ?? null, $data['to'] ?? null);
+        $basis = $data['basis'] ?? 'settled_cogs_completed';
         $user = $request->user();
-        $costs = \App\Models\Product::withTrashed()->where('user_id', $user->id)
-            ->whereNotNull('cost_price')->where('cost_price', '>', 0)
-            ->pluck('cost_price', 'id')->map(fn ($v) => (int) $v)->all();
-        $listingCosts = MarketplaceListing::where('user_id', $user->id)->where('cost_price', '>', 0)->get()
-            ->mapWithKeys(fn ($l) => [$l->marketplace_shop_id.':'.$l->item_id.':'.$l->model_id => (int) $l->cost_price])->all();
 
-        $gmv = 0;
-        $orderCount = 0;
-        $completedCount = 0;
-        $cogs = 0;
-        $missingCostOrders = 0;
-        $feeCategories = [];
-        $adjustmentCategories = [];
+        // Same rows as the Transaksi page (order-created date), with Shopee fee lines attached.
+        $rows = Analytics::attachFeeBreakdowns(Analytics::transactions($user, $from, $to, $shop->id, false));
 
-        foreach ($orders as $o) {
-            $isCancelled = in_array($o->external_status, ['CANCELLED', 'IN_CANCEL'], true);
-            $isCompleted = $o->external_status === 'COMPLETED';
+        $s = self::statementTotals($rows, $basis);
 
-            if (! $isCancelled) {
-                $gmv += (int) ($o->subtotal ?: $o->total);
-                $orderCount++;
-                if ($isCompleted) {
-                    $completedCount++;
-                }
-            }
-
-            // HPP / COGS calculation
-            $shouldCountCogs = ($basis === 'settled' || $basis === 'settled_cogs_completed') ? $isCompleted : ! $isCancelled;
-            if ($shouldCountCogs) {
-                $hasMissing = false;
-                $orderCogs = collect($o->items ?? [])->sum(function ($i) use ($o, $costs, $listingCosts, &$hasMissing) {
-                    $key = $o->marketplace_shop_id.':'.($i['item_id'] ?? '').':'.($i['model_id'] ?? '');
-                    $c = $listingCosts[$key] ?? ($i['product_id'] ?? null ? ($costs[$i['product_id']] ?? null) : null);
-                    if ($c === null) {
-                        $hasMissing = true;
-                    }
-
-                    return ($c ?? 0) * ($i['qty'] ?? 1);
-                });
-                $cogs += $orderCogs;
-                if ($hasMissing) {
-                    $missingCostOrders++;
-                }
-            }
-
-            // Fee breakdown
-            $breakdown = $o->fee_breakdown ?? [];
-            if (empty($breakdown) && $o->escrow_amount !== null && ! $isCancelled) {
-                $diff = (int) ($o->subtotal ?: $o->total) - (int) $o->escrow_amount;
-                if ($diff !== 0) {
-                    $breakdown = [['key' => 'general_fee', 'label' => 'Biaya Platform Shopee', 'amount' => -$diff]];
-                }
-            }
-
-            foreach ($breakdown as $line) {
-                $key = $line['key'] ?? 'other';
-                $label = $line['label'] ?? 'Biaya Platform';
-                $amt = (int) ($line['amount'] ?? 0);
-
-                if (in_array($key, ['drc_adjustable_refund', 'seller_lost_compensation', 'other', 'adjustments'], true)) {
-                    if (! isset($adjustmentCategories[$key])) {
-                        $adjustmentCategories[$key] = ['key' => $key, 'label' => $label, 'amount' => 0];
-                    }
-                    $adjustmentCategories[$key]['amount'] += $amt;
-                } else {
-                    if (! isset($feeCategories[$key])) {
-                        $feeCategories[$key] = ['key' => $key, 'label' => $label, 'amount' => 0];
-                    }
-                    $feeCategories[$key]['amount'] += $amt;
-                }
-            }
-        }
-
-        // Shopee Ads Manager real total ad spend for the shop in period
+        // Beban operasional: the shop's real Shopee Ads Manager spend in the period (not per-conversion estimates).
         $campIds = \App\Models\ShopeeAdCampaign::where('marketplace_shop_id', $shop->id)->pluck('id');
         $adSpend = (int) \App\Models\ShopeeAdStat::whereIn('shopee_ad_campaign_id', $campIds)
-            ->whereBetween('date', [$from->toDateString(), $to->toDateString()])->sum('expense');
-
+            ->whereBetween('date', [\App\Support\Dates::day($from), \App\Support\Dates::day($to)])->sum('expense');
         if ($adSpend === 0) {
-            $adSpend = (int) \App\Models\AdSpend::where('user_id', $user->id)
-                ->where('marketplace_shop_id', $shop->id)
+            $adSpend = (int) \App\Models\AdSpend::where('user_id', $user->id)->where('marketplace_shop_id', $shop->id)
                 ->where('platform', 'shopee_ads')
-                ->whereBetween('spent_on', [$from->toDateString(), $to->toDateString()])
-                ->sum('amount');
+                ->whereBetween('spent_on', [\App\Support\Dates::day($from), \App\Support\Dates::day($to)])->sum('amount');
         }
+        $opexOther = (int) \App\Models\Expense::where('user_id', $user->id)->where('marketplace_shop_id', $shop->id)
+            ->whereBetween('spent_on', [\App\Support\Dates::day($from), \App\Support\Dates::day($to)])->sum('amount');
 
-        // Totals
-        $totalFees = array_sum(array_column($feeCategories, 'amount'));
-        $totalAdjustments = array_sum(array_column($adjustmentCategories, 'amount'));
-        $netRevenue = $gmv + $totalFees + $totalAdjustments;
-        $grossProfit = $netRevenue - $cogs;
-        $opex = $adSpend;
+        $netRevenue = $s['gmv'] + $s['fees_total'] + $s['adj_total'];
+        $grossProfit = $netRevenue - $s['cogs'];
+        $opex = $adSpend + $opexOther;
         $operatingProfit = $grossProfit - $opex;
-        $netProfit = $operatingProfit;
-
-        // Sort fee lines
-        $orderRank = [
-            'seller_order_processing_fee' => 1,
-            'seller_return_refund' => 2,
-            'buyer_paid_shipping_fee' => 3,
-            'service_fee' => 4,
-            'shopee_shipping_rebate' => 5,
-            'actual_shipping_fee' => 6,
-            'withholding_tax' => 7,
-            'escrow_tax' => 8,
-            'reverse_shipping_fee' => 9,
-            'delivery_seller_protection_fee_premium_amount' => 10,
-            'shipping_seller_protection_fee_amount' => 11,
-            'commission_fee' => 12,
-            'order_ams_commission_fee' => 13,
-            'seller_transaction_fee' => 14,
-            'campaign_fee' => 15,
-        ];
-
-        $feeList = collect($feeCategories)->values()->sortBy(fn ($x) => $orderRank[$x['key']] ?? 99)->values();
-        $adjList = collect($adjustmentCategories)->values();
 
         return [
-            'shop' => [
-                'id' => $shop->id,
-                'name' => $shop->shop_name,
-                'shop_id' => $shop->shop_id,
-                'region' => $shop->region,
-            ],
-            'range' => [
-                'from' => $from->toDateString(),
-                'to' => $to->toDateString(),
-            ],
+            'shop' => ['id' => $shop->id, 'name' => $shop->shop_name, 'shop_id' => $shop->shop_id, 'region' => $shop->region],
+            'range' => ['from' => \App\Support\Dates::day($from), 'to' => \App\Support\Dates::day($to)],
             'basis' => $basis,
-            'counts' => [
-                'total_orders' => $orderCount,
-                'completed_orders' => $completedCount,
-                'missing_cost_orders' => $missingCostOrders,
-            ],
-            'revenue' => [
-                'gmv' => $gmv,
-                'total' => $gmv,
-            ],
-            'fees' => [
-                'items' => $feeList,
-                'total' => $totalFees,
-            ],
-            'adjustments' => [
-                'items' => $adjList,
-                'total' => $totalAdjustments,
-            ],
+            'counts' => ['total_orders' => $s['orders'], 'completed_orders' => $s['completed'], 'missing_cost_orders' => $s['missing_cost']],
+            'revenue' => ['gmv' => $s['gmv'], 'total' => $s['gmv']],
+            'fees' => ['items' => $s['fee_items'], 'total' => $s['fees_total']],
+            'adjustments' => ['items' => $s['adj_items'], 'total' => $s['adj_total']],
             'net_revenue' => $netRevenue,
-            'cogs' => [
-                'total' => $cogs,
-            ],
+            'cogs' => ['total' => $s['cogs']],
             'gross_profit' => $grossProfit,
-            'opex' => [
-                'ads' => $adSpend,
-                'total' => $opex,
-            ],
+            'opex' => ['ads' => $adSpend, 'other' => $opexOther, 'total' => $opex],
             'operating_profit' => $operatingProfit,
-            'net_profit' => $netProfit,
+            'net_profit' => $operatingProfit,
+        ];
+    }
+
+    /**
+     * FinKami-style totals from transaction rows.
+     * settled: only orders whose income is released; settled_cogs_completed: all live orders, HPP only for
+     * completed ones; all_active: all live orders with HPP. Cancelled orders never count.
+     */
+    public static function statementTotals($rows, string $basis): array
+    {
+        $adjKeys = ['drc_adjustable_refund', 'seller_lost_compensation', 'other'];
+        $rank = array_flip(['seller_order_processing_fee', 'seller_return_refund', 'buyer_paid_shipping_fee', 'service_fee',
+            'shopee_shipping_rebate', 'actual_shipping_fee', 'withholding_tax', 'escrow_tax', 'reverse_shipping_fee',
+            'delivery_seller_protection_fee_premium_amount', 'shipping_seller_protection_fee_amount', 'commission_fee',
+            'order_ams_commission_fee', 'seller_transaction_fee', 'campaign_fee']);
+        $out = ['gmv' => 0, 'cogs' => 0, 'orders' => 0, 'completed' => 0, 'missing_cost' => 0];
+        $fees = [];
+        $adj = [];
+        foreach ($rows as $r) {
+            $st = (string) ($r['status'] ?? '');
+            if (in_array($st, ['CANCELLED', 'IN_CANCEL', 'UNPAID'], true)) {
+                continue;
+            }
+            $completed = $st === 'COMPLETED';
+            if ($basis === 'settled' && ! ($r['fee_final'] ?? false)) {
+                continue;
+            }
+            $out['orders']++;
+            $out['completed'] += $completed ? 1 : 0;
+            $out['gmv'] += (int) $r['revenue'];
+            if ($basis === 'all_active' || $completed) {
+                $out['cogs'] += (int) $r['cogs'];
+                $out['missing_cost'] += ! empty($r['missing_cost']) ? 1 : 0;
+            }
+            foreach ($r['fee_breakdown'] ?? [] as $l) {
+                $key = $l['key'] ?? 'other';
+                $line = ['key' => $key, 'label' => $l['label'] ?? $key, 'amount' => 0];
+                if (in_array($key, $adjKeys, true)) {
+                    $adj[$key] ??= $line;
+                    $adj[$key]['amount'] += (int) ($l['amount'] ?? 0);
+                } else {
+                    $fees[$key] ??= $line;
+                    $fees[$key]['amount'] += (int) ($l['amount'] ?? 0);
+                }
+            }
+        }
+        $fees = collect($fees)->filter(fn ($x) => $x['amount'] !== 0)->sortBy(fn ($x) => $rank[$x['key']] ?? 99)->values();
+        $adj = collect($adj)->filter(fn ($x) => $x['amount'] !== 0)->values();
+
+        return $out + [
+            'fee_items' => $fees, 'fees_total' => (int) $fees->sum('amount'),
+            'adj_items' => $adj, 'adj_total' => (int) $adj->sum('amount'),
         ];
     }
 

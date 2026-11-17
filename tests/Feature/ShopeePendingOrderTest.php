@@ -78,9 +78,6 @@ class ShopeePendingOrderTest extends TestCase
      */
     public function test_auto_arrange_rechecks_and_skips_orders_shopee_now_holds(): void
     {
-        $sync = new ShopeeSync;
-        $sync->upsertOrder($this->shop, ['order_sn' => 'HOLD', 'order_status' => 'READY_TO_SHIP', 'pay_time' => time(), 'item_list' => [], 'create_time' => time()]);
-        $sync->upsertOrder($this->shop, ['order_sn' => 'OK', 'order_status' => 'READY_TO_SHIP', 'pay_time' => time(), 'item_list' => [], 'create_time' => time()]);
         $shipped = [];
         Http::fake(function ($req) use (&$shipped) {
             $url = $req->url();
@@ -101,8 +98,12 @@ class ShopeePendingOrderTest extends TestCase
                 return Http::response(['response' => []]);
             }
 
-            return Http::response(['response' => []]);
+            return Http::response(['response' => ['order_income' => ['escrow_amount' => 10000]]]);
         });
+
+        $sync = new ShopeeSync;
+        $sync->upsertOrder($this->shop, ['order_sn' => 'HOLD', 'order_status' => 'READY_TO_SHIP', 'pay_time' => time(), 'item_list' => [], 'create_time' => time()]);
+        $sync->upsertOrder($this->shop, ['order_sn' => 'OK', 'order_status' => 'READY_TO_SHIP', 'pay_time' => time(), 'item_list' => [], 'create_time' => time()]);
 
         $this->assertSame(1, OrderAutomation::shopeeAutoShip());
         $this->assertSame(['OK'], $shipped);
