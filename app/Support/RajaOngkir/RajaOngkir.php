@@ -20,10 +20,29 @@ class RajaOngkir
     /** Couriers asked at checkout (RajaOngkir codes, colon separated). */
     public const COURIERS = 'jne:sicepat:jnt:sap:ide:ninja:lion:anteraja:pos:tiki';
 
-    /** RajaOngkir courier code → Pesanin/Biteship courier code (logos, booking). */
+    /** RajaOngkir courier code → Pesanin courier code (logos, tracking). */
     public const CODE = ['ide' => 'idexpress', 'jnt' => 'jnt', 'sicepat' => 'sicepat'];
 
     public function __construct(private UserIntegration $integration) {}
+
+    /** Pesanin's own account from .env (RAJAONGKIR_API_KEY), as an unsaved integration; null when not set. */
+    public static function platform(): ?UserIntegration
+    {
+        if (! config('services.rajaongkir.key')) {
+            return null;
+        }
+        $i = new UserIntegration(['provider' => 'rajaongkir', 'status' => 'active']);
+        $i->credentials = array_filter(['api_key' => config('services.rajaongkir.key'), 'delivery_key' => config('services.rajaongkir.delivery_key')]);
+        $i->settings = ['delivery' => ['enabled' => (bool) config('services.rajaongkir.delivery'), 'sandbox' => (bool) config('services.rajaongkir.sandbox'), 'vehicle' => config('services.rajaongkir.vehicle', 'Motor')]];
+
+        return $i;
+    }
+
+    /** RajaOngkir/Komerce runs only on Pesanin's account from .env (sellers no longer connect their own key). */
+    public static function account(?UserIntegration $own = null): ?UserIntegration
+    {
+        return self::platform();
+    }
 
     public static function for(?UserIntegration $integration): ?self
     {
@@ -65,7 +84,7 @@ class RajaOngkir
         $dest = $this->destinationId($to);
         $weight = max(1, $weightGrams);
 
-        return Cache::remember("rajaongkir:cost:{$this->integration->id}:{$origin}:{$dest}:".(int) ceil($weight / 250), now()->addHours(6), function () use ($origin, $dest, $weight) {
+        return Cache::remember('rajaongkir:cost:'.($this->integration->id ?? 'platform').":{$origin}:{$dest}:".(int) ceil($weight / 250), now()->addHours(6), function () use ($origin, $dest, $weight) {
             $rows = $this->call('post', '/calculate/domestic-cost', [
                 'origin' => $origin, 'destination' => $dest, 'weight' => $weight, 'courier' => self::COURIERS, 'price' => 'lowest',
             ]) ?? [];

@@ -88,7 +88,10 @@ class SidebarConfig
             'children' => [
                 ['label' => 'Daftar Toko', 'href' => '/marketplace/shops'],
                 ['label' => 'Semua Produk', 'href' => '/marketplace/products'],
+                ['label' => 'Stok Master', 'href' => '/marketplace/stock'],
                 ['label' => 'Pesanan & Pengiriman', 'href' => '/marketplace/orders'],
+                ['label' => 'Ulasan', 'href' => '/marketplace/reviews'],
+                ['label' => 'Kesehatan Akun', 'href' => '/marketplace/health'],
                 ['label' => 'Saldo', 'href' => '/marketplace/balance'],
             ],
         ],

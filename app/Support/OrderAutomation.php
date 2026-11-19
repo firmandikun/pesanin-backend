@@ -6,7 +6,6 @@ use App\Http\Controllers\Api\WhatsAppChatController;
 use App\Models\Order;
 use App\Models\User;
 use App\Models\WaMessage;
-use App\Support\Biteship\Biteship;
 use App\Support\WhatsApp\WhatsAppCloud;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Mail;
@@ -15,7 +14,6 @@ use Throwable;
 
 /**
  * Runs every 30 seconds (orders:automate):
- *  - auto resi: paid (or COD, if allowed) web/manual orders get their Biteship booking and waybill;
  *  - digital products: once paid, the buyer gets their access link by WhatsApp template and/or email,
  *    and the order is completed.
  * Seller switches live in user settings "automation".
@@ -39,14 +37,11 @@ class OrderAutomation
 
     public static function run(): array
     {
-        return ['shipped' => self::autoShip(), 'shopee_shipped' => self::shopeeAutoShip(), 'delivered' => self::deliverDigital()];
+        return ['shipped' => \App\Support\RajaOngkir\CourierBooking::auto(), 'shopee_shipped' => self::shopeeAutoShip(), 'delivered' => self::deliverDigital(),
+            // Stok master: push changed stock to every linked Shopee listing.
+            'stock_pushed' => \App\Support\MasterStock::pushPending()];
     }
 
-    /**
-     * Auto "Atur Pengiriman" for Shopee: every READY_TO_SHIP order (not Advance Fulfilment, which Shopee ships
-     * itself) is arranged in the background so the seller need not open the web. Method per the seller's setting
-     * ("auto" = jemput kurir, fallback drop-off). Failures are retried up to MAX_TRIES, then the seller is notified.
-     */
     /**
      * Re-read the orders from Shopee right before arranging them and keep only those still READY_TO_SHIP, so an order
      * Shopee holds as "Tertunda" (PENDING, under review) is moved to its tab instead of being arranged. Covers orders
@@ -73,6 +68,11 @@ class OrderAutomation
         return $orders->map->fresh()->filter(fn ($o) => $o && $o->external_status === 'READY_TO_SHIP' && ! $o->shopee_auto_ship)->values();
     }
 
+    /**
+     * Auto "Atur Pengiriman" for Shopee: every READY_TO_SHIP order (not Advance Fulfilment, which Shopee ships
+     * itself) is arranged in the background so the seller need not open the web. Method per the seller's setting
+     * ("auto" = jemput kurir, fallback drop-off). Failures are retried up to MAX_TRIES, then the seller is notified.
+     */
     public static function shopeeAutoShip(): int
     {
         $done = 0;
@@ -100,49 +100,6 @@ class OrderAutomation
                 $order->update(['auto_ship_tries' => $tries, 'auto_ship_error' => mb_substr((string) $r['error'], 0, 300)]);
                 if ($tries >= self::MAX_TRIES) {
                     Notifier::send($user->id, 'order', 'Atur pengiriman otomatis gagal', "{$order->code}: {$r['error']} Atur manual dari Pesanan Shopee.", '/marketplace/orders', $order->id);
-                }
-            }
-        }
-
-        return $done;
-    }
-
-    /** Orders that may be booked automatically for this seller. */
-    public static function shippable(User $user)
-    {
-        $s = self::settings($user);
-
-        return $user->orders()->active()
-            ->where('channel', '!=', 'shopee')->whereNotNull('courier')->where('courier', '!=', '')
-            ->where('shipping_status', 'not_shipped')->whereNull('shipping_ref')
-            ->whereNotIn('status', ['cancelled', 'refunded'])
-            ->where('auto_ship_tries', '<', self::MAX_TRIES)
-            ->whereRaw('COALESCE(paid_at, created_at) >= ?', [now()->subDays(self::RECENT_DAYS)])
-            ->where(fn ($q) => $s['auto_ship_cod'] ? $q->where('payment_status', 'paid')->orWhere('payment_method', 'cod') : $q->where('payment_status', 'paid'));
-    }
-
-    public static function autoShip(): int
-    {
-        $done = 0;
-        $users = User::whereHas('integrations', fn ($q) => $q->where('provider', 'biteship')->where('status', 'active'))->get()
-            ->filter(fn ($u) => self::settings($u)['auto_ship']);
-        foreach ($users as $user) {
-            $client = Biteship::for($user->integration('biteship'));
-            if (! $client) {
-                continue;
-            }
-            foreach (self::shippable($user)->orderBy('id')->limit(20)->get() as $order) {
-                try {
-                    Biteship::apply($order, $client->createOrder($order));
-                    $order->update(['auto_ship_error' => null]);
-                    Notifier::send($user->id, 'order', 'Resi otomatis terbit', "{$order->code}: {$order->tracking_number}", '/orders?search='.$order->code, $order->id);
-                    $done++;
-                } catch (Throwable $e) {
-                    $tries = $order->auto_ship_tries + 1;
-                    $order->update(['auto_ship_tries' => $tries, 'auto_ship_error' => mb_substr($e->getMessage(), 0, 300)]);
-                    if ($tries >= self::MAX_TRIES) {
-                        Notifier::send($user->id, 'order', 'Resi otomatis gagal', "{$order->code}: {$e->getMessage()} Kirim manual dari Pesanan Web.", '/orders?search='.$order->code, $order->id);
-                    }
                 }
             }
         }

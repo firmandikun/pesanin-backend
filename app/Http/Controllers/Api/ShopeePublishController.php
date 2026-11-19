@@ -460,6 +460,7 @@ class ShopeePublishController extends Controller
         $l->user_id = $shop->user_id;
         $l->fill(['product_id' => $product?->id, 'name' => $name, 'model_name' => $modelName, 'sku' => $sku, 'price' => $price, 'stock' => $stock, 'status' => $status, 'image' => $image,
             'cost_price' => $l->cost_price ?? $product?->cost_price])->save();
+        \App\Support\MasterStock::autoAttach($l);
 
         return $l;
     }

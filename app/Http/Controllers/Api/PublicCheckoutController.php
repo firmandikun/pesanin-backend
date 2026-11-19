@@ -29,10 +29,11 @@ class PublicCheckoutController extends Controller
             'bump_items' => \App\Support\ProductForm::bumpItems($product),
             'sold' => \App\Support\ProductForm::component($product, 'sold', false)
                 ? (int) $product->orders()->where('is_abandoned', false)->sum('quantity') : null,
+            'global_pixels' => \App\Models\TrackingPixel::globalFor($product->user),
             'store' => [
                 'store_name' => $product->user->store_name,
                 'cod_fee_percent' => $product->user->cod_fee_percent,
-                'origin' => $product->user->pickupAddress()?->region?->city,
+                'origin' => $product->type === 'physical' ? CheckoutService::origin($product)?->city : null,
             ],
         ];
     }
@@ -44,12 +45,12 @@ class PublicCheckoutController extends Controller
             return [];
         }
 
-        // Use the Biteship key of the shop being bought from (checkout) or of the signed-in seller (settings, input order).
+        // Use the RajaOngkir key of the shop being bought from (checkout) or of the signed-in seller (settings, input order).
         $seller = $request->query('seller') ? Product::where('slug', $request->query('seller'))->first()?->user : auth('sanctum')->user();
 
         $integrations = $seller?->integrations()->where('status', 'active')->get()->keyBy('provider');
 
-        return \App\Support\Regions::search($q, $integrations['biteship'] ?? null, $integrations['rajaongkir'] ?? null);
+        return \App\Support\Regions::search($q, \App\Support\RajaOngkir\RajaOngkir::account($integrations['rajaongkir'] ?? null));
     }
 
     public function quote(Request $request, string $slug)
@@ -108,22 +109,43 @@ class PublicCheckoutController extends Controller
 
         // E-Payment through the seller's Midtrans (or platform fallback): hosted payment page, result arrives via notification.
         if ($order->payment_method === 'epayment') {
-            $mt = Midtrans::forSeller($product->user->integration('midtrans')) ?? Midtrans::platform();
+            // Every e-payment goes through Pesanin's Midtrans account (.env); Pesanin holds the money for the seller.
+            $own = false;
+            $mt = Midtrans::platform();
             if ($mt) {
                 try {
                     $snap = $mt->forOrder($order, $product->form_settings['payment']['epayment']['channels'] ?? null,
                         rtrim(config('app.frontend_url'), '/')."/c/{$slug}?order={$order->code}");
-                    $order->forceFill(['payment_url' => $snap['redirect_url'], 'payment_ref' => $snap['token']])->save();
+                    $order->forceFill(['payment_url' => $snap['redirect_url'], 'payment_ref' => $snap['token'], 'payment_via' => $own ? 'seller' : 'platform'])->save();
                 } catch (\Throwable $e) {
                     \Illuminate\Support\Facades\Log::warning("Midtrans snap {$order->code}: {$e->getMessage()}");
-                    abort(422, 'Gagal memproses pembayaran Midtrans: '.$e->getMessage());
+                    // No payment page: void the order so the buyer's retry doesn't leave a duplicate pending order.
+                    CheckoutService::voidUnpaid($order, 'Halaman pembayaran Midtrans gagal dibuat');
+                    abort(422, 'Pembayaran online sedang bermasalah, pesanan belum dibuat. Coba lagi atau pilih metode lain.');
                 }
             } else {
+                CheckoutService::voidUnpaid($order, 'E-Payment belum dikonfigurasi');
                 abort(422, 'Metode E-Payment belum dikonfigurasi.');
             }
         }
 
+        // Meta Conversions API: Purchase from the server (deduped with the browser pixel), after the buyer has the response.
+        $capi = [
+            'ip' => $request->ip(), 'user_agent' => mb_substr((string) $request->userAgent(), 0, 500),
+            'fbp' => self::cookieValue($request->input('fbp'), '/^fb\.\d\.\d+\.\d+$/'),
+            'fbc' => self::cookieValue($request->input('fbc'), '/^fb\.\d\.\d+\.[A-Za-z0-9_-]+$/'),
+            'url' => mb_substr((string) ($request->input('page_url') ?: $request->headers->get('referer')), 0, 1000) ?: null,
+        ];
+        dispatch(fn () => \App\Support\Meta\ConversionsApi::purchase($order, $capi))->afterResponse();
+
+        \App\Support\OrderQuota::warn($product->user);
+
         return response()->json(self::successPayload($product, $order), 201);
+    }
+
+    private static function cookieValue($v, string $pattern): ?string
+    {
+        return is_string($v) && strlen($v) <= 300 && preg_match($pattern, $v) ? $v : null;
     }
 
     /** Buyer comes back from the Midtrans page: minimal, non-personal order status by code. */
@@ -131,7 +153,7 @@ class PublicCheckoutController extends Controller
     {
         $order = Order::with('user.integrations')->where('code', $code)->where('payment_method', 'epayment')->firstOrFail();
         // Don't wait only for the notification: ask Midtrans directly (also covers local dev without a public URL).
-        if ($order->payment_status !== 'paid' && $order->status === 'pending' && $mt = (Midtrans::forSeller($order->user->integration('midtrans')) ?? Midtrans::platform())) {
+        if ($order->payment_status !== 'paid' && $order->status === 'pending' && $mt = ($order->payment_via === 'seller' ? Midtrans::legacySeller($order->user->integration('midtrans')) : Midtrans::platform())) {
             try {
                 $st = $mt->status($order->code);
                 if (in_array((string) ($st['status_code'] ?? ''), ['200', '201', '202', '407'], true) && ($st['order_id'] ?? null) === $order->code) {
@@ -183,6 +205,11 @@ class PublicCheckoutController extends Controller
         $seller = $product->user;
         $redirectTpl = $seller->followupTemplates()->where('event', 'redirect')->value('message');
         $waTarget = $settings['whatsapp'] ?? $seller->whatsapp;
+        // "Alihkan ke WhatsApp (random)": a random CS on duty now (same shifts/time off as WA Rotator), else the store number.
+        if (($settings['action'] ?? 'page') === 'whatsapp_random') {
+            $waTarget = \App\Models\CsStaff::onDuty(\App\Models\CsStaff::where('user_id', $seller->id)->where('is_active', true)->whereNotNull('phone')->get())
+                ->shuffle()->first()?->phone ?? $seller->whatsapp;
+        }
 
         return [
             'order' => $order->only(['code', 'customer_name', 'variant', 'quantity', 'unit_price', 'bump_price', 'subtotal', 'discount', 'coupon_code',

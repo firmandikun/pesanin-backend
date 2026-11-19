@@ -31,8 +31,7 @@ Route::get('/meta/callback', [\App\Http\Controllers\Api\MetaAdsController::class
 Route::post('/meta/data-deletion', [\App\Http\Controllers\LegalController::class, 'metaDeletion'])->middleware('throttle:30,1');
 Route::get('/brand/app-icon', fn () => response()->file(public_path('app-icon.png'), ['Cache-Control' => 'public, max-age=86400']));
 Route::post('/shopee/push', ShopeePushController::class)->middleware('throttle:600,1');
-// Biteship & Midtrans callbacks (called by the providers, not by the app).
-Route::post('/biteship/webhook/{token}', [\App\Http\Controllers\Api\IntegrationController::class, 'biteshipWebhook'])->middleware('throttle:600,1');
+// Midtrans callback (called by the provider, not by the app).
 Route::post('/midtrans/notify', [\App\Http\Controllers\Api\IntegrationController::class, 'midtransNotify'])->middleware('throttle:600,1');
 
 Route::prefix('public')->middleware('throttle:60,1')->group(function () {
@@ -84,6 +83,10 @@ Route::middleware(['auth:sanctum', 'member', 'admin'])->prefix('admin/dropship')
     Route::put('/products/{dropshipProduct}', 'adminUpdate');
     Route::post('/products/{dropshipProduct}/duplicate', 'adminDuplicate');
     Route::delete('/products/{dropshipProduct}', 'adminDestroy');
+    Route::get('/orders', 'adminOrders');
+    Route::post('/orders/{order}/ship', 'adminShip');
+    Route::post('/orders/{order}/modal-paid', 'adminModalPaid');
+    Route::post('/videos', 'adminUploadVideo')->middleware('throttle:20,1');
 });
 
 Route::middleware(['auth:sanctum', 'member', 'subscribed'])->group(function () {
@@ -93,6 +96,7 @@ Route::middleware(['auth:sanctum', 'member', 'subscribed'])->group(function () {
 
     Route::get('/dropship', [\App\Http\Controllers\Api\DropshipController::class, 'index']);
     Route::get('/dropship/products/{dropshipProduct}', [\App\Http\Controllers\Api\DropshipController::class, 'show']);
+    Route::get('/dropship/products/{dropshipProduct}/slides/{pack}/zip', [\App\Http\Controllers\Api\DropshipController::class, 'slidesZip'])->middleware('throttle:20,1');
     Route::put('/dropship/profile', [\App\Http\Controllers\Api\DropshipController::class, 'saveProfile']);
     Route::post('/dropship/adoptions', [\App\Http\Controllers\Api\DropshipController::class, 'adopt']);
     Route::delete('/dropship/adoptions/{adoption}', [\App\Http\Controllers\Api\DropshipController::class, 'destroyAdoption']);
@@ -183,9 +187,27 @@ Route::middleware(['auth:sanctum', 'member', 'subscribed'])->group(function () {
     Route::get('/meta-ads/report', [\App\Http\Controllers\Api\MetaAdsController::class, 'report']);
     Route::delete('/meta-ads', [\App\Http\Controllers\Api\MetaAdsController::class, 'disconnect']);
     Route::get('/marketplace/ads', [MarketplaceController::class, 'ads']);
+    Route::get('/marketplace/health', [\App\Http\Controllers\Api\ShopeeHealthController::class, 'index'])->middleware('throttle:30,1');
+    Route::get('/marketplace/reviews', [\App\Http\Controllers\Api\ShopeeReviewController::class, 'index']);
+    Route::post('/marketplace/reviews/sync', [\App\Http\Controllers\Api\ShopeeReviewController::class, 'sync'])->middleware('throttle:10,1');
+    Route::post('/marketplace/reviews/reply', [\App\Http\Controllers\Api\ShopeeReviewController::class, 'reply'])->middleware('throttle:30,1');
+    Route::get('/marketplace/ads/guard', [\App\Http\Controllers\Api\AdsGuardController::class, 'index']);
+    Route::post('/marketplace/ads/guard/{campaign}', [\App\Http\Controllers\Api\AdsGuardController::class, 'action'])->whereNumber('campaign')->middleware('throttle:30,1');
     Route::get('/marketplace/listings', [MarketplaceController::class, 'listings']);
     Route::put('/marketplace/listings/{listing}/link', [MarketplaceController::class, 'link']);
     Route::put('/marketplace/listings/{listing}/stock', [MarketplaceController::class, 'stock']);
+    // Stok master lintas toko
+    Route::controller(\App\Http\Controllers\Api\StockMasterController::class)->prefix('marketplace/stock-masters')->group(function () {
+        Route::get('/', 'index');
+        Route::post('/generate', 'generate');
+        Route::post('/', 'store');
+        Route::put('/{master}', 'update');
+        Route::post('/{master}/listings', 'attach');
+        Route::delete('/{master}/listings/{listing}', 'detach');
+        Route::post('/{master}/push', 'push');
+        Route::get('/{master}/movements', 'movements');
+        Route::delete('/{master}', 'destroy');
+    });
     Route::put('/marketplace/listings/{listing}/cost', [MarketplaceController::class, 'cost']);
     Route::get('/marketplace/listing-costs', [MarketplaceController::class, 'costGroups']);
     Route::post('/marketplace/listing-costs', [MarketplaceController::class, 'bulkCost']);
@@ -207,6 +229,7 @@ Route::middleware(['auth:sanctum', 'member', 'subscribed'])->group(function () {
     Route::apiResource('landing-pages', LandingPageController::class);
 
     Route::get('/orders/export', [OrderController::class, 'export']);
+    Route::post('/orders/book', [\App\Http\Controllers\Api\IntegrationController::class, 'book'])->middleware('throttle:20,1');
     Route::post('/orders/bulk', [OrderController::class, 'bulkUpdate']);
     Route::post('/orders/{order}/digital-send', [OrderController::class, 'digitalSend'])->middleware('throttle:20,1');
     Route::get('/research/status', [\App\Http\Controllers\Api\MarketResearchController::class, 'status']);
@@ -223,7 +246,6 @@ Route::middleware(['auth:sanctum', 'member', 'subscribed'])->group(function () {
     Route::post('/telegram/test', [\App\Http\Controllers\Api\TelegramController::class, 'test'])->middleware('throttle:10,1');
     Route::post('/telegram/send-awb', [\App\Http\Controllers\Api\TelegramController::class, 'sendNow'])->middleware('throttle:5,1');
     Route::delete('/telegram', [\App\Http\Controllers\Api\TelegramController::class, 'destroy']);
-    Route::post('/orders/biteship-ship', [\App\Http\Controllers\Api\IntegrationController::class, 'ship']);
     Route::get('/notifications', [\App\Http\Controllers\Api\NotificationController::class, 'index']);
     Route::post('/notifications/read', [\App\Http\Controllers\Api\NotificationController::class, 'read']);
     Route::post('/notifications/test', [\App\Http\Controllers\Api\NotificationController::class, 'test']);
@@ -234,6 +256,7 @@ Route::middleware(['auth:sanctum', 'member', 'subscribed'])->group(function () {
     Route::apiResource('orders', OrderController::class);
 
     Route::get('/balance', [FeatureController::class, 'balance']);
+    Route::get('/balance/summary', [FeatureController::class, 'balanceSummary']);
     Route::post('/shipping/preview', [FeatureController::class, 'shippingPreview']);
     Route::get('/landing-reports', [FeatureController::class, 'landingReports']);
     Route::get('/inventory', [FeatureController::class, 'inventory']);
@@ -250,6 +273,7 @@ Route::middleware(['auth:sanctum', 'member', 'subscribed'])->group(function () {
     Route::post('/billing/invoices/{invoice}/simulate-pay', [BillingController::class, 'simulatePay']);
     Route::get('/user-settings', [FeatureController::class, 'userSettings']);
     Route::put('/user-settings', [FeatureController::class, 'updateUserSettings']);
+    Route::post('/pixels/{id}/capi-test', [\App\Http\Controllers\Api\TrackingController::class, 'capiTest'])->whereNumber('id')->middleware('throttle:10,1');
     Route::get('/r/{type}', [ResourceController::class, 'index']);
     Route::post('/r/{type}', [ResourceController::class, 'store']);
     Route::put('/r/{type}/{id}', [ResourceController::class, 'update'])->whereNumber('id');

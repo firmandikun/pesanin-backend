@@ -204,7 +204,8 @@ class ShopeeBookingTest extends TestCase
         $shop = $this->shop($user);
         Http::fake(['*' => Http::response(['response' => []])]);
         $sync = new ShopeeSync;
-        $sync->upsertOrder($shop, ['order_sn' => 'A', 'order_status' => 'COMPLETED', 'item_list' => [], 'create_time' => now()->timestamp]);
+        // Paid (the count only includes paid/COD orders, like Ringkasan and Transaksi).
+        $sync->upsertOrder($shop, ['order_sn' => 'A', 'order_status' => 'COMPLETED', 'pay_time' => now()->timestamp, 'item_list' => [], 'create_time' => now()->timestamp]);
         $sync->upsertOrder($shop, ['order_sn' => 'B', 'order_status' => 'COMPLETED', 'item_list' => [], 'create_time' => now()->subDays(3)->timestamp]);
         $sync->upsertOrder($shop, ['order_sn' => 'C', 'order_status' => 'CANCELLED', 'item_list' => [], 'create_time' => now()->timestamp]);
 

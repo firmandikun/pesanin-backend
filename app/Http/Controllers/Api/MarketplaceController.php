@@ -809,6 +809,13 @@ class MarketplaceController extends Controller
     {
         abort_unless($listing->user_id === $request->user()->id, 404);
         $data = $request->validate(['stock' => 'required|integer|min:0|max:999999']);
+        // Linked to a stok master: change the shared stock, every shop follows.
+        if ($listing->stock_master_id && ($master = $listing->stockMaster)) {
+            \App\Support\MasterStock::setStock($master, $data['stock'], 'Ubah dari Produk Shopee');
+            \App\Support\MasterStock::push($master);
+
+            return $listing->refresh();
+        }
         $shop = $listing->shop;
         if (! $shop->is_demo) {
             try {

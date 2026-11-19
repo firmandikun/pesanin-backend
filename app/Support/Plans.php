@@ -23,11 +23,11 @@ class Plans
     ];
 
     /** Lowest plan that unlocks a feature. */
-    public const FEATURES = ['pixels' => 'starter', 'rotators' => 'bisnis', 'coupons' => 'bisnis', 'affiliates' => 'pro'];
+    public const FEATURES = ['pixels' => 'starter', 'rotators' => 'bisnis', 'coupons' => 'bisnis', 'affiliates' => 'pro', 'stock_master' => 'starter'];
 
     public const LABELS = [
         'orders' => 'pesanan bulan ini', 'products' => 'produk', 'landing_pages' => 'landing page', 'domains' => 'custom domain', 'team' => 'anggota tim', 'shops' => 'toko marketplace', 'research' => 'riset pasar hari ini', 'broadcast' => 'penerima broadcast bulan ini',
-        'pixels' => 'Tracking pixel', 'rotators' => 'WhatsApp Rotator', 'coupons' => 'Kupon diskon', 'affiliates' => 'Program afiliasi',
+        'pixels' => 'Tracking pixel', 'rotators' => 'WhatsApp Rotator', 'coupons' => 'Kupon diskon', 'affiliates' => 'Program afiliasi', 'stock_master' => 'Stok master lintas toko',
     ];
 
     /** Every new store gets this plan free for TRIAL_DAYS. */
@@ -153,6 +153,13 @@ class Plans
         if ($limit !== null && self::usage($user)[$quota] >= $limit) {
             self::deny("Batas {$limit} ".self::LABELS[$quota].' di paket '.self::all()[$plan]['name'].' sudah tercapai. Upgrade paket untuk menambah lagi.', $quota);
         }
+    }
+
+    public static function hasFeature(User $user, string $feature): bool
+    {
+        $need = self::features()[$feature] ?? null;
+
+        return ! $need || self::all()[self::current($user)]['rank'] >= self::all()[$need]['rank'];
     }
 
     public static function ensureFeature(User $user, string $feature): void

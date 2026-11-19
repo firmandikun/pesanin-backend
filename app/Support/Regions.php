@@ -4,7 +4,6 @@ namespace App\Support;
 
 use App\Models\Region;
 use App\Models\UserIntegration;
-use App\Support\Biteship\Biteship;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
@@ -12,9 +11,8 @@ use Illuminate\Support\Str;
 use Throwable;
 
 /**
- * "Kota / Kecamatan" search. Pesanin's own table only covers part of Indonesia, so every search also
- * asks Biteship's area API (all kecamatan + kode pos) and stores what it finds as regions, already
- * linked to their Biteship area id for real rates. Without a Biteship key it searches locally only.
+ * "Kota / Kecamatan" search. With the seller's RajaOngkir key every kelurahan in Indonesia (with kode pos) is
+ * found and stored as a region; without it the search uses Pesanin's own region table only.
  */
 class Regions
 {
@@ -28,7 +26,7 @@ class Regions
         'Maluku & Papua' => ['MALUKU', 'MALUKU UTARA', 'PAPUA', 'PAPUA BARAT', 'PAPUA BARAT DAYA', 'PAPUA SELATAN', 'PAPUA TENGAH', 'PAPUA PEGUNUNGAN'],
     ];
 
-    public static function search(string $q, ?UserIntegration $biteship = null, ?UserIntegration $rajaongkir = null): Collection
+    public static function search(string $q, ?UserIntegration $rajaongkir = null): Collection
     {
         $q = trim($q);
         // RajaOngkir (Komerce): every kelurahan in Indonesia with its kode pos.
@@ -37,17 +35,6 @@ class Regions
                 return self::fromRajaOngkir($ro, $q);
             } catch (Throwable $e) {
                 Log::warning("RajaOngkir destination search '{$q}': {$e->getMessage()}");
-            }
-        }
-        $client = Biteship::for($biteship);
-        // Biteship bills area lookups (Rp2/hit, even in testing): only ask when local data is thin
-        // and the term is specific enough (4+ characters), and remember each term for a day.
-        $known = Region::where(fn ($w) => $w->where('district', 'like', "%{$q}%")->orWhere('city', 'like', "%{$q}%")->orWhere('postal_code', 'like', "{$q}%"))->count();
-        if ($client && mb_strlen($q) >= 4 && $known < 3) {
-            try {
-                self::importFromBiteship($client, $q);
-            } catch (Throwable $e) {
-                Log::warning("Biteship area search '{$q}': {$e->getMessage()}");
             }
         }
         $like = '%'.str_replace(['%', '_'], ['\%', '\_'], $q).'%';
@@ -91,30 +78,6 @@ class Regions
             })->take(30)->values();
     }
 
-    /** One Biteship lookup per search term per day; results become regions. */
-    private static function importFromBiteship(Biteship $client, string $q): void
-    {
-        $key = 'regions:biteship:'.Str::lower($q);
-        if (Cache::has($key)) {
-            return;
-        }
-        foreach ($client->searchAreas($q) as $a) {
-            $province = self::clean($a['administrative_division_level_1_name'] ?? '');
-            $city = self::clean($a['administrative_division_level_2_name'] ?? '', true);
-            $district = self::clean($a['administrative_division_level_3_name'] ?? '');
-            if (! $province || ! $city || ! $district) {
-                continue;
-            }
-            $postal = (string) ($a['postal_code'] ?? '') ?: null;
-            $region = Region::where('biteship_area_id', $a['id'])->first()
-                ?? Region::whereNull('biteship_area_id')->where('city', $city)->where('district', $district)->first()
-                ?? new Region(['province' => $province, 'city' => $city, 'district' => $district, 'island' => self::island($province)]);
-            $region->forceFill(['biteship_area_id' => $a['id'], 'postal_code' => $region->postal_code ?: $postal])->save();
-        }
-        Cache::put($key, true, now()->addDay());
-    }
-
-    /** "Kota Bandung" → "BANDUNG", "Kabupaten Bandung" → "KAB. BANDUNG" (kept apart from the city). */
     private static function clean(string $s, bool $city = false): string
     {
         $s = Str::of($s)->upper()->squish()->value();
@@ -130,7 +93,7 @@ class Regions
     {
         foreach (self::ISLAND as $island => $provinces) {
             foreach ($provinces as $p) {
-                // Biteship spells some differently, e.g. "NANGGROE ACEH DARUSSALAM (NAD)", "DI YOGYAKARTA".
+                // Providers spell some differently, e.g. "NANGGROE ACEH DARUSSALAM (NAD)", "DI YOGYAKARTA".
                 if ($province === $p || str_contains($province, $p)) {
                     return $island;
                 }

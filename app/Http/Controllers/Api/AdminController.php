@@ -200,7 +200,8 @@ class AdminController extends Controller
 
     /* ── Platform: plans, feature gates, registration, notice, contact ─────────── */
 
-    public const SITE_DEFAULTS = ['registration_open' => true, 'notice' => null, 'notice_tone' => 'info', 'whatsapp' => '6281234567890', 'email' => 'halo@pesaninn.my.id'];
+    /** Pesanin's public contact; no placeholder WhatsApp number (the site falls back to email until one is set). */
+    public const SITE_DEFAULTS = ['registration_open' => true, 'notice' => null, 'notice_tone' => 'info', 'whatsapp' => null, 'email' => 'halo@pesaninn.my.id', 'instagram' => null, 'tiktok' => null];
 
     public function platform()
     {
@@ -223,6 +224,7 @@ class AdminController extends Controller
             'features' => 'sometimes|array', 'features.*' => ['required', Rule::in(array_keys(Plans::PLANS))],
             'site' => 'sometimes|array', 'site.registration_open' => 'boolean', 'site.notice' => 'nullable|string|max:300',
             'site.notice_tone' => 'in:info,warning,success', 'site.whatsapp' => ['nullable', 'regex:/^62\d{8,14}$/'], 'site.email' => 'nullable|email',
+            'site.instagram' => ['nullable', 'url', 'max:200', 'regex:#^https://(www\.)?instagram\.com/#'], 'site.tiktok' => ['nullable', 'url', 'max:200', 'regex:#^https://(www\.)?tiktok\.com/#'],
             'sidebar' => 'sometimes|array', 'sidebar.*' => 'boolean',
         ]);
         if (isset($data['plans'])) {

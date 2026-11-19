@@ -16,11 +16,25 @@ class CheckoutService
 {
     public static function paymentMethods(Product $product): array
     {
-        if (! empty($product->payment_methods)) {
-            return array_values(array_unique($product->payment_methods));
+        $methods = ! empty($product->payment_methods)
+            ? array_values(array_unique($product->payment_methods))
+            : ($product->type === 'digital' ? ['bank_transfer', 'epayment'] : ['cod', 'bank_transfer', 'epayment']);
+        // Dropship products are shipped by the Pesanin warehouse and paid upfront: never COD.
+        if ($product->dropship_product_id) {
+            $methods = array_values(array_diff($methods, ['cod'])) ?: ['bank_transfer', 'epayment'];
         }
 
-        return $product->type === 'digital' ? ['bank_transfer', 'epayment'] : ['cod', 'bank_transfer', 'epayment'];
+        return $methods;
+    }
+
+    /** Where the parcel ships from: the dropship warehouse region, else the seller's pickup address. */
+    public static function origin(Product $product): ?Region
+    {
+        if ($product->origin_region_id) {
+            return Region::find($product->origin_region_id);
+        }
+
+        return $product->user->pickupAddress()?->region;
     }
 
     /** @return array{unit_price:int, subtotal:int, bump_price:int, bump_items:array, weight:int, rates:array, shipping:?array, shipping_cost:int, cod_fee:int, total:int, origin:?string} */
@@ -40,12 +54,15 @@ class CheckoutService
         $rates = [];
         $shipping = null;
         $origin = null;
+        $shippingError = null;
         if ($product->type === 'physical') {
-            $pickup = $product->user->pickupAddress();
-            $origin = $pickup?->region;
+            $origin = self::origin($product);
             $dest = ! empty($input['region_id']) ? Region::find($input['region_id']) : null;
-            if ($origin && $dest && ! in_array($dest->province, ProductForm::excludedProvinces($product), true)) {
-                $rates = self::adjustRates($product, self::liveRates($product, $origin, $dest, $weight, $subtotal, $input['payment_method'] ?? null));
+            if (! $origin) {
+                $shippingError = $product->dropship_product_id ? 'Gudang produk dropship belum diatur.' : 'Penjual belum mengatur alamat pickup.';
+            } elseif ($dest && ! in_array($dest->province, ProductForm::excludedProvinces($product), true)) {
+                [$live, $shippingError] = self::liveRates($product, $origin, $dest, $weight, $subtotal, $input['payment_method'] ?? null);
+                $rates = self::adjustRates($product, $live);
                 $shipping = collect($rates)->firstWhere('code', $input['courier'] ?? null)
                     ?? collect($rates)->firstWhere('cheapest', true);
             }
@@ -70,44 +87,45 @@ class CheckoutService
             'rates' => $rates,
             'shipping' => $shipping,
             'shipping_cost' => $shippingCost,
+            'shipping_error' => $rates ? null : $shippingError,
             'cod_fee' => $codFee,
             'total' => max(0, $subtotal + $shippingCost - $discount + $codFee),
         ];
     }
 
+    /** The RajaOngkir account used for ongkir: always Pesanin's own from .env (seller products and dropship alike). */
+    public static function courierAccount(\App\Models\User $seller, bool $dropship = false): ?\App\Models\UserIntegration
+    {
+        return \App\Support\RajaOngkir\RajaOngkir::platform();
+    }
+
     /**
-     * Real courier rates from the seller's Biteship account when connected (COD-capable services only
-     * when the buyer picks COD); otherwise Pesanin's local estimates.
+     * Real courier rates from RajaOngkir (Komerce). No estimates: without a connected account there are no rates.
+     *
+     * @return array{0: array, 1: ?string} [rates, error shown when empty]
      */
+    public static function rates(\App\Models\User $seller, bool $dropship, Region $origin, Region $dest, int $weight, int $value = 0, ?string $method = null): array
+    {
+        $ro = \App\Support\RajaOngkir\RajaOngkir::for(self::courierAccount($seller, $dropship));
+        if (! $ro) {
+            return [[], 'Ongkir belum tersedia: layanan ongkir Pesanin belum dikonfigurasi.'];
+        }
+        try {
+            if ($rates = $ro->rates($origin, $dest, $weight)) {
+                return [$rates, null];
+            }
+
+            return [[], 'Tidak ada kurir yang melayani pengiriman ke lokasi ini.'];
+        } catch (\Throwable $e) {
+            \Illuminate\Support\Facades\Log::warning("RajaOngkir rates for user {$seller->id}: {$e->getMessage()}");
+
+            return [[], 'Gagal mengambil ongkir dari RajaOngkir. Coba lagi sebentar.'];
+        }
+    }
+
     private static function liveRates(Product $product, Region $origin, Region $dest, int $weight, int $value, ?string $method): array
     {
-        // 1) RajaOngkir (Komerce) when connected: real rates for 10 couriers.
-        if ($ro = \App\Support\RajaOngkir\RajaOngkir::for($product->user->integration('rajaongkir'))) {
-            try {
-                if ($rates = $ro->rates($origin, $dest, $weight)) {
-                    return $rates;
-                }
-            } catch (\Throwable $e) {
-                \Illuminate\Support\Facades\Log::warning("RajaOngkir rates for user {$product->user_id}: {$e->getMessage()}");
-            }
-        }
-        // 2) Biteship (also knows which services accept COD).
-        $biteship = \App\Support\Biteship\Biteship::for($product->user->integration('biteship'));
-        if ($biteship) {
-            try {
-                $rates = $biteship->rates($origin, $dest, $weight, $value);
-                if ($method === 'cod') {
-                    $rates = array_values(array_filter($rates, fn ($r) => $r['cod']));
-                }
-                if ($rates) {
-                    return $rates;
-                }
-            } catch (\Throwable $e) {
-                \Illuminate\Support\Facades\Log::warning("Biteship rates for user {$product->user_id}: {$e->getMessage()}");
-            }
-        }
-
-        return ShippingRates::rates($origin, $dest, $weight);
+        return self::rates($product->user, (bool) $product->dropship_product_id, $origin, $dest, $weight, $value, $method);
     }
 
     /** Step-2 "Pengiriman" settings: allowed couriers, extra fee and shipping discount. */
@@ -217,6 +235,11 @@ class CheckoutService
             if ($stock !== null && $stock < $qty && ! $product->allow_oversell) {
                 throw ValidationException::withMessages(['quantity' => "Stok tidak cukup (tersisa {$stock})."]);
             }
+            // Dropship: the warehouse stock is the limit (counted from real orders), never oversold.
+            $dropship = $product->dropship_product_id ? \App\Models\DropshipProduct::lockForUpdate()->find($product->dropship_product_id) : null;
+            if ($dropship && $dropship->product_type === 'physical' && ($left = \App\Support\Dropship::available($dropship)) < $qty) {
+                throw ValidationException::withMessages(['quantity' => $left ? "Stok tidak cukup (tersisa {$left})." : 'Maaf, stok produk ini sedang habis.']);
+            }
 
             $region = ! empty($data['region_id']) ? Region::find($data['region_id']) : null;
             if ($region && in_array($region->province, ProductForm::excludedProvinces($product), true)) {
@@ -229,7 +252,7 @@ class CheckoutService
             }
             $affiliate = ! empty($data['ref']) ? \App\Models\Affiliate::where(['user_id' => $product->user_id, 'code' => $data['ref'], 'is_active' => true])->first() : null;
             if ($product->type === 'physical' && ! $quote['shipping']) {
-                throw ValidationException::withMessages(['region_id' => 'Pengiriman ke lokasi ini belum tersedia. Penjual belum mengatur alamat pickup.']);
+                throw ValidationException::withMessages(['region_id' => $quote['shipping_error'] ?? 'Pengiriman ke lokasi ini belum tersedia.']);
             }
 
             $order = ! empty($data['checkout_token'])
@@ -267,7 +290,10 @@ class CheckoutService
                 'shipping_cost' => $quote['shipping_cost'],
                 'cod_fee' => $quote['cod_fee'],
                 'total' => $quote['total'],
-                'pickup_address_id' => $product->type === 'physical' ? $product->user->pickupAddress()?->id : null,
+                'pickup_address_id' => $product->type === 'physical' && ! $product->dropship_product_id ? $product->user->pickupAddress()?->id : null,
+                'dropship_product_id' => $dropship?->id,
+                'dropship_cost' => $dropship ? \App\Support\Dropship::cost($dropship, $variant, $qty) : 0,
+                'over_quota' => \App\Support\OrderQuota::isOver($product->user),
                 'status' => 'pending',
                 'payment_status' => 'unpaid',
                 'created_at' => now(),
@@ -281,6 +307,18 @@ class CheckoutService
             }
 
             return $order->load('product', 'user');
+        });
+    }
+
+    /** An order whose payment couldn't start: cancelled and its stock given back, so a retry starts clean. */
+    public static function voidUnpaid(Order $order, string $reason): void
+    {
+        DB::transaction(function () use ($order, $reason) {
+            $product = Product::lockForUpdate()->find($order->product_id);
+            if ($product?->track_stock) {
+                self::decrementStock($product, $order->variant, -(int) $order->quantity);
+            }
+            $order->forceFill(['status' => 'cancelled', 'notes' => trim(($order->notes ? $order->notes."\n" : '')."[Otomatis] {$reason}.")])->save();
         });
     }
 

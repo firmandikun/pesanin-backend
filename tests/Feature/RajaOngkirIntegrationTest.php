@@ -28,7 +28,7 @@ class RajaOngkirIntegrationTest extends TestCase
         $p = new Product(['name' => 'Toner', 'slug' => 'toner-ro', 'type' => 'physical', 'price' => 50000, 'weight' => 300, 'status' => 'active', 'payment_methods' => ['cod']]);
         $p->user_id = $seller->id;
         $p->save();
-        UserIntegration::create(['user_id' => $seller->id, 'provider' => 'rajaongkir', 'credentials' => ['api_key' => 'ro-key'], 'webhook_token' => Str::random(40), 'status' => 'active']);
+        config(['services.rajaongkir.key' => 'ro-key']);
 
         Http::fake([
             'rajaongkir.komerce.id/api/v1/destination/domestic-destination*' => fn ($r) => Http::response(['meta' => ['status' => 'success', 'code' => 200], 'data' => str_contains($r['search'], 'SERPONG')

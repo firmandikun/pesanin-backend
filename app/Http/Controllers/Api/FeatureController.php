@@ -28,40 +28,56 @@ class FeatureController extends Controller
     }
 
     /** Settings > Balance: money flow derived from orders (COD and transfer). */
+    /**
+     * Pengaturan → Saldo. "Dana di Pesanin" is only money Pesanin actually holds: E-Payment paid through Pesanin's
+     * Midtrans account (payment_via = platform). Bank transfers, the seller's own Midtrans and COD go straight to the
+     * seller (or their courier) and are shown as such. Shopee money sits in Marketplace → Saldo.
+     */
     public function balance(Request $request)
     {
         [$from, $to] = $this->range($request, 0);
-        // Pesanin's own balance: web checkout + manual orders only. Shopee money sits in the Shopee wallet (below).
         $orders = $request->user()->orders()->active()->where('channel', '!=', 'shopee');
         $paid = (clone $orders)->where('payment_status', 'paid');
+        $platform = fn ($q) => $q->where('payment_method', 'epayment')->where('payment_via', 'platform');
+        $direct = fn ($q) => $q->where('payment_method', '!=', 'cod')->where(fn ($w) => $w->where('payment_method', '!=', 'epayment')->orWhere('payment_via', '!=', 'platform')->orWhereNull('payment_via'));
         $cod = (clone $paid)->where('payment_method', 'cod');
         $inRange = fn ($q) => $q->whereBetween('paid_at', [$from, $to]);
 
-        $available = (int) (clone $paid)->sum('total') - (int) (clone $paid)->sum('cod_fee');
-        $pending = (int) (clone $orders)->where('payment_method', 'cod')->where('payment_status', 'unpaid')->where('shipping_status', '!=', 'not_shipped')->sum('total');
+        // Held money ignores archiving (a UI filter) but not refunds.
+        $heldBase = $request->user()->orders()->where('is_abandoned', false)->where('channel', '!=', 'shopee')->where('payment_status', 'paid')->where('status', '!=', 'refunded');
 
-        // Shopee money has its own page (Marketplace → Saldo, GET /marketplace/balance).
         return [
-            'available' => $available,
-            'withdrawing' => 0,
-            'pending' => $pending,
+            'held' => (int) $platform(clone $heldBase)->sum('total'),
+            'held_unpaid' => (int) $platform(clone $orders)->where('payment_status', 'unpaid')->where('status', 'pending')->sum('total'),
+            'cod_pending' => (int) (clone $orders)->where('payment_method', 'cod')->where('payment_status', 'unpaid')->where('shipping_status', '!=', 'not_shipped')->sum('total'),
             'period' => [
+                'platform_received' => (int) $inRange($platform(clone $paid))->sum('total'),
+                'direct_received' => (int) $inRange($direct(clone $paid))->sum('total'),
                 'net_cod_revenue' => (int) $inRange(clone $cod)->sum(DB::raw('total - cod_fee - shipping_cost')),
                 'collected_from_customer' => (int) $inRange(clone $cod)->sum('total'),
                 'cod_shipping_fees' => (int) $inRange(clone $cod)->sum(DB::raw('shipping_cost + cod_fee')),
-                'net_shipping_saved' => 0, 'shipping_saved' => 0,
                 'return_shipping' => (int) $inRange((clone $orders)->where('shipping_status', 'returned'))->sum('shipping_cost'),
-                'withdrawn' => 0,
-                'cod_income' => (int) $inRange(clone $cod)->sum('total'),
-                'topup' => 0, 'invoices_paid' => 0,
                 'refunds' => (int) $inRange((clone $orders)->where('status', 'refunded'))->sum('total'),
-                'claims' => 0,
             ],
             'mutations' => $inRange(clone $paid)->with('product:id,name')->latest('paid_at')->limit(50)->get()->map(fn (Order $o) => [
-                'date' => $o->paid_at?->toDateTimeString(), 'courier' => $o->courier, 'type' => $o->payment_method === 'cod' ? 'COD' : 'Transfer',
+                'date' => $o->paid_at?->toIso8601String(), 'courier' => $o->courier,
+                'type' => match (true) {
+                    $o->payment_method === 'cod' => 'COD',
+                    $o->payment_method === 'epayment' && $o->payment_via === 'platform' => 'E-Payment (Midtrans Pesanin)',
+                    $o->payment_method === 'epayment' => 'E-Payment (Midtrans kamu)',
+                    default => 'Transfer bank',
+                },
+                'held' => $o->payment_method === 'epayment' && $o->payment_via === 'platform',
                 'description' => "Pembayaran {$o->code} — {$o->product?->name}", 'amount' => $o->total, 'status' => $o->status, 'invoice' => $o->code,
             ]),
         ];
+    }
+
+    /** Header wallet: money Pesanin holds for the seller (E-Payment via Pesanin's Midtrans). */
+    public function balanceSummary(Request $request)
+    {
+        return ['held' => (int) $request->user()->orders()->where('is_abandoned', false)->where('payment_status', 'paid')->where('status', '!=', 'refunded')
+            ->where('payment_method', 'epayment')->where('payment_via', 'platform')->sum('total')];
     }
 
     /** Landing Page > Laporan: sessions, users, bounce, referrers from tracked visits. */
@@ -244,16 +260,7 @@ class FeatureController extends Controller
         $owner = User::find($r->user_id);
         $global = $owner->settings['rotator'] ?? [];
         $cfg = array_merge($global, array_filter($r->settings ?? [], fn ($v) => $v !== null && $v !== ''));
-        $day = strtolower(now()->englishDayOfWeek);
-        $time = now()->format('H:i');
-
-        $staff = CsStaff::whereIn('id', $r->staff_ids ?? [])->where('is_active', true)->get()->filter(function (CsStaff $s) use ($day, $time) {
-            $off = DB::table('staff_time_offs')->where('cs_staff_id', $s->id)->whereDate('start_date', '<=', today())->whereDate('end_date', '>=', today())->exists();
-            $shift = $s->schedule[$day] ?? null;
-            $onShift = ! $s->schedule || ($shift && ! empty($shift['on']) && $time >= ($shift['start'] ?? '00:00') && $time <= ($shift['end'] ?? '23:59'));
-
-            return ! $off && $onShift;
-        })->values();
+        $staff = CsStaff::onDuty(CsStaff::whereIn('id', $r->staff_ids ?? [])->where('is_active', true)->get());
 
         $visitor = Str::limit((string) $request->query('visitor', Str::random(20)), 40, '');
         $chosen = $staff->count() ? $staff[$r->cursor % $staff->count()] : null;
@@ -292,17 +299,24 @@ class FeatureController extends Controller
     }
 
     /** Sample courier list for the product editor preview (pickup address -> a typical destination). */
+    /**
+     * Live ongkir for the editor preview: from the seller's pickup address, or from a dropship warehouse
+     * (origin_region_id) to a sample destination, through the real RajaOngkir account.
+     */
     public function shippingPreview(Request $request)
     {
-        $origin = $request->user()->pickupAddress()?->region;
+        $data = $request->validate(['origin_region_id' => 'nullable|integer|exists:regions,id', 'weight' => 'nullable|integer|min:0', 'shipping' => 'nullable|array']);
+        $user = $request->user();
+        $dropship = ! empty($data['origin_region_id']);
+        $origin = $dropship ? \App\Models\Region::find($data['origin_region_id']) : $user->pickupAddress()?->region;
         if (! $origin) {
-            return ['origin' => null, 'rates' => []];
+            return ['origin' => null, 'rates' => [], 'error' => $dropship ? 'Gudang belum diatur.' : 'Atur alamat pickup dulu di Pengaturan → Alamat.'];
         }
         $dest = \App\Models\Region::where('city', $origin->city === 'JAKARTA SELATAN' ? 'BANDUNG' : 'JAKARTA SELATAN')->first() ?? $origin;
-        $product = new \App\Models\Product(['form_settings' => ['shipping' => (array) $request->input('shipping', [])]]);
-        $weight = max(1, (int) $request->input('weight', 1000));
+        $product = new \App\Models\Product(['form_settings' => ['shipping' => (array) ($data['shipping'] ?? [])]]);
+        [$rates, $error] = \App\Support\CheckoutService::rates($user, $dropship, $origin, $dest, max(1, (int) ($data['weight'] ?? 1000)));
 
-        return ['origin' => $origin->city, 'destination' => $dest->label, 'rates' => \App\Support\CheckoutService::adjustRates($product, \App\Support\ShippingRates::rates($origin, $dest, $weight))];
+        return ['origin' => $origin->city, 'destination' => $dest->label, 'rates' => \App\Support\CheckoutService::adjustRates($product, $rates), 'error' => $rates ? null : $error];
     }
 
     public function userSettings(Request $request)
@@ -312,7 +326,7 @@ class FeatureController extends Controller
 
     public function updateUserSettings(Request $request)
     {
-        $data = $request->validate(['key' => 'required|in:rotator,confirm_page,affiliate,whatsapp_devices,notify,followup,automation,print_settings', 'value' => 'present|array']);
+        $data = $request->validate(['key' => 'required|in:rotator,confirm_page,affiliate,whatsapp_devices,notify,followup,automation,print_settings,ads_guard,reviews', 'value' => 'present|array']);
         $user = $request->user();
         $user->update(['settings' => array_merge($user->settings ?? [], [$data['key'] => $data['value']])]);
 

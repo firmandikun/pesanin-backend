@@ -5,7 +5,7 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
-/** A seller's own Biteship / Midtrans account. `credentials` is encrypted at rest and never sent to the browser. */
+/** A seller's own RajaOngkir / Midtrans / … account. `credentials` is encrypted at rest and never sent to the browser. */
 class UserIntegration extends Model
 {
     protected $guarded = ['id'];

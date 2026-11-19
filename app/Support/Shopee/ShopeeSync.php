@@ -74,6 +74,8 @@ class ShopeeSync
                 $listing->product_id = $skuMap[$sku];
             }
             $listing->save();
+            // Same SKU as an existing stok master → join it.
+            \App\Support\MasterStock::autoAttach($listing);
         }
 
         return count($rows);
@@ -808,6 +810,9 @@ class ShopeeSync
                 }
             }
         }
+
+        // Stok master lintas toko: deduct a new order once from the shared stock, restore it when cancelled.
+        \App\Support\MasterStock::applyOrder($order);
 
         $pkgTracking = ($d['package_list'][0]['tracking_number'] ?? '') ?: null;
         if ($pkgTracking && ! $order->tracking_number) {

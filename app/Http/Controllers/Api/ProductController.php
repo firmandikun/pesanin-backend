@@ -71,7 +71,8 @@ class ProductController extends Controller
     {
         $this->authorizeOwner($request, $product);
 
-        return $product;
+        // Real "terjual" for the editor's checkout preview (same count the public checkout shows).
+        return $product->setAttribute('sold_qty', (int) $product->orders()->where('is_abandoned', false)->sum('quantity'));
     }
 
     public function update(Request $request, Product $product)

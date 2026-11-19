@@ -9,6 +9,7 @@ use App\Models\DropshipperProfile;
 use App\Models\DropshipProduct;
 use App\Models\LandingPage;
 use App\Models\Product;
+use App\Support\Dropship;
 use App\Support\SidebarConfig;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -65,7 +66,8 @@ class DropshipController extends Controller
     public function adminStore(Request $request)
     {
         $data = $this->validateProduct($request);
-        $data['sku'] = $this->uniqueSku($data['sku'] ?: 'PSN-DS-'.strtoupper(Str::random(4)));
+        $data['stock_set_at'] = now();
+        $data['sku'] = $this->uniqueSku(($data['sku'] ?? null) ?: 'PSN-DS-'.strtoupper(Str::random(4)));
         $product = DropshipProduct::create($data);
         $product->loadCount('adoptions as adopters_count');
 
@@ -77,6 +79,11 @@ class DropshipController extends Controller
     public function adminUpdate(Request $request, DropshipProduct $dropshipProduct)
     {
         $data = $this->validateProduct($request, $dropshipProduct->id);
+        if ((int) $data['stock'] !== Dropship::available($dropshipProduct)) {
+            $data['stock_set_at'] = now(); // admin set a new physical count: orders are counted from here
+        } else {
+            unset($data['stock']); // unchanged: keep counting down from the earlier count
+        }
         $dropshipProduct->update($data);
         $dropshipProduct->loadCount('adoptions as adopters_count');
 
@@ -92,6 +99,7 @@ class DropshipController extends Controller
         $copy->name = $dropshipProduct->name.' (Salinan)';
         $copy->status = 'draft';
         $copy->sold_30d = 0;
+        $copy->stock_set_at = now();
         $copy->save();
         $copy->loadCount('adoptions as adopters_count');
 
@@ -105,6 +113,77 @@ class DropshipController extends Controller
         ActivityLog::record($request->user(), 'admin.dropship.delete', "Menghapus produk dropship {$name}");
 
         return response()->noContent();
+    }
+
+    /** Max video upload in KB (200 MB). The server's PHP/nginx limits must allow it too. */
+    public const VIDEO_MAX_KB = 204800;
+
+    /** Upload a promo video (mp4 / mov / webm) for the catalog; dropshippers download it from the product page. */
+    public function adminUploadVideo(Request $request)
+    {
+        $request->validate(
+            ['file' => 'required|file|mimetypes:video/mp4,video/quicktime,video/webm|max:'.self::VIDEO_MAX_KB],
+            ['file.mimetypes' => 'Format video harus MP4, MOV, atau WEBM.', 'file.max' => 'Ukuran video maksimal 200 MB.', 'file.uploaded' => 'Upload gagal: file melebihi batas ukuran server.'],
+        );
+        $file = $request->file('file');
+        $path = $file->store('dropship/videos', 'public');
+        ActivityLog::record($request->user(), 'admin.dropship.video', 'Mengunggah video dropship '.$file->getClientOriginalName());
+
+        return ['url' => asset('storage/'.$path), 'size' => $file->getSize(), 'name' => $file->getClientOriginalName()];
+    }
+
+    /* ── Admin Console: warehouse queue of dropship orders ─────────────────── */
+
+    /**
+     * Orders of adopted products. "perlu_kirim": paid and waiting for the warehouse. The modal (wholesale cost) is
+     * held by Pesanin when the buyer paid through Pesanin's Midtrans; otherwise the seller must transfer it.
+     */
+    public function adminOrders(Request $request)
+    {
+        $tab = $request->query('tab', 'perlu_kirim');
+        $base = \App\Models\Order::query()->whereNotNull('dropship_product_id')->where('is_abandoned', false);
+        $scope = fn ($q, string $t) => match ($t) {
+            'perlu_kirim' => $q->where('payment_status', 'paid')->where('shipping_status', 'not_shipped')->whereNotIn('status', ['cancelled', 'refunded']),
+            'menunggu_bayar' => $q->where('payment_status', 'unpaid')->where('status', 'pending'),
+            'dikirim' => $q->where('shipping_status', '!=', 'not_shipped'),
+            'batal' => $q->whereIn('status', ['cancelled', 'refunded']),
+            default => $q,
+        };
+        $orders = $scope(clone $base, $tab)
+            ->when($request->query('search'), fn ($q, $s) => $q->where(fn ($w) => $w->where('code', 'like', "%{$s}%")->orWhere('customer_name', 'like', "%{$s}%")->orWhere('tracking_number', 'like', "%{$s}%")))
+            ->with(['user:id,store_name,whatsapp', 'product:id,name', 'dropshipProduct:id,name,sku,warehouse_city'])->latest()->paginate(30);
+        $orders->getCollection()->transform(fn ($o) => $o->setAttribute('modal_status', $o->dropship_paid_at ? 'lunas' : ($o->payment_via === 'platform' && $o->payment_status === 'paid' ? 'ditahan_pesanin' : 'belum')));
+
+        return [
+            'orders' => $orders,
+            'counts' => collect(['perlu_kirim', 'menunggu_bayar', 'dikirim', 'batal'])->mapWithKeys(fn ($t) => [$t => $scope(clone $base, $t)->count()]),
+        ];
+    }
+
+    /** Warehouse shipped it: waybill saved on the seller's order (tracked like any order) and the seller is told. */
+    public function adminShip(Request $request, \App\Models\Order $order)
+    {
+        abort_unless($order->dropship_product_id, 404);
+        abort_if($order->payment_status !== 'paid', 422, 'Pesanan belum dibayar, jangan dikirim dulu.');
+        $data = $request->validate(['tracking_number' => 'required|string|max:100', 'courier' => 'nullable|string|max:60']);
+        $order->update(array_filter([
+            'tracking_number' => trim($data['tracking_number']), 'courier' => $data['courier'] ?? null, 'shipping_status' => 'in_transit',
+            'shipped_at' => $order->shipped_at ?? now(), 'status' => $order->status === 'pending' ? 'processing' : null,
+        ], fn ($v) => $v !== null));
+        \App\Support\Notifier::send($order->user_id, 'order', 'Pesanan dropship sudah dikirim gudang', "{$order->code}: resi {$order->tracking_number}", '/orders?search='.$order->code, $order->id);
+        ActivityLog::record($request->user(), 'admin.dropship.ship', "Kirim pesanan dropship {$order->code} (resi {$order->tracking_number})");
+
+        return $order->fresh();
+    }
+
+    /** The seller transferred the modal (wholesale cost) to Pesanin. */
+    public function adminModalPaid(Request $request, \App\Models\Order $order)
+    {
+        abort_unless($order->dropship_product_id, 404);
+        $order->forceFill(['dropship_paid_at' => $request->boolean('paid', true) ? now() : null])->save();
+        ActivityLog::record($request->user(), 'admin.dropship.modal', "Modal pesanan dropship {$order->code} ".($order->dropship_paid_at ? 'diterima' : 'dibatalkan'));
+
+        return $order->fresh();
     }
 
     /* ── Seller App: Catalog, Dropshipper Profile & Adoption ──────────────── */
@@ -153,6 +232,71 @@ class DropshipController extends Controller
             'profile' => $this->serializeProfile($profile, $user),
             'adoption' => $adoption ? $this->serializeAdoption($adoption) : null,
         ];
+    }
+
+    /**
+     * "Unduh Semua Slide": one slide pack as a ZIP (numbered images + caption & hashtag text). Images are read only
+     * from Pesanin itself (its storage or the frontend's /images), never from arbitrary hosts.
+     */
+    public function slidesZip(Request $request, DropshipProduct $dropshipProduct, string $pack)
+    {
+        abort_if($dropshipProduct->status !== 'active' && ! $request->user()->is_admin, 404);
+        $set = collect($dropshipProduct->slides ?? [])->firstWhere('id', $pack) ?? abort(404, 'Paket slide tidak ditemukan.');
+
+        $tmp = tempnam(sys_get_temp_dir(), 'slides');
+        $zip = new \ZipArchive;
+        $zip->open($tmp, \ZipArchive::OVERWRITE);
+        $skipped = [];
+        foreach (array_values($set['slides'] ?? []) as $i => $slide) {
+            $url = (string) ($slide['image'] ?? '');
+            $bytes = $url !== '' ? $this->ownImage($url) : null;
+            if ($bytes === null) {
+                $skipped[] = ($i + 1).'. '.($slide['label'] ?? 'Slide').': '.$url;
+
+                continue;
+            }
+            $ext = strtolower(pathinfo(parse_url($url, PHP_URL_PATH) ?: '', PATHINFO_EXTENSION)) ?: 'jpg';
+            $name = sprintf('%02d-%s.%s', $i + 1, Str::slug($slide['label'] ?? 'slide') ?: 'slide', in_array($ext, ['jpg', 'jpeg', 'png', 'webp', 'gif'], true) ? $ext : 'jpg');
+            $zip->addFromString($name, $bytes);
+        }
+        $caption = trim(($set['copywriting'] ?? '')."\n\n".($set['hashtags'] ?? ''));
+        if ($caption !== '') {
+            $zip->addFromString('caption.txt', $caption."\n");
+        }
+        if ($skipped) {
+            $zip->addFromString('gambar-tidak-terunduh.txt', "Gambar berikut tidak bisa diambil:\n".implode("\n", $skipped)."\n");
+        }
+        $zip->close();
+
+        return response()->download($tmp, Str::slug($dropshipProduct->name.' '.($set['title'] ?? 'slide')).'.zip', ['Content-Type' => 'application/zip'])->deleteFileAfterSend();
+    }
+
+    /** Image bytes when the URL points at Pesanin's own storage or frontend /images; null otherwise or when missing. */
+    private function ownImage(string $url): ?string
+    {
+        $path = parse_url($url, PHP_URL_PATH) ?: '';
+        $host = parse_url($url, PHP_URL_HOST);
+        $apiHost = parse_url((string) config('app.url'), PHP_URL_HOST);
+        $webHost = parse_url((string) config('app.frontend_url'), PHP_URL_HOST);
+        if (str_contains($path, '..')) {
+            return null;
+        }
+        if (str_starts_with($path, '/storage/') && (! $host || $host === $apiHost)) {
+            $rel = substr($path, strlen('/storage/'));
+
+            return \Illuminate\Support\Facades\Storage::disk('public')->exists($rel) ? \Illuminate\Support\Facades\Storage::disk('public')->get($rel) : null;
+        }
+        if (str_starts_with($path, '/images/') && (! $host || $host === $webHost)) {
+            try {
+                $res = \Illuminate\Support\Facades\Http::timeout(15)->get(rtrim((string) config('app.frontend_url'), '/').$path);
+
+                return $res->successful() && str_starts_with((string) $res->header('Content-Type'), 'image/') ? $res->body() : null;
+            } catch (\Throwable) {
+                return null;
+            }
+        }
+
+        return null;
     }
 
     public function saveProfile(Request $request)
@@ -205,7 +349,7 @@ class DropshipController extends Controller
             'slug' => 'required|string|max:120',
             'selected_lp_id' => 'nullable|string|max:80',
             'payment_methods' => 'required|array|min:1',
-            'payment_methods.*' => Rule::in(['cod', 'bank_transfer', 'epayment']),
+            'payment_methods.*' => Rule::in(['bank_transfer', 'epayment']),
             'lp_page' => 'nullable|array',
             'lp_page.title' => 'nullable|string|max:150',
             'lp_page.label' => 'nullable|string|max:40',
@@ -218,6 +362,7 @@ class DropshipController extends Controller
         ]);
 
         $dp = DropshipProduct::where('status', 'active')->findOrFail($data['dropship_product_id']);
+        abort_if($dp->product_type === 'physical' && ! $dp->warehouse_region_id, 422, 'Gudang produk ini belum diatur oleh admin, ongkir belum bisa dihitung. Coba lagi nanti.');
         abort_if($data['selling_price'] < $dp->min_price, 422, 'Harga jual minimal untuk produk ini adalah Rp'.number_format($dp->min_price, 0, ',', '.').'.');
 
         $paymentMethods = array_values(array_unique($data['payment_methods']));
@@ -254,6 +399,8 @@ class DropshipController extends Controller
                     'stock' => (int) ($v['stock'] ?? $dp->stock),
                 ])->values()->all(),
                 'payment_methods' => $paymentMethods,
+                'dropship_product_id' => $dp->id,
+                'origin_region_id' => $dp->product_type === 'digital' ? null : $dp->warehouse_region_id,
                 'digital_content' => $dp->product_type === 'digital' ? [
                     'url' => $dp->digital_access_url,
                     'instructions' => $dp->digital_format,
@@ -278,7 +425,7 @@ class DropshipController extends Controller
             // 2. Prepare LandingPage blocks (bind every `checkout` block to the real `$product->id`)
             $blocks = is_array($lpInput['blocks'] ?? null) ? $lpInput['blocks'] : [];
             if (empty($blocks)) {
-                $tpl = collect($dp->lp_templates ?? [])->firstWhere('id', $data['selected_lp_id'])
+                $tpl = collect($dp->lp_templates ?? [])->firstWhere('id', $data['selected_lp_id'] ?? null)
                     ?? ($dp->lp_templates[0] ?? null);
                 $blocks = is_array($tpl['blocks'] ?? null) ? $tpl['blocks'] : [];
             }
@@ -375,6 +522,7 @@ class DropshipController extends Controller
             'weight_gram' => 'nullable|integer|min:0|max:100000',
             'stock' => 'nullable|integer|min:0|max:1000000',
             'warehouse_city' => 'nullable|string|max:120',
+            'warehouse_region_id' => 'nullable|required_if:product_type,physical|integer|exists:regions,id',
             'digital_format' => 'nullable|string|max:180',
             'digital_access_url' => 'nullable|string|max:500',
             'digital_license' => 'nullable|string|max:160',
@@ -383,18 +531,23 @@ class DropshipController extends Controller
             'suggested_price' => 'required|integer|min:0',
             'compare_price' => 'nullable|integer|min:0',
             'payment_methods' => 'nullable|array',
-            'payment_methods.*' => Rule::in(['cod', 'bank_transfer', 'epayment']),
+            'payment_methods.*' => Rule::in(['bank_transfer', 'epayment']),
             'variants' => 'nullable|array|max:30',
             'videos' => 'nullable|array|max:20',
             'slides' => 'nullable|array|max:20',
             'lp_templates' => 'nullable|array|max:15',
-            'sold_30d' => 'nullable|integer|min:0',
         ]);
 
         $data['images'] = array_values(array_filter($data['images'] ?? []));
         $data['payment_methods'] = ! empty($data['payment_methods'])
             ? array_values(array_unique($data['payment_methods']))
-            : ['cod', 'bank_transfer', 'epayment'];
+            : ['bank_transfer', 'epayment'];
+        if (! empty($data['warehouse_region_id']) && $data['product_type'] === 'physical') {
+            $region = \App\Models\Region::find($data['warehouse_region_id']);
+            $data['warehouse_city'] = $region ? trim("{$region->district}, {$region->city}", ', ') : ($data['warehouse_city'] ?? null);
+        } else {
+            $data['warehouse_region_id'] = null;
+        }
         $data['variants'] = $data['variants'] ?? [];
         $data['videos'] = $data['videos'] ?? [];
         $data['slides'] = $data['slides'] ?? [];
@@ -422,6 +575,8 @@ class DropshipController extends Controller
             'weight_gram' => (int) $p->weight_gram,
             'stock' => (int) $p->stock,
             'warehouse_city' => $p->warehouse_city ?? '',
+            'warehouse_region_id' => $p->warehouse_region_id,
+            'warehouse_region' => $p->warehouse_region_id ? \App\Models\Region::find($p->warehouse_region_id)?->label : null,
             'digital_format' => $p->digital_format ?? '',
             'digital_access_url' => $p->digital_access_url ?? '',
             'digital_license' => $p->digital_license ?? '',
@@ -429,13 +584,15 @@ class DropshipController extends Controller
             'min_price' => (int) $p->min_price,
             'suggested_price' => (int) $p->suggested_price,
             'compare_price' => (int) $p->compare_price,
-            'payment_methods' => $p->payment_methods ?: ['cod', 'bank_transfer', 'epayment'],
+            'payment_methods' => array_values(array_diff($p->payment_methods ?: [], ['cod'])) ?: ['bank_transfer', 'epayment'],
             'variants' => $p->variants ?? [],
             'videos' => $p->videos ?? [],
             'slides' => $p->slides ?? [],
             'lp_templates' => $p->lp_templates ?? [],
             'adopters_count' => (int) ($p->adopters_count ?? 0),
-            'sold_30d' => (int) $p->sold_30d,
+            // Real numbers from orders: stock left in the warehouse and units sold (paid) in the last 30 days.
+            'stock' => ($stats = Dropship::stats([$p])[$p->id])['available'],
+            'sold_30d' => $stats['sold_30d'],
             'created_at' => optional($p->created_at)->toDateString(),
         ];
     }
@@ -481,7 +638,7 @@ class DropshipController extends Controller
             'compare_price' => (int) $a->compare_price,
             'slug' => $lp?->slug ?? $a->slug,
             'selected_lp_id' => $a->selected_lp_id ?? '',
-            'payment_methods' => $a->payment_methods ?: ($a->product?->payment_methods ?: ['cod', 'bank_transfer', 'epayment']),
+            'payment_methods' => array_values(array_diff($a->payment_methods ?: ($a->product?->payment_methods ?: []), ['cod'])) ?: ['bank_transfer', 'epayment'],
             'lp_page' => $lp ? $lp->toArray() : ($a->lp_page ?? null),
             'status' => $a->status,
             'created_at' => optional($a->created_at)->toDateString(),

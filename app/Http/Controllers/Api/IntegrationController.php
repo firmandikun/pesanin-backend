@@ -7,8 +7,6 @@ use App\Models\ActivityLog;
 use App\Models\Order;
 use App\Models\SubscriptionInvoice;
 use App\Models\UserIntegration;
-use App\Support\Biteship\Biteship;
-use App\Support\Biteship\BiteshipException;
 use App\Support\Midtrans\Midtrans;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
@@ -16,10 +14,10 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use Throwable;
 
-/** Pengaturan → Integrasi (Biteship, Midtrans), their webhooks, and "Kirim via Biteship". */
+/** Pengaturan → Integrasi (RajaOngkir, Midtrans, WhatsApp Cloud…) and their webhooks. */
 class IntegrationController extends Controller
 {
-    private const PROVIDERS = ['rajaongkir', 'biteship', 'midtrans', 'shopee_affiliate', 'serpapi', 'whatsapp_cloud'];
+    private const PROVIDERS = ['rajaongkir', 'midtrans', 'shopee_affiliate', 'serpapi', 'whatsapp_cloud'];
 
     public function index(Request $request)
     {
@@ -29,20 +27,24 @@ class IntegrationController extends Controller
     }
 
     /** Save keys, verify them against the provider, and keep them only if they work. */
+    /** Run only on Pesanin's own keys from .env: shown as status, not editable by sellers. */
+    private const ENV_ONLY = ['rajaongkir', 'midtrans'];
+
     public function save(Request $request, string $provider)
     {
+        abort_if(in_array($provider, self::ENV_ONLY, true), 422, 'Integrasi ini dikelola Pesanin dan tidak perlu diisi.');
         abort_unless(in_array($provider, self::PROVIDERS, true), 404);
         $user = $request->user();
         $existing = $user->integrations()->where('provider', $provider)->first();
 
-        $data = $request->validate(in_array($provider, ['rajaongkir', 'serpapi'], true)
+        $data = $request->validate($provider === 'rajaongkir'
+            ? ['api_key' => [$existing ? 'nullable' : 'required', 'string', 'max:300'], 'delivery_enabled' => 'sometimes|boolean', 'delivery_sandbox' => 'sometimes|boolean', 'delivery_vehicle' => 'sometimes|in:Motor,Mobil,Truk']
+            : ($provider === 'serpapi'
             ? ['api_key' => [$existing ? 'nullable' : 'required', 'string', 'max:300']]
             : ($provider === 'whatsapp_cloud'
             ? ['phone_number_id' => [$existing ? 'nullable' : 'required', 'regex:/^\d{6,30}$/'], 'access_token' => [$existing ? 'nullable' : 'required', 'string', 'max:600'], 'app_secret' => ['nullable', 'string', 'max:100'], 'waba_id' => ['nullable', 'regex:/^\d{6,30}$/']]
             : ($provider === 'shopee_affiliate'
             ? ['app_id' => [$existing ? 'nullable' : 'required', 'string', 'max:100'], 'secret' => [$existing ? 'nullable' : 'required', 'string', 'max:200']]
-            : ($provider === 'biteship'
-            ? ['api_key' => [$existing ? 'nullable' : 'required', 'string', 'max:300'], 'cod_type' => 'nullable|in:7_days,5_days,3_days']
             : ['server_key' => [$existing ? 'nullable' : 'required', 'string', 'max:200'], 'client_key' => ['nullable', 'string', 'max:200'], 'signature_key' => ['nullable', 'string', 'max:200'], 'is_production' => 'required|boolean']))));
 
         $creds = array_merge($existing?->credentials ?? [], array_filter(collect($data)->only(['api_key', 'server_key', 'client_key', 'signature_key', 'app_id', 'secret', 'access_token', 'app_secret'])->all()));
@@ -50,12 +52,16 @@ class IntegrationController extends Controller
         $integration->fill([
             'credentials' => $creds,
             'is_production' => match ($provider) {
-                'biteship' => ! str_starts_with((string) ($creds['api_key'] ?? ''), 'biteship_test'),
                 'rajaongkir', 'shopee_affiliate', 'serpapi', 'whatsapp_cloud' => true,
                 default => (bool) $data['is_production'],
             },
             'settings' => match ($provider) {
-                'biteship' => ['cod_type' => $data['cod_type'] ?? ($existing?->settings['cod_type'] ?? '7_days')],
+                // Komerce Delivery (pesan kurir + resi otomatis) uses the same Shipping API key.
+                'rajaongkir' => array_merge($existing?->settings ?? [], ['delivery' => [
+                    'enabled' => (bool) ($data['delivery_enabled'] ?? ($existing?->settings['delivery']['enabled'] ?? false)),
+                    'sandbox' => (bool) ($data['delivery_sandbox'] ?? ($existing?->settings['delivery']['sandbox'] ?? false)),
+                    'vehicle' => $data['delivery_vehicle'] ?? ($existing?->settings['delivery']['vehicle'] ?? 'Motor'),
+                ]]),
                 'whatsapp_cloud' => array_merge($existing?->settings ?? [], array_filter(['phone_number_id' => $data['phone_number_id'] ?? null, 'waba_id' => $data['waba_id'] ?? null])),
                 default => null,
             },
@@ -63,14 +69,14 @@ class IntegrationController extends Controller
 
         try {
             match ($provider) {
-                'rajaongkir' => (new \App\Support\RajaOngkir\RajaOngkir($integration))->verify(),
+                'rajaongkir' => [(new \App\Support\RajaOngkir\RajaOngkir($integration))->verify(),
+                    ! empty($integration->settings['delivery']['enabled']) ? (new \App\Support\RajaOngkir\KomerceDelivery($integration))->verify() : null],
                 'shopee_affiliate' => (new \App\Support\Research\ShopeeAffiliate($integration))->verify(),
                 'serpapi' => (new \App\Support\Research\GoogleTrends($integration))->account(),
                 // Number details double as the connection test; kept to label the chat source.
                 'whatsapp_cloud' => $integration->settings = array_merge($integration->settings ?? [], (fn ($n) => [
                     'display_phone' => $n['display_phone_number'] ?? null, 'verified_name' => $n['verified_name'] ?? null, 'quality' => $n['quality_rating'] ?? null,
                 ])(\App\Support\WhatsApp\WhatsAppCloud::for($integration)->info())),
-                'biteship' => (new Biteship($integration))->couriers(),
                 default => (new Midtrans($creds['server_key'], (bool) $integration->is_production, $creds['signature_key'] ?? null))->verify(),
             };
         } catch (Throwable $e) {
@@ -110,57 +116,28 @@ class IntegrationController extends Controller
         return response()->noContent();
     }
 
-    /** Book Biteship shipments for web/manual orders: waybill issued, courier pickup requested. */
-    public function ship(Request $request)
+    /** "Pesan kurir": book web/manual orders through Komerce Delivery (waybill + courier pickup). */
+    public function book(Request $request)
     {
         $data = $request->validate(['order_ids' => 'required|array|min:1|max:50', 'order_ids.*' => 'integer']);
         $user = $request->user();
-        $client = Biteship::for($user->integration('biteship'));
-        abort_unless($client, 422, 'Hubungkan Biteship dulu di Pengaturan → Integrasi.');
-
+        $api = \App\Support\RajaOngkir\KomerceDelivery::for(\App\Support\RajaOngkir\RajaOngkir::account($user->integration('rajaongkir')));
+        abort_unless($api, 422, 'Layanan pesan kurir Pesanin belum aktif. Sementara isi resi manual.');
         $done = [];
         $failed = [];
-        foreach ($user->orders()->whereIn('id', $data['order_ids'])->where('channel', '!=', 'shopee')->get() as $order) {
-            if ($order->shipping_ref || $order->shipping_status !== 'not_shipped' || in_array($order->status, ['cancelled', 'refunded'], true)) {
-                $failed[] = ['code' => $order->code, 'error' => 'sudah dikirim atau dibatalkan'];
+        foreach ($user->orders()->whereIn('id', $data['order_ids'])->get() as $order) {
+            if ($why = \App\Support\RajaOngkir\CourierBooking::blocker($order, $user)) {
+                $failed[] = ['code' => $order->code, 'error' => $why];
+
                 continue;
             }
-            if ($order->payment_method !== 'cod' && $order->payment_status !== 'paid') {
-                $failed[] = ['code' => $order->code, 'error' => 'belum dibayar'];
-                continue;
-            }
-            try {
-                Biteship::apply($order, $client->createOrder($order));
-                $done[] = ['code' => $order->code, 'waybill' => $order->tracking_number];
-            } catch (BiteshipException $e) {
-                $failed[] = ['code' => $order->code, 'error' => $e->getMessage()];
-            }
+            $order->auto_ship_tries = 0;
+            ($error = \App\Support\RajaOngkir\CourierBooking::book($order, $api))
+                ? $failed[] = ['code' => $order->code, 'error' => $error]
+                : $done[] = ['code' => $order->code, 'waybill' => $order->tracking_number];
         }
 
         return ['shipped' => $done, 'failed' => $failed];
-    }
-
-    /**
-     * Biteship webhook (URL shown in Pengaturan → Integrasi, one per seller). The payload is not
-     * trusted as-is: the order is re-read from Biteship with the seller's key before applying.
-     */
-    public function biteshipWebhook(Request $request, string $token)
-    {
-        $integration = UserIntegration::where('provider', 'biteship')->where('webhook_token', $token)->first();
-        $id = $request->input('order_id') ?? $request->input('id');
-        if (! $integration || ! $id) {
-            return response()->json(['ok' => true]); // Biteship's install check posts an empty body
-        }
-        $order = Order::where('user_id', $integration->user_id)->where('shipping_ref', $id)->first();
-        if ($order) {
-            try {
-                Biteship::apply($order, (new Biteship($integration))->order($id));
-            } catch (Throwable $e) {
-                $integration->update(['last_error' => mb_substr('Webhook: '.$e->getMessage(), 0, 250)]);
-            }
-        }
-
-        return response()->json(['ok' => true]);
     }
 
     /** Midtrans payment notification for buyer orders (seller keys) and subscription invoices (platform keys). */
@@ -189,9 +166,12 @@ class IntegrationController extends Controller
             return response()->json(['ok' => true]);
         }
 
+        // The payment page was made with the seller's Midtrans or, when they have none, Pesanin's platform account.
+        // Accept either key, so a payment made on the platform still lands if the seller connects their own Midtrans later.
         $order = Order::with('user.integrations')->where('code', $orderId)->first();
-        $mt = $order ? Midtrans::forSeller($order->user?->integration('midtrans')) : null;
-        abort_unless($order && $mt && $mt->validSignature($n), 403);
+        $valid = $order ? collect([Midtrans::platform(), Midtrans::legacySeller($order->user?->integration('midtrans'))])
+            ->filter()->first(fn (Midtrans $mt) => $mt->validSignature($n)) : null;
+        abort_unless($order && $valid, 403);
 
         Midtrans::applyToOrder($order, $n);
 
@@ -201,7 +181,8 @@ class IntegrationController extends Controller
     private function present(?UserIntegration $i, ?string $provider = null): array
     {
         $p = $provider ?? $i?->provider;
-        $mask = fn (?string $k) => $k ? substr($k, 0, 12).'…'.substr($k, -4) : null;
+        // Enough to recognise which key is saved, never enough to reuse it.
+        $mask = fn (?string $k) => $k ? substr($k, 0, 4).'…'.substr($k, -4) : null;
 
         if ($p === 'midtrans' && config('services.midtrans.server_key')) {
             return [
@@ -222,6 +203,19 @@ class IntegrationController extends Controller
             ];
         }
 
+        // RajaOngkir / Komerce runs on Pesanin's .env account only.
+        if ($p === 'rajaongkir') {
+            $env = \App\Support\RajaOngkir\RajaOngkir::platform();
+            if (! $env) {
+                return ['connected' => false, 'from_env' => true];
+            }
+            return ['connected' => true, 'is_production' => ! config('services.rajaongkir.sandbox'), 'verified_at' => now(), 'last_error' => null,
+                'settings' => $env->settings, 'keys' => ['api_key' => $mask($env->key('api_key'))], 'webhook_url' => null, 'verify_token' => null, 'details' => null, 'from_env' => true];
+        }
+        if ($p === 'midtrans' && ! config('services.midtrans.server_key')) {
+            return ['connected' => false, 'from_env' => true];
+        }
+
         if (! $i) {
             return ['connected' => false];
         }
@@ -239,7 +233,6 @@ class IntegrationController extends Controller
                 default => ['api_key' => $mask($i->key('api_key'))],
             },
             'webhook_url' => match ($i->provider) {
-                'biteship' => rtrim(config('app.url'), '/').'/api/biteship/webhook/'.$i->webhook_token,
                 'whatsapp_cloud' => rtrim(config('services.whatsapp.webhook_base') ?: config('app.url'), '/').'/api/whatsapp/webhook/'.$i->webhook_token,
                 default => null,
             },

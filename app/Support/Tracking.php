@@ -74,25 +74,10 @@ class Tracking
             }
         }
 
-        // Seller's Biteship: tracks any waybill of a supported courier, booked through Biteship or not.
-        $biteship = $order->channel !== 'shopee' ? \App\Support\Biteship\Biteship::for($order->user?->integration('biteship')) : null;
-        $bCourier = $order->courier_code ? strtok($order->courier_code, ':') : self::biteshipCode($order->courier);
-        if ($biteship && $order->tracking_number && $bCourier) {
-            try {
-                $t = $biteship->tracking($order->tracking_number, $bCourier);
-                $events = collect($t['history'] ?? [])->map(fn ($e) => [
-                    'time' => isset($e['updated_at']) ? Carbon::parse($e['updated_at'])->toIso8601String() : null,
-                    'text' => trim($e['note'] ?? ($e['status'] ?? '')), 'location' => null,
-                ])->sortByDesc('time')->values()->all();
-
-                return ['status' => self::biteshipStatus($t['status'] ?? null), 'source' => 'biteship', 'events' => $events, 'track_url' => $t['link'] ?? $url] + $base;
-            } catch (Throwable $e) {
-                $base['note'] = 'Biteship: '.$e->getMessage();
-            }
-        }
+        $bCourier = $order->courier_code ? strtok($order->courier_code, ':') : self::courierCode($order->courier);
 
         // Seller's RajaOngkir: waybill tracking for the major couriers.
-        $ro = $order->channel !== 'shopee' ? \App\Support\RajaOngkir\RajaOngkir::for($order->user?->integration('rajaongkir')) : null;
+        $ro = $order->channel !== 'shopee' ? \App\Support\RajaOngkir\RajaOngkir::for(\App\Support\RajaOngkir\RajaOngkir::account($order->user?->integration('rajaongkir'))) : null;
         if ($ro && $order->tracking_number && $bCourier) {
             try {
                 $t = $ro->track($order->tracking_number, $bCourier, $order->phone);
@@ -145,7 +130,7 @@ class Tracking
         ])->sortByDesc('time')->values()->all();
     }
 
-    private static function biteshipCode(?string $courier): ?string
+    private static function courierCode(?string $courier): ?string
     {
         $n = strtolower((string) $courier);
         foreach (['j&t cargo' => null, 'j&t' => 'jnt', 'jne' => 'jne', 'sicepat' => 'sicepat', 'sap' => 'sap', 'anteraja' => 'anteraja',
@@ -156,20 +141,6 @@ class Tracking
         }
 
         return null;
-    }
-
-    private static function biteshipStatus(?string $s): ?string
-    {
-        return match ($s) {
-            'confirmed', 'allocated', 'picking_up' => 'Menunggu dijemput kurir',
-            'picked' => 'Sudah dijemput kurir',
-            'dropping_off' => 'Dalam pengiriman',
-            'delivered' => 'Terkirim',
-            'return_in_transit' => 'Dalam proses retur',
-            'returned' => 'Dikembalikan ke pengirim',
-            'cancelled', 'rejected' => 'Dibatalkan',
-            default => $s,
-        };
     }
 
     private static function shopeeStatus(?string $s): ?string

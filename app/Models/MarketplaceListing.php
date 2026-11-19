@@ -14,6 +14,11 @@ class MarketplaceListing extends Model
         return $this->belongsTo(MarketplaceShop::class, 'marketplace_shop_id');
     }
 
+    public function stockMaster(): BelongsTo
+    {
+        return $this->belongsTo(StockMaster::class);
+    }
+
     public function product(): BelongsTo
     {
         return $this->belongsTo(Product::class);

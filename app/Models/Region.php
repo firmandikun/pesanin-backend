@@ -10,7 +10,7 @@ class Region extends Model
 
     protected $guarded = ['id'];
 
-    protected $hidden = ['biteship_area_id', 'rajaongkir_id'];
+    protected $hidden = ['biteship_area_id', 'rajaongkir_id']; // biteship_area_id: legacy column, no longer used
 
     protected $appends = ['label'];
 

@@ -31,9 +31,12 @@ class ResourceController extends Controller
         return match ($type) {
             'domains' => [CustomDomain::class, ['domain' => ['required', 'string', 'max:120', 'regex:/^(?!-)[a-z0-9-]+(\.[a-z0-9-]+)+$/i']], 'domain'],
             'pixels' => [TrackingPixel::class, [
-                'platform' => 'required|in:facebook,tiktok,google_ads,gtm,snack',
-                'pixel_id' => ['required', 'string', 'max:60', 'regex:/^[A-Za-z0-9_-]+$/'],
-                'name' => 'nullable|string|max:80', 'server_side' => 'boolean',
+                'platform' => 'required|in:facebook,tiktok,google_ads,gtm',
+                // Google Ads: "AW-123456789" or "AW-123456789/ConversionLabel" (label needed to count purchases).
+                'pixel_id' => ['required', 'string', 'max:80', 'regex:/^[A-Za-z0-9_-]+(\/[A-Za-z0-9_-]+)?$/'],
+                'name' => 'nullable|string|max:80', 'all_pages' => 'boolean',
+                // Meta Conversions API (Facebook only): token from Events Manager → Settings → Conversions API.
+                'server_side' => 'boolean', 'capi_token' => 'nullable|string|max:500', 'capi_test_code' => ['nullable', 'string', 'max:40', 'regex:/^[A-Za-z0-9]+$/'],
             ], 'pixel_id'],
             'notification-accounts' => [NotificationAccount::class, [
                 'type' => 'required|in:email,telegram', 'name' => 'required|string|max:80',
@@ -151,6 +154,9 @@ class ResourceController extends Controller
             if (array_key_exists('email', $data) && ! $data['email']) {
                 $data['password'] = null;
             }
+        }
+        if ($type === 'pixels' && array_key_exists('capi_token', $data) && blank($data['capi_token'])) {
+            unset($data['capi_token']); // blank keeps the saved token (it is never sent back to the browser)
         }
         $item->update($data);
         if ($type === 'team' && ! empty($signOut)) {

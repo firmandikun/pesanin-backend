@@ -110,7 +110,7 @@ class User extends Authenticatable
         return $this->hasMany(UserIntegration::class);
     }
 
-    /** The seller's connected Biteship / Midtrans account, or null. */
+    /** The seller's connected integration (RajaOngkir, Midtrans, …), or null. */
     public function integration(string $provider): ?UserIntegration
     {
         return $this->integrations->first(fn ($i) => $i->provider === $provider && $i->status === 'active');

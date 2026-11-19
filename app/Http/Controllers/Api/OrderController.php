@@ -38,6 +38,8 @@ class OrderController extends Controller
         $orders = $query->with(['product:id,name,type', 'marketplaceShop:id,shop_name,is_demo'])
             ->orderBy(in_array($request->query('sort'), self::SORTABLE, true) ? $request->query('sort') : 'created_at', $request->query('dir') === 'asc' ? 'asc' : 'desc')
             ->paginate(min(1000, max(1, $request->integer('per_page', 10))));
+        // Orders over the monthly plan quota: buyer details stay locked until the seller upgrades.
+        $orders->getCollection()->each(fn (Order $o) => \App\Support\OrderQuota::mask($o, $request->user()));
         if ($request->query('channel') === 'shopee') {
             \App\Support\Shopee\ShopeeSync::withListingSkus($orders->getCollection());
         }
@@ -83,7 +85,7 @@ class OrderController extends Controller
     {
         $this->authorizeOwner($request, $order);
 
-        return $order->load('product');
+        return \App\Support\OrderQuota::mask($order->load('product'), $request->user());
     }
 
     /** "Cek resi": courier checkpoints for one order (Shopee, BinderByte or Pesanin's own history). */
@@ -103,6 +105,7 @@ class OrderController extends Controller
 
         $order = CheckoutService::place($product, $data, ['source' => 'manual', 'utm_source' => $data['utm_source'] ?? 'manual']);
         ActivityLog::record($request->user(), 'order.create', "Input order manual {$order->code}");
+        \App\Support\OrderQuota::warn($request->user());
 
         return response()->json($order, 201);
     }
@@ -178,6 +181,7 @@ class OrderController extends Controller
     {
         $this->authorizeOwner($request, $order);
         $data = $request->validate(['event' => 'required|string']);
+        abort_if(\App\Support\OrderQuota::locked($order, $request->user()), 402, 'Data pembeli pesanan ini terkunci karena kuota pesanan bulan ini habis. Upgrade paket untuk membukanya.');
         $template = $request->user()->followupTemplates()->where('event', $data['event'])->firstOrFail();
         $order->load('product', 'user');
         $order->increment('followup_count');
@@ -187,7 +191,7 @@ class OrderController extends Controller
 
     public function export(Request $request)
     {
-        $orders = $this->filtered($request)->with('product:id,name')->latest()->get();
+        $orders = $this->filtered($request)->with('product:id,name')->latest()->get()->each(fn (Order $o) => \App\Support\OrderQuota::mask($o, $request->user()));
         $cols = ['code', 'created_at', 'customer_name', 'phone', 'address', 'district', 'city', 'province', 'product', 'variant', 'quantity',
             'subtotal', 'shipping_cost', 'cod_fee', 'total', 'payment_method', 'payment_status', 'status', 'courier', 'shipping_status', 'tracking_number', 'utm_source'];
 

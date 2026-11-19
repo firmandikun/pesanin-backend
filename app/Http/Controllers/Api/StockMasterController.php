@@ -1,0 +1,138 @@
+<?php
+
+namespace App\Http\Controllers\Api;
+
+use App\Http\Controllers\Controller;
+use App\Models\MarketplaceListing;
+use App\Models\StockMaster;
+use App\Support\MasterStock;
+use App\Support\Plans;
+use Illuminate\Http\Request;
+
+/** Marketplace → Stok Master: one stock per SKU across every Shopee shop. */
+class StockMasterController extends Controller
+{
+    public function index(Request $request)
+    {
+        $user = $request->user();
+        $q = StockMaster::where('user_id', $user->id)
+            ->with(['listings' => fn ($l) => $l->select('id', 'stock_master_id', 'marketplace_shop_id', 'item_id', 'model_id', 'name', 'model_name', 'sku', 'stock', 'stock_push_error', 'image', 'status')
+                ->with('shop:id,shop_name,is_demo,status')])
+            ->when($request->query('search'), fn ($w, $s) => $w->where(fn ($x) => $x->where('sku', 'like', "%{$s}%")->orWhere('name', 'like', "%{$s}%")))
+            ->when($request->query('filter') === 'empty', fn ($w) => $w->where('stock', '<=', 0))
+            ->when($request->query('filter') === 'error', fn ($w) => $w->whereHas('listings', fn ($l) => $l->whereNotNull('stock_push_error')))
+            ->orderBy('sku');
+        $listings = MarketplaceListing::where('user_id', $user->id)->whereHas('shop', fn ($s) => $s->where('status', '!=', 'disconnected'));
+        // SKUs used by 2+ listings that have no master yet: what "Buat dari SKU yang sama" would create.
+        $candidates = (clone $listings)->whereNull('stock_master_id')->whereNotNull('sku')->where('sku', '!=', '')->get(['sku'])
+            ->groupBy(fn ($l) => MasterStock::norm($l->sku))->filter(fn ($g) => $g->count() >= 2)->count();
+
+        return [
+            'masters' => $q->paginate(min(100, max(1, $request->integer('per_page', 20)))),
+            'stats' => [
+                'masters' => StockMaster::where('user_id', $user->id)->count(),
+                'linked' => (clone $listings)->whereNotNull('stock_master_id')->count(),
+                'unlinked_with_sku' => (clone $listings)->whereNull('stock_master_id')->whereNotNull('sku')->where('sku', '!=', '')->count(),
+                'without_sku' => (clone $listings)->where(fn ($w) => $w->whereNull('sku')->orWhere('sku', ''))->count(),
+                'candidates' => $candidates,
+                'empty' => StockMaster::where('user_id', $user->id)->where('stock', '<=', 0)->count(),
+                'errors' => (clone $listings)->whereNotNull('stock_master_id')->whereNotNull('stock_push_error')->count(),
+            ],
+        ];
+    }
+
+    /** "Buat dari SKU yang sama": masters for every SKU shared by 2+ listings (starting stock = the lowest of them). */
+    public function generate(Request $request)
+    {
+        Plans::ensureFeature($request->user(), 'stock_master');
+        $r = MasterStock::generate($request->user());
+        MasterStock::pushPending();
+
+        return $r;
+    }
+
+    /** A master for one listing's SKU (also when only one shop sells it yet), starting from that listing's stock. */
+    public function store(Request $request)
+    {
+        Plans::ensureFeature($request->user(), 'stock_master');
+        $d = $request->validate(['listing_id' => 'required|integer']);
+        $listing = MarketplaceListing::where('user_id', $request->user()->id)->findOrFail($d['listing_id']);
+        abort_if(MasterStock::norm($listing->sku) === '', 422, 'Listing ini belum punya SKU. Isi SKU di Seller Centre dulu, lalu sinkronkan produk.');
+        $master = MasterStock::find($request->user(), $listing->sku);
+        if (! $master) {
+            $master = new StockMaster(['sku' => trim($listing->sku), 'name' => $listing->name.($listing->model_name ? " · {$listing->model_name}" : ''),
+                'image' => $listing->image, 'stock' => max(0, $listing->stock), 'tracking_since' => now()]);
+            $master->user_id = $request->user()->id;
+            $master->save();
+        }
+        MasterStock::attach($master, $listing);
+        MarketplaceListing::where('user_id', $request->user()->id)->whereNull('stock_master_id')->whereRaw('LOWER(TRIM(sku)) = ?', [MasterStock::norm($listing->sku)])
+            ->update(['stock_master_id' => $master->id]);
+        MasterStock::push($master);
+
+        return $master->load('listings.shop:id,shop_name,is_demo,status');
+    }
+
+    public function update(Request $request, StockMaster $master)
+    {
+        $this->own($request, $master);
+        Plans::ensureFeature($request->user(), 'stock_master');
+        $d = $request->validate(['stock' => 'required|integer|min:0|max:999999', 'note' => 'nullable|string|max:190']);
+        MasterStock::setStock($master, $d['stock'], $d['note'] ?? 'Ubah manual');
+        MasterStock::push($master);
+
+        return $master->refresh()->load('listings.shop:id,shop_name,is_demo,status');
+    }
+
+    /** Link another listing (e.g. one with a different/empty SKU) to this master. */
+    public function attach(Request $request, StockMaster $master)
+    {
+        $this->own($request, $master);
+        Plans::ensureFeature($request->user(), 'stock_master');
+        $d = $request->validate(['listing_id' => 'required|integer']);
+        $listing = MarketplaceListing::where('user_id', $request->user()->id)->findOrFail($d['listing_id']);
+        MasterStock::attach($master, $listing);
+        MasterStock::push($master);
+
+        return $master->refresh()->load('listings.shop:id,shop_name,is_demo,status');
+    }
+
+    public function detach(Request $request, StockMaster $master, MarketplaceListing $listing)
+    {
+        $this->own($request, $master);
+        abort_unless($listing->stock_master_id === $master->id, 404);
+        $listing->update(['stock_master_id' => null, 'stock_push_error' => null]);
+
+        return $master->refresh()->load('listings.shop:id,shop_name,is_demo,status');
+    }
+
+    public function push(Request $request, StockMaster $master)
+    {
+        $this->own($request, $master);
+        MasterStock::push($master);
+
+        return $master->refresh()->load('listings.shop:id,shop_name,is_demo,status');
+    }
+
+    public function movements(Request $request, StockMaster $master)
+    {
+        $this->own($request, $master);
+
+        return $master->movements()->latest('id')->limit(50)->get(['id', 'kind', 'qty', 'stock_after', 'note', 'order_id', 'created_at']);
+    }
+
+    /** Stop sharing: listings keep their current stock in Shopee and are managed per shop again. */
+    public function destroy(Request $request, StockMaster $master)
+    {
+        $this->own($request, $master);
+        MarketplaceListing::where('stock_master_id', $master->id)->update(['stock_master_id' => null, 'stock_push_error' => null]);
+        $master->delete();
+
+        return response()->noContent();
+    }
+
+    private function own(Request $request, StockMaster $master): void
+    {
+        abort_unless($master->user_id === $request->user()->id, 404);
+    }
+}

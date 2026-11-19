@@ -44,7 +44,8 @@ class ShopeeWalletBalanceTest extends TestCase
         });
 
         $res = $this->actingAs($user)->getJson('/api/balance')->assertOk()->json();
-        $this->assertSame(150000, $res['available']); // the Shopee order is not in Pesanin's balance
+        $this->assertSame(150000, $res['period']['direct_received']); // the Shopee order is not in Pesanin's balance
+        $this->assertSame(0, $res['held']); // a bank transfer goes straight to the seller, Pesanin holds nothing
         $this->assertArrayNotHasKey('shopee', $res); // Shopee money lives on Marketplace → Saldo
 
         $mp = $this->getJson('/api/marketplace/balance')->assertOk()->json();

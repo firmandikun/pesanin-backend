@@ -26,7 +26,9 @@ class LabelController extends Controller
                 'name' => $user->store_name, 'phone' => $sender?->phone ?? $user->whatsapp,
                 'address' => $sender ? trim($sender->address.', '.($sender->region?->district ?? '').', '.($sender->region?->city ?? '')) : null,
             ],
-            'orders' => $user->orders()->whereIn('id', $ids)->with(['product:id,name,sku,weight', 'marketplaceShop:id,shop_name,is_demo'])->get(),
+            // Over-quota orders are left out until the seller upgrades (no buyer address to print).
+            'orders' => $user->orders()->whereIn('id', $ids)->with(['product:id,name,sku,weight', 'marketplaceShop:id,shop_name,is_demo'])->get()
+                ->reject(fn ($o) => \App\Support\OrderQuota::locked($o, $user))->values(),
         ];
     }
 

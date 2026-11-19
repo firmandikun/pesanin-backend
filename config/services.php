@@ -50,6 +50,16 @@ return [
         'production' => (bool) env('MIDTRANS_PRODUCTION', false),
     ],
 
+    // RajaOngkir / Komerce owned by Pesanin. Two keys from collaborator.komerce.id → Developer → Settings → Api Key:
+    // "Shipping Cost" (ongkir, region search, waybill tracking) and "Shipping Delivery" (courier booking + resi).
+    'rajaongkir' => [
+        'key' => env('RAJAONGKIR_API_KEY'),
+        'delivery_key' => env('KOMERCE_DELIVERY_API_KEY'),
+        'delivery' => (bool) env('KOMERCE_DELIVERY', false),
+        'sandbox' => (bool) env('KOMERCE_SANDBOX', false),
+        'vehicle' => env('KOMERCE_PICKUP_VEHICLE', 'Motor'),
+    ],
+
     // Web Push (VAPID) for new-order notifications. Generate keys: php artisan webpush:vapid
     'webpush' => [
         'public_key' => env('VAPID_PUBLIC_KEY'),

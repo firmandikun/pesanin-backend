@@ -29,13 +29,22 @@ class Midtrans
         private ?string $signatureKey = null
     ) {}
 
+    /**
+     * Midtrans for a seller's checkout. Every e-payment now goes through Pesanin's own account from .env (sellers no
+     * longer connect their own keys), so this is the platform account.
+     */
     public static function forSeller(?UserIntegration $i = null): ?self
     {
-        if ($i && $i->provider === 'midtrans' && $i->key('server_key')) {
-            return new self($i->key('server_key'), (bool) $i->is_production, $i->key('signature_key'));
-        }
-
         return self::platform();
+    }
+
+    /**
+     * A seller's previously connected keys (no fallback). Only used to verify notifications / status of payments
+     * that were started with them before keys moved to .env.
+     */
+    public static function legacySeller(?UserIntegration $i): ?self
+    {
+        return $i && $i->provider === 'midtrans' && $i->key('server_key') ? new self($i->key('server_key'), (bool) $i->is_production, $i->key('signature_key')) : null;
     }
 
     public static function platform(): ?self

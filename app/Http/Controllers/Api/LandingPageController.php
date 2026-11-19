@@ -156,7 +156,7 @@ class LandingPageController extends Controller
                 'store' => [
                     'store_name' => $p->user->store_name,
                     'cod_fee_percent' => $p->user->cod_fee_percent,
-                    'origin' => $p->user->pickupAddress()?->region?->city,
+                    'origin' => $p->type === 'physical' ? CheckoutService::origin($p)?->city : null,
                 ],
             ]]);
 
@@ -164,6 +164,7 @@ class LandingPageController extends Controller
             'page' => $page->only(['title', 'slug', 'theme', 'seo', 'settings', 'blocks']),
             'store' => ['store_name' => $page->user->store_name, 'whatsapp' => $page->settings['whatsapp'] ?? $page->user->whatsapp],
             'products' => $products,
+            'global_pixels' => \App\Models\TrackingPixel::globalFor($page->user),
         ];
     }
 

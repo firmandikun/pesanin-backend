@@ -81,6 +81,66 @@ class ShopeeClient
         ])['response'] ?? [];
     }
 
+    /* ---------- Kesehatan akun (v2.account_health) ---------- */
+
+    public function shopPerformance(MarketplaceShop $shop): array
+    {
+        return $this->get($shop, '/api/v2/account_health/get_shop_performance')['response'] ?? [];
+    }
+
+    /** Penalty point records of the current quarter (all pages, up to 500). */
+    public function penaltyPoints(MarketplaceShop $shop): array
+    {
+        return $this->pages($shop, '/api/v2/account_health/get_penalty_point_history', 'penalty_point_list');
+    }
+
+    public function lateOrders(MarketplaceShop $shop): array
+    {
+        return $this->pages($shop, '/api/v2/account_health/get_late_orders', 'late_order_list');
+    }
+
+    public function listingsWithIssues(MarketplaceShop $shop): array
+    {
+        return $this->pages($shop, '/api/v2/account_health/get_listings_with_issues', 'listing_list');
+    }
+
+    /** page_no / page_size lists of account_health, read until total_count (max 5 pages of 100). */
+    private function pages(MarketplaceShop $shop, string $path, string $key): array
+    {
+        $out = [];
+        for ($page = 1; $page <= 5; $page++) {
+            $r = $this->get($shop, $path, ['page_no' => $page, 'page_size' => 100])['response'] ?? [];
+            $out = [...$out, ...($r[$key] ?? [])];
+            if (count($out) >= (int) ($r['total_count'] ?? 0) || empty($r[$key])) {
+                break;
+            }
+        }
+
+        return $out;
+    }
+
+    /* ---------- Ulasan pembeli (v2.product.get_comment / reply_comment) ---------- */
+
+    /** One page of the shop's product reviews, newest first. */
+    public function comments(MarketplaceShop $shop, string $cursor = '', int $pageSize = 100, ?int $itemId = null): array
+    {
+        return $this->get($shop, '/api/v2/product/get_comment', array_filter(['cursor' => $cursor, 'page_size' => $pageSize, 'item_id' => $itemId], fn ($v) => $v !== null))['response'] ?? [];
+    }
+
+    /**
+     * Reply to reviews. @param array<int|string,string> $replies comment_id => text (≤ 100)
+     * @return array<string,string> comment_id => Shopee's reason, for the replies it refused
+     */
+    public function replyComments(MarketplaceShop $shop, array $replies): array
+    {
+        $res = $this->post($shop, '/api/v2/product/reply_comment', [
+            'comment_list' => collect($replies)->map(fn ($text, $id) => ['comment_id' => (int) $id, 'comment' => $text])->values()->all(),
+        ]);
+
+        return collect($res['response']['result_list'] ?? [])->filter(fn ($r) => ! empty($r['fail_error']))
+            ->mapWithKeys(fn ($r) => [(string) $r['comment_id'] => (string) ($r['fail_message'] ?: $r['fail_error'])])->all();
+    }
+
     /** @param int[] $itemIds up to 50 */
     public function itemBaseInfo(MarketplaceShop $shop, array $itemIds): array
     {
@@ -98,6 +158,20 @@ class ShopeeClient
             'item_id' => $itemId,
             'stock_list' => [['model_id' => $modelId, 'seller_stock' => [['stock' => $stock]]]],
         ]);
+    }
+
+    /**
+     * Set the stock of several models of one item in one call. @param array<int,int> $stocks model_id => stock
+     * @return array<int,string> model_id => Shopee's reason, for the models it refused (empty = all set)
+     */
+    public function updateStocks(MarketplaceShop $shop, int $itemId, array $stocks): array
+    {
+        $res = $this->post($shop, '/api/v2/product/update_stock', [
+            'item_id' => $itemId,
+            'stock_list' => collect($stocks)->map(fn ($stock, $modelId) => ['model_id' => (int) $modelId, 'seller_stock' => [['stock' => max(0, (int) $stock)]]])->values()->all(),
+        ]);
+
+        return collect($res['response']['failure_list'] ?? [])->mapWithKeys(fn ($f) => [(int) ($f['model_id'] ?? 0) => (string) ($f['failed_reason'] ?? 'ditolak Shopee')])->all();
     }
 
     public function orderList(MarketplaceShop $shop, int $from, int $to, string $cursor = '', string $field = 'create_time', ?string $status = null): array
@@ -459,6 +533,18 @@ class ShopeeClient
     }
 
     /** All product-ads campaign ids of the shop. */
+    /**
+     * Edit a manual product ad (incl. ad groups): "pause", "resume" or "change_roas_target" (auto-bidding ads).
+     * reference_id must be unique per request.
+     */
+    public function editManualAd(MarketplaceShop $shop, int $campaignId, string $action, array $extra = []): array
+    {
+        return $this->post($shop, '/api/v2/ads/edit_manual_product_ads', [
+            'reference_id' => 'pesanin-'.$campaignId.'-'.\Illuminate\Support\Str::random(12),
+            'campaign_id' => $campaignId, 'edit_action' => $action,
+        ] + $extra)['response'] ?? [];
+    }
+
     public function adCampaignIds(MarketplaceShop $shop): array
     {
         return array_column($this->adCampaignList($shop), 'campaign_id');

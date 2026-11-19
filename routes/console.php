@@ -39,6 +39,16 @@ Artisan::command('marketplace:sync {--what=orders}', function () {
             $this->warn("{$shop->shop_name}: {$e->getMessage()}");
         }
     }
+    // Penjaga Iklan: right after fresh ad numbers, alert (and optionally act) on ads below break-even.
+    if ($this->option('what') === 'ads') {
+        foreach ($shops->pluck('user_id')->unique() as $userId) {
+            try {
+                \App\Support\AdsGuard::check(\App\Models\User::findOrFail($userId));
+            } catch (\Throwable $e) {
+                $this->warn("Penjaga iklan user {$userId}: {$e->getMessage()}");
+            }
+        }
+    }
     $this->info("Toko disinkronkan: {$shops->count()}");
 })->purpose('Sync connected Shopee shops');
 
@@ -87,7 +97,7 @@ Artisan::command('meta-chat:watch', function () {
 })->purpose('Notify new Meta chat messages');
 \Illuminate\Support\Facades\Schedule::command('meta-chat:watch')->everyThirtySeconds()->withoutOverlapping();
 
-// Orders: automatic resi once paid (Biteship) and automatic delivery of digital products.
+// Orders: Shopee auto-arrange, automatic delivery of digital products and stock master pushes.
 Artisan::command('orders:automate', function () {
     $r = \App\Support\OrderAutomation::run();
     if ($r['shipped'] || $r['delivered']) {
@@ -207,3 +217,31 @@ Artisan::command('marketplace:backfill {shop} {from}', function (int $shop, stri
         \Illuminate\Support\Facades\Cache::forget("shopee:backfill:{$s->id}");
     }
 })->purpose('Backfill older Shopee orders for a report date range');
+
+// Ulasan Shopee: sync hourly, auto-reply good reviews (if enabled), alert on low ratings.
+Artisan::command('shopee:reviews', function () {
+    $users = \App\Models\User::whereHas('marketplaceShops', fn ($q) => $q->where('platform', 'shopee')->where('status', 'active')->where('is_demo', false))->get();
+    $n = 0;
+    foreach ($users as $user) {
+        try {
+            $n += \App\Support\Shopee\ShopeeReviews::run($user);
+        } catch (\Throwable $e) {
+            $this->warn("Ulasan user {$user->id}: {$e->getMessage()}");
+        }
+    }
+    $this->info("Ulasan baru: {$n}");
+})->purpose('Sync Shopee reviews, auto-reply, alert low ratings');
+\Illuminate\Support\Facades\Schedule::command('shopee:reviews')->hourly()->withoutOverlapping();
+
+// Kesehatan akun Shopee: every morning, alert on new penalty points, late orders or a performance drop.
+Artisan::command('shopee:health', function () {
+    $users = \App\Models\User::whereHas('marketplaceShops', fn ($q) => $q->where('platform', 'shopee')->where('status', 'active')->where('is_demo', false))->get();
+    foreach ($users as $user) {
+        try {
+            \App\Support\Shopee\ShopeeHealth::check($user);
+        } catch (\Throwable $e) {
+            $this->warn("Kesehatan akun user {$user->id}: {$e->getMessage()}");
+        }
+    }
+})->purpose('Check Shopee account health and alert');
+\Illuminate\Support\Facades\Schedule::command('shopee:health')->dailyAt('08:00')->timezone('Asia/Jakarta');

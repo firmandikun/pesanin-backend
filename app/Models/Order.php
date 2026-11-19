@@ -13,6 +13,14 @@ class Order extends Model
 
     protected $hidden = ['checkout_token'];
 
+    /** Shipped by the Pesanin warehouse (adopted dropship product): the seller does not ship it. */
+    protected $appends = ['is_dropship'];
+
+    public function getIsDropshipAttribute(): bool
+    {
+        return (bool) $this->dropship_product_id;
+    }
+
     protected function casts(): array
     {
         return [
@@ -30,6 +38,8 @@ class Order extends Model
             'completed_at' => 'datetime',
             'archived_at' => 'datetime',
             'digital_sent_at' => 'datetime',
+            'dropship_paid_at' => 'datetime',
+            'over_quota' => 'boolean',
         ];
     }
 
@@ -37,6 +47,13 @@ class Order extends Model
     {
         static::creating(function (Order $order) {
             $order->code ??= 'FK'.now()->format('ymd').strtoupper(Str::random(5));
+        });
+        // A dropship order that becomes paid goes to the warehouse queue (admins are notified once).
+        static::saved(function (Order $order) {
+            if ($order->dropship_product_id && ! $order->is_abandoned && $order->payment_status === 'paid'
+                && ($order->wasChanged('payment_status') || ($order->wasRecentlyCreated && $order->payment_status === 'paid'))) {
+                \App\Support\Dropship::notifyPaid($order);
+            }
         });
         // Notify the seller the moment an order lands: new order, or a draft checkout completed.
         static::created(fn (Order $order) => \App\Support\Notifier::newOrder($order));
@@ -50,6 +67,11 @@ class Order extends Model
     public function user(): BelongsTo
     {
         return $this->belongsTo(User::class);
+    }
+
+    public function dropshipProduct(): BelongsTo
+    {
+        return $this->belongsTo(DropshipProduct::class);
     }
 
     public function product(): BelongsTo
