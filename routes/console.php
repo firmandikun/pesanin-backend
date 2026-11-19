@@ -245,3 +245,18 @@ Artisan::command('shopee:health', function () {
     }
 })->purpose('Check Shopee account health and alert');
 \Illuminate\Support\Facades\Schedule::command('shopee:health')->dailyAt('08:00')->timezone('Asia/Jakarta');
+
+// Tes konfigurasi SMTP (mis. Sumopod): php artisan mail:test tujuan@email.com
+Artisan::command('mail:test {to}', function (string $to) {
+    $cfg = config('mail.mailers.smtp');
+    $this->info('Mailer: '.config('mail.default').' · host: '.($cfg['host'] ?? '-').':'.($cfg['port'] ?? '-').' · scheme: '.($cfg['scheme'] ?? 'auto').' · from: '.config('mail.from.address'));
+    try {
+        \Illuminate\Support\Facades\Mail::raw('Ini email tes dari Pesanin. Kalau kamu menerima ini, SMTP sudah berfungsi.',
+            fn ($m) => $m->to($to)->subject('Tes SMTP Pesanin'));
+        $this->info("Terkirim ke {$to}. Cek inbox/spam.");
+    } catch (\Throwable $e) {
+        $this->error('Gagal: '.$e->getMessage());
+
+        return 1;
+    }
+})->purpose('Send a test email to verify SMTP config');

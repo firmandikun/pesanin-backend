@@ -166,7 +166,11 @@ class OrderAutomation
                 $store = $order->user->store_name;
                 $product = $order->product?->name ?? 'produk digital';
                 Mail::raw("Halo {$order->customer_name},\n\nTerima kasih, pembayaran pesanan {$order->code} sudah kami terima.\n\nAkses {$product} di link berikut:\n{$url}\n\nSimpan link ini agar bisa dibuka lagi kapan saja.\n\nSalam,\n{$store}",
-                    fn ($m) => $m->to($order->email, $order->customer_name)->subject("Akses {$product} – {$store}"));
+                    fn ($m) => $m->to($order->email, $order->customer_name)
+                        // Keep the verified sending address (Sumopod checks it), show the store as the name.
+                        ->from(config('mail.from.address'), $store ?: config('mail.from.name'))
+                        ->replyTo($order->user->email ?: config('mail.from.address'), $store ?: null)
+                        ->subject("Akses {$product} – {$store}"));
                 $sent[] = 'email';
             } catch (Throwable $e) {
                 $errors[] = 'Email: '.$e->getMessage();
