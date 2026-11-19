@@ -51,7 +51,7 @@ class AuthController extends Controller
             }
             ActivityLog::record($user, 'login', 'Login ke dashboard');
 
-            return ['token' => $user->createToken('web')->plainTextToken, 'user' => $user->toArray() + ['member' => null]];
+            return ['token' => $user->createToken('web')->plainTextToken, 'user' => $user->toArray() + ['member' => null, 'sidebar' => \App\Support\SidebarConfig::visible()]];
         }
 
         // Team member: signs in to the owner's store with a token named after the member.
@@ -63,7 +63,7 @@ class AuthController extends Controller
         $member->forceFill(['last_login_at' => now()])->save();
         ActivityLog::record($member->owner, 'login', "Login anggota tim: {$member->name}");
 
-        return ['token' => $member->owner->createToken($member->tokenName())->plainTextToken, 'user' => $member->owner->toArray() + ['member' => $this->memberInfo($member)]];
+        return ['token' => $member->owner->createToken($member->tokenName())->plainTextToken, 'user' => $member->owner->toArray() + ['member' => $this->memberInfo($member), 'sidebar' => \App\Support\SidebarConfig::visible()]];
     }
 
     /** "Masuk dengan Google": verify the Google ID token, then sign in (or create the store on first use). */
@@ -109,7 +109,10 @@ class AuthController extends Controller
     {
         $member = Member::current($request);
 
-        return $request->user()->toArray() + ['member' => $member ? $this->memberInfo($member) : null];
+        return $request->user()->toArray() + [
+            'member' => $member ? $this->memberInfo($member) : null,
+            'sidebar' => \App\Support\SidebarConfig::visible(),
+        ];
     }
 
     private function memberInfo(TeamMember $m): array

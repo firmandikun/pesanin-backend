@@ -16,10 +16,11 @@ class CheckoutService
 {
     public static function paymentMethods(Product $product): array
     {
-        $methods = $product->payment_methods ?: ['bank_transfer', 'cod'];
+        if (! empty($product->payment_methods)) {
+            return array_values(array_unique($product->payment_methods));
+        }
 
-        // COD only makes sense for physical goods.
-        return $product->type === 'digital' ? array_values(array_diff($methods, ['cod'])) ?: ['bank_transfer'] : $methods;
+        return $product->type === 'digital' ? ['bank_transfer', 'epayment'] : ['cod', 'bank_transfer', 'epayment'];
     }
 
     /** @return array{unit_price:int, subtotal:int, bump_price:int, bump_items:array, weight:int, rates:array, shipping:?array, shipping_cost:int, cod_fee:int, total:int, origin:?string} */

@@ -103,6 +103,8 @@ class DatabaseSeeder extends Seeder
                 'blocks' => \App\Support\LandingTemplates::blocks('product_solution', $toner),
             ]);
         }
+        $this->call(DropshipProductSeeder::class);
+
         if (Order::where('user_id', $user->id)->exists()) {
             return;
         }

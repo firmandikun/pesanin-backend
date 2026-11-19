@@ -77,9 +77,25 @@ Route::middleware(['auth:sanctum', 'member', 'admin'])->prefix('admin')->control
     Route::delete('/content/{type}/{id}', 'contentDestroy')->whereNumber('id');
 });
 
+Route::middleware(['auth:sanctum', 'member', 'admin'])->prefix('admin/dropship')->controller(\App\Http\Controllers\Api\DropshipController::class)->group(function () {
+    Route::get('/products', 'adminIndex');
+    Route::post('/products', 'adminStore');
+    Route::get('/products/{dropshipProduct}', 'adminShow');
+    Route::put('/products/{dropshipProduct}', 'adminUpdate');
+    Route::post('/products/{dropshipProduct}/duplicate', 'adminDuplicate');
+    Route::delete('/products/{dropshipProduct}', 'adminDestroy');
+});
+
 Route::middleware(['auth:sanctum', 'member', 'subscribed'])->group(function () {
     Route::get('/me', [AuthController::class, 'me']);
+    Route::get('/sidebar', fn () => ['items' => \App\Support\SidebarConfig::visible()]);
     Route::post('/logout', [AuthController::class, 'logout']);
+
+    Route::get('/dropship', [\App\Http\Controllers\Api\DropshipController::class, 'index']);
+    Route::get('/dropship/products/{dropshipProduct}', [\App\Http\Controllers\Api\DropshipController::class, 'show']);
+    Route::put('/dropship/profile', [\App\Http\Controllers\Api\DropshipController::class, 'saveProfile']);
+    Route::post('/dropship/adoptions', [\App\Http\Controllers\Api\DropshipController::class, 'adopt']);
+    Route::delete('/dropship/adoptions/{adoption}', [\App\Http\Controllers\Api\DropshipController::class, 'destroyAdoption']);
     Route::put('/me', [AuthController::class, 'updateProfile']);
     Route::put('/me/password', [AuthController::class, 'updatePassword']);
     Route::get('/followup-variables', fn () => \App\Support\DefaultTemplates::VARIABLES);

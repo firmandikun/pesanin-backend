@@ -49,6 +49,9 @@ class ContentController extends Controller
     {
         $site = array_merge(AdminController::SITE_DEFAULTS, \App\Models\PlatformSetting::read('site', []));
 
-        return $site + ['plans' => collect(\App\Support\Plans::all())->map(fn ($p, $id) => ['id' => $id, 'name' => $p['name'], 'monthly' => $p['monthly'], 'limits' => $p['limits']])->values()];
+        return $site + [
+            'plans' => collect(\App\Support\Plans::all())->map(fn ($p, $id) => ['id' => $id, 'name' => $p['name'], 'monthly' => $p['monthly'], 'limits' => $p['limits']])->values(),
+            'sidebar' => \App\Support\SidebarConfig::visible(),
+        ];
     }
 }

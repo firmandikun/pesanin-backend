@@ -210,6 +210,7 @@ class AdminController extends Controller
             'limit_labels' => collect(array_keys(Plans::PLANS['gratis']['limits']))->mapWithKeys(fn ($k) => [$k => Plans::LABELS[$k]]),
             'features' => collect(Plans::features())->map(fn ($need, $f) => ['key' => $f, 'label' => Plans::LABELS[$f], 'plan' => $need, 'default' => Plans::FEATURES[$f]])->values(),
             'site' => array_merge(self::SITE_DEFAULTS, \App\Models\PlatformSetting::read('site', [])),
+            'sidebar' => \App\Support\SidebarConfig::all(),
         ];
     }
 
@@ -222,6 +223,7 @@ class AdminController extends Controller
             'features' => 'sometimes|array', 'features.*' => ['required', Rule::in(array_keys(Plans::PLANS))],
             'site' => 'sometimes|array', 'site.registration_open' => 'boolean', 'site.notice' => 'nullable|string|max:300',
             'site.notice_tone' => 'in:info,warning,success', 'site.whatsapp' => ['nullable', 'regex:/^62\d{8,14}$/'], 'site.email' => 'nullable|email',
+            'sidebar' => 'sometimes|array', 'sidebar.*' => 'boolean',
         ]);
         if (isset($data['plans'])) {
             $plans = [];
@@ -236,6 +238,10 @@ class AdminController extends Controller
         }
         if (isset($data['site'])) {
             \App\Models\PlatformSetting::write('site', array_intersect_key(array_merge(self::SITE_DEFAULTS, \App\Models\PlatformSetting::read('site', []), $data['site']), self::SITE_DEFAULTS));
+        }
+        if (isset($data['sidebar'])) {
+            $current = \App\Models\PlatformSetting::read('sidebar', []);
+            \App\Models\PlatformSetting::write('sidebar', array_merge(is_array($current) ? $current : [], \App\Support\SidebarConfig::sanitizeOverrides($data['sidebar'])));
         }
         ActivityLog::record($request->user(), 'admin.platform', 'Mengubah pengaturan platform: '.implode(', ', array_keys($data)));
 
