@@ -34,7 +34,7 @@ class Member
             '#^GET marketplace/(shops|listings)$#', '#^\w+ r/payment-confirmations(/|$)#', '#^GET r/(staff|coupons)$#',
         ],
         'gudang' => [
-            '#^\w+ (orders|labels|products|inventory|transactions)(/|$)#', '#^\w+ marketplace/(shops|listings|listing-costs)(/|$)#',
+            '#^\w+ (orders|labels|products|inventory|transactions|scan-out)(/|$)#', '#^\w+ marketplace/(shops|listings|listing-costs)(/|$)#',
             '#^GET r/staff$#',
         ],
         'advertiser' => [

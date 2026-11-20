@@ -54,6 +54,11 @@ Route::prefix('public')->middleware('throttle:60,1')->group(function () {
     Route::get('/blog/{slug}', [\App\Http\Controllers\Api\ContentController::class, 'blogPost']);
     Route::get('/announcements', [\App\Http\Controllers\Api\ContentController::class, 'announcements']);
     Route::get('/site', [\App\Http\Controllers\Api\ContentController::class, 'site']);
+    // Scan Out from the phone (QR on the dashboard)
+    Route::get('/scan-out/{token}', [\App\Http\Controllers\Api\PublicScanOutController::class, 'show']);
+    Route::post('/scan-out/{token}/scan', [\App\Http\Controllers\Api\PublicScanOutController::class, 'scan'])->withoutMiddleware('throttle:60,1')->middleware('throttle:300,1');
+    Route::post('/scan-out/{token}/undo', [\App\Http\Controllers\Api\PublicScanOutController::class, 'undo']);
+    Route::post('/scan-out/{token}/finish', [\App\Http\Controllers\Api\PublicScanOutController::class, 'finish']);
 });
 
 // Pesanin platform admin (users.is_admin).
@@ -193,6 +198,15 @@ Route::middleware(['auth:sanctum', 'member', 'subscribed'])->group(function () {
     Route::post('/marketplace/reviews/reply', [\App\Http\Controllers\Api\ShopeeReviewController::class, 'reply'])->middleware('throttle:30,1');
     Route::get('/marketplace/ads/guard', [\App\Http\Controllers\Api\AdsGuardController::class, 'index']);
     Route::post('/marketplace/ads/guard/{campaign}', [\App\Http\Controllers\Api\AdsGuardController::class, 'action'])->whereNumber('campaign')->middleware('throttle:30,1');
+    // Scan Out: bukti serah terima paket ke ekspedisi
+    Route::controller(\App\Http\Controllers\Api\ScanOutController::class)->prefix('scan-out/sessions')->group(function () {
+        Route::get('/', 'index');
+        Route::post('/', 'store');
+        Route::get('/{session}', 'show')->whereNumber('session');
+        Route::post('/{session}/scan', 'scan')->whereNumber('session')->middleware('throttle:300,1');
+        Route::post('/{session}/finish', 'finish')->whereNumber('session');
+        Route::delete('/{session}/parcels/{parcel}', 'destroyParcel')->whereNumber(['session', 'parcel']);
+    });
     Route::get('/marketplace/listings', [MarketplaceController::class, 'listings']);
     Route::put('/marketplace/listings/{listing}/link', [MarketplaceController::class, 'link']);
     Route::put('/marketplace/listings/{listing}/stock', [MarketplaceController::class, 'stock']);
