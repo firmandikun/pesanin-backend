@@ -2,11 +2,17 @@
 
 namespace App\Support;
 
+use App\Models\MarketplaceShop;
 use App\Models\Order;
 use App\Models\ScanOutParcel;
 use App\Models\ScanOutSession;
+use App\Models\ShopeeBooking;
 use App\Models\User;
+use App\Support\Shopee\ShopeeClient;
+use App\Support\Shopee\ShopeeSync;
 use Illuminate\Database\QueryException;
+use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 
 /**
@@ -56,7 +62,8 @@ class ScanOut
         $user = $session->user;
         $order = self::findOrder($user, $code);
         // The label also carries the order number's barcode: only the resi counts as a parcel.
-        if (($order && Str::upper((string) $order->tracking_number) !== $code) || self::looksLikeOrderNumber($code)) {
+        $isResi = $order && Str::upper((string) $order->tracking_number) === $code;
+        if (! $isResi && ($order || (self::looksLikeOrderNumber($code) && ! self::findBooking($user, $code)))) {
             return ['status' => 'not_resi', 'parcel' => null,
                 'message' => 'Ini nomor pesanan, bukan resi. Scan barcode resi di label (tidak dicatat).'];
         }
@@ -71,7 +78,7 @@ class ScanOut
 
         $parcel = new ScanOutParcel([
             'scan_out_session_id' => $session->id, 'code' => $code, 'scanned_at' => now(), 'scanned_by' => $by ?: $session->scanned_by,
-        ] + self::orderFields($user, $order));
+        ] + ($order ? self::orderFields($user, $order) : self::bookingFields(self::findBooking($user, $code))));
         $parcel->user_id = $user->id;
         try {
             $parcel->save();
@@ -80,22 +87,90 @@ class ScanOut
             return ['status' => 'duplicate', 'message' => 'Resi sudah di-scan. Jangan dikirim dobel.', 'parcel' => null];
         }
 
-        return $order
+        if (! $parcel->matched) {
+            // Label arranged in Seller Centre but not synced yet: pull fresh resi from Shopee after replying, the
+            // parcel is re-matched to its shop on the next poll.
+            $uid = $user->id;
+            dispatch(fn () => self::refreshTracking(User::find($uid)))->afterResponse();
+        }
+
+        return $parcel->matched
             ? ['status' => 'ok', 'message' => "{$parcel->shop_name} · {$parcel->courier}", 'parcel' => self::row($parcel)]
             : ['status' => 'unknown', 'message' => 'Resi tidak ditemukan di pesanan Pesanin, tetap dicatat. Hapus kalau salah scan.', 'parcel' => self::row($parcel)];
     }
 
-    /** Shopee order SN: YYMMDD + 8 letters/digits (e.g. 261115CSXR0FDU); resi formats never look like this. */
+    /**
+     * Order-number barcodes printed on labels next to the resi: Shopee order SN (YYMMDD + 8 letters/digits, e.g.
+     * 261115CSXR0FDU) and the 13-digit order number (e.g. 5846207378888). A code that is a known resi always wins.
+     */
     public static function looksLikeOrderNumber(string $code): bool
     {
-        return (bool) preg_match('/^\d{6}(?=[A-Z0-9]*[A-Z])[A-Z0-9]{8}$/', $code);
+        return (bool) preg_match('/^(\d{6}(?=[A-Z0-9]*[A-Z])[A-Z0-9]{8}|\d{13})$/', $code);
     }
 
-    private static function orderFields(User $user, ?Order $o): array
+    /** Shopee "Pengiriman Kilat" bookings have their own resi before they are matched to a buyer order. */
+    public static function findBooking(User $user, string $code): ?ShopeeBooking
     {
-        if (! $o) {
-            return ['matched' => false, 'shop_name' => null, 'courier' => null, 'order_sn' => null, 'customer_name' => null, 'items_summary' => null];
+        return ShopeeBooking::where('user_id', $user->id)->whereRaw('UPPER(tracking_number) = ?', [$code])
+            ->with('marketplaceShop:id,shop_name')->latest('id')->first();
+    }
+
+    private static function bookingFields(?ShopeeBooking $b): array
+    {
+        return $b
+            ? ['matched' => true, 'marketplace_shop_id' => $b->marketplace_shop_id, 'shop_name' => $b->marketplaceShop?->shop_name ?? 'Shopee',
+                'courier' => $b->shipping_carrier, 'order_sn' => $b->order_sn ?? $b->booking_sn, 'customer_name' => null, 'items_summary' => null]
+            : ['matched' => false, 'shop_name' => null, 'courier' => null, 'order_sn' => null, 'customer_name' => null, 'items_summary' => null];
+    }
+
+    /**
+     * Fetch the resi Shopee issued for orders Pesanin hasn't seen yet (arranged in Seller Centre / by another tool).
+     * At most once a minute per seller; runs after the scan response so scanning never waits on Shopee.
+     */
+    public static function refreshTracking(?User $user): void
+    {
+        if (! $user || ! Cache::add("scanout-trk:{$user->id}", 1, 60)) {
+            return;
         }
+        $api = new ShopeeClient;
+        foreach (MarketplaceShop::where('user_id', $user->id)->where('platform', 'shopee')->where('is_demo', false)->get() as $shop) {
+            try {
+                (new ShopeeSync($api))->recent($shop, 180); // orders updated in the last 3 hours (newly arranged)
+                $missing = Order::where('marketplace_shop_id', $shop->id)->whereNull('tracking_number')
+                    ->whereIn('external_status', ['READY_TO_SHIP', 'PROCESSED', 'SHIPPED'])->where('created_at', '>=', now()->subDays(14))
+                    ->latest('id')->limit(40)->get(['id', 'external_order_sn']);
+                foreach ($missing as $o) {
+                    try {
+                        if ($tn = $api->trackingNumber($shop, $o->external_order_sn)) {
+                            $o->update(['tracking_number' => $tn]);
+                        }
+                    } catch (\Throwable) {
+                        // not arranged yet
+                    }
+                }
+            } catch (\Throwable $e) {
+                Log::warning("ScanOut refresh resi shop {$shop->id}: {$e->getMessage()}");
+            }
+        }
+    }
+
+    /** Give unknown parcels of a session their shop once the order / resi shows up in Pesanin. */
+    public static function rematch(ScanOutSession $s): void
+    {
+        $user = $s->user;
+        foreach ($s->parcels()->where('matched', false)->get() as $p) {
+            $order = self::findOrder($user, $p->code);
+            if ($order && Str::upper((string) $order->tracking_number) === $p->code
+                && ! ScanOutParcel::where('user_id', $user->id)->where('order_id', $order->id)->exists()) {
+                $p->update(self::orderFields($user, $order));
+            } elseif (! $order && ($b = self::findBooking($user, $p->code))) {
+                $p->update(self::bookingFields($b));
+            }
+        }
+    }
+
+    private static function orderFields(User $user, Order $o): array
+    {
         $items = $o->channel === 'shopee' && $o->items
             ? collect($o->items)->map(fn ($i) => trim(($i['name'] ?? 'Produk').(! empty($i['variant']) ? " ({$i['variant']})" : '')).' x'.($i['qty'] ?? 1))->implode(', ')
             : ($o->product?->name ? "{$o->product->name}".($o->variant ? " ({$o->variant})" : '')." x{$o->quantity}" : null);
@@ -119,6 +194,7 @@ class ScanOut
     /** Count per shop / per courier and the total for one session. */
     public static function summary(ScanOutSession $s): array
     {
+        self::rematch($s);
         $rows = $s->parcels()->get(['shop_name', 'courier', 'matched']);
         $group = fn (string $key, string $empty) => $rows->groupBy(fn ($r) => $r->{$key} ?: $empty)
             ->map(fn ($g, $k) => ['name' => $k, 'count' => $g->count()])->sortByDesc('count')->values();

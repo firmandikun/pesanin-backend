@@ -32,6 +32,10 @@ class ScanOutController extends Controller
         // One open session at a time: reuse it instead of scattering scans over several QR codes.
         $open = ScanOutSession::where('user_id', $user->id)->where('status', 'open')->where('expires_at', '>', now())->latest('id')->first();
 
+        // Pull the resi of freshly arranged Shopee orders now, so the first scans already know their shop.
+        $uid = $user->id;
+        dispatch(fn () => ScanOut::refreshTracking(\App\Models\User::find($uid)))->afterResponse();
+
         return ScanOut::payload($open ?? ScanOut::open($user, Member::actorName($request)), true);
     }
 
