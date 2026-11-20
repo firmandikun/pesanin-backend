@@ -319,6 +319,10 @@ class OrderController extends Controller
         if ($c = $request->query('shopee_courier')) {
             $q->where(fn ($w) => $w->where('courier_service', $c)->orWhere('courier', $c));
         }
+        // Status Label: sudah / belum dicetak (awb_printed_at diisi saat label dicetak).
+        if (in_array($printed = $request->query('printed'), ['yes', 'no'], true)) {
+            $printed === 'yes' ? $q->whereNotNull('awb_printed_at') : $q->whereNull('awb_printed_at');
+        }
         if ($traffic = $request->query('traffic')) {
             \App\Support\Traffic::scope($q->where('channel', 'website'), $traffic);
         }
