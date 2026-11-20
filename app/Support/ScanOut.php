@@ -44,7 +44,7 @@ class ScanOut
     }
 
     /**
-     * Record one scan. @return array{status: 'ok'|'unknown'|'duplicate'|'invalid', message: string, parcel: ?array}
+     * Record one scan. @return array{status: 'ok'|'unknown'|'duplicate'|'not_resi'|'invalid', message: string, parcel: ?array}
      * "unknown" = not found in Pesanin's orders but still recorded (the parcel is physically going out).
      */
     public static function record(ScanOutSession $session, string $raw, ?string $by = null): array
@@ -55,6 +55,11 @@ class ScanOut
         }
         $user = $session->user;
         $order = self::findOrder($user, $code);
+        // The label also carries the order number's barcode: only the resi counts as a parcel.
+        if (($order && Str::upper((string) $order->tracking_number) !== $code) || self::looksLikeOrderNumber($code)) {
+            return ['status' => 'not_resi', 'parcel' => null,
+                'message' => 'Ini nomor pesanan, bukan resi. Scan barcode resi di label (tidak dicatat).'];
+        }
 
         $dupe = ScanOutParcel::where('user_id', $user->id)
             ->where(fn ($w) => $w->where('code', $code)->when($order, fn ($x) => $x->orWhere('order_id', $order->id)))
@@ -78,6 +83,12 @@ class ScanOut
         return $order
             ? ['status' => 'ok', 'message' => "{$parcel->shop_name} · {$parcel->courier}", 'parcel' => self::row($parcel)]
             : ['status' => 'unknown', 'message' => 'Resi tidak ditemukan di pesanan Pesanin, tetap dicatat. Hapus kalau salah scan.', 'parcel' => self::row($parcel)];
+    }
+
+    /** Shopee order SN: YYMMDD + 8 letters/digits (e.g. 261115CSXR0FDU); resi formats never look like this. */
+    public static function looksLikeOrderNumber(string $code): bool
+    {
+        return (bool) preg_match('/^\d{6}(?=[A-Z0-9]*[A-Z])[A-Z0-9]{8}$/', $code);
     }
 
     private static function orderFields(User $user, ?Order $o): array
