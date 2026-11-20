@@ -65,6 +65,15 @@ class ScanOutController extends Controller
         return ScanOut::payload($session);
     }
 
+    /** "Cocokkan ulang toko": pull the latest resi from Shopee now and re-match the unknown parcels. */
+    public function rematch(Request $request, ScanOutSession $session)
+    {
+        abort_unless($session->user_id === $request->user()->id, 404);
+        $stats = ScanOut::refreshTracking($request->user(), true);
+
+        return ScanOut::payload($session, $session->isOpen()) + ['refresh' => $stats];
+    }
+
     public function destroyParcel(Request $request, ScanOutSession $session, ScanOutParcel $parcel)
     {
         abort_unless($session->user_id === $request->user()->id && $parcel->scan_out_session_id === $session->id, 404);

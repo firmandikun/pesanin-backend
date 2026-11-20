@@ -205,6 +205,7 @@ Route::middleware(['auth:sanctum', 'member', 'subscribed'])->group(function () {
         Route::get('/{session}', 'show')->whereNumber('session');
         Route::post('/{session}/scan', 'scan')->whereNumber('session')->middleware('throttle:300,1');
         Route::post('/{session}/finish', 'finish')->whereNumber('session');
+        Route::post('/{session}/rematch', 'rematch')->whereNumber('session')->middleware('throttle:6,1');
         Route::delete('/{session}/parcels/{parcel}', 'destroyParcel')->whereNumber(['session', 'parcel']);
     });
     Route::get('/marketplace/listings', [MarketplaceController::class, 'listings']);

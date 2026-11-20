@@ -44,9 +44,9 @@ class ScanOut
     public static function findOrder(User $user, string $code): ?Order
     {
         return Order::where('user_id', $user->id)->where('is_abandoned', false)
-            ->where(fn ($w) => $w->whereRaw('UPPER(tracking_number) = ?', [$code])->orWhere('external_order_sn', $code)->orWhere('code', $code))
+            ->where(fn ($w) => $w->whereRaw('UPPER(TRIM(tracking_number)) = ?', [$code])->orWhere('external_order_sn', $code)->orWhere('code', $code))
             ->with('marketplaceShop:id,shop_name', 'product:id,name')
-            ->orderByRaw('CASE WHEN UPPER(tracking_number) = ? THEN 0 ELSE 1 END', [$code])->latest('id')->first();
+            ->orderByRaw('CASE WHEN UPPER(TRIM(tracking_number)) = ? THEN 0 ELSE 1 END', [$code])->latest('id')->first();
     }
 
     /**
@@ -62,7 +62,7 @@ class ScanOut
         $user = $session->user;
         $order = self::findOrder($user, $code);
         // The label also carries the order number's barcode: only the resi counts as a parcel.
-        $isResi = $order && Str::upper((string) $order->tracking_number) === $code;
+        $isResi = $order && Str::upper(trim((string) $order->tracking_number)) === $code;
         if (! $isResi && ($order || (self::looksLikeOrderNumber($code) && ! self::findBooking($user, $code)))) {
             return ['status' => 'not_resi', 'parcel' => null,
                 'message' => 'Ini nomor pesanan, bukan resi. Scan barcode resi di label (tidak dicatat).'];
@@ -111,7 +111,7 @@ class ScanOut
     /** Shopee "Pengiriman Kilat" bookings have their own resi before they are matched to a buyer order. */
     public static function findBooking(User $user, string $code): ?ShopeeBooking
     {
-        return ShopeeBooking::where('user_id', $user->id)->whereRaw('UPPER(tracking_number) = ?', [$code])
+        return ShopeeBooking::where('user_id', $user->id)->whereRaw('UPPER(TRIM(tracking_number)) = ?', [$code])
             ->with('marketplaceShop:id,shop_name')->latest('id')->first();
     }
 
@@ -124,34 +124,45 @@ class ScanOut
     }
 
     /**
-     * Fetch the resi Shopee issued for orders Pesanin hasn't seen yet (arranged in Seller Centre / by another tool).
-     * At most once a minute per seller; runs after the scan response so scanning never waits on Shopee.
+     * Fetch the resi Shopee issued for orders Pesanin hasn't stored yet (arranged in Seller Centre / another tool, or
+     * the resi came after the last sync). Automatic runs: at most once a minute, after the response. $force (the
+     * "Cocokkan ulang" button): re-reads every open Shopee order and reports what it did.
+     * @return array{shops: int, orders: int, resi: int, errors: string[]}
      */
-    public static function refreshTracking(?User $user): void
+    public static function refreshTracking(?User $user, bool $force = false): array
     {
-        if (! $user || ! Cache::add("scanout-trk:{$user->id}", 1, 60)) {
-            return;
+        $stats = ['shops' => 0, 'orders' => 0, 'resi' => 0, 'errors' => []];
+        if (! $user || (! $force && ! Cache::add("scanout-trk:{$user->id}", 1, 60))) {
+            return $stats;
         }
+        @set_time_limit(180);
         $api = new ShopeeClient;
         foreach (MarketplaceShop::where('user_id', $user->id)->where('platform', 'shopee')->where('is_demo', false)->get() as $shop) {
+            $stats['shops']++;
             try {
-                (new ShopeeSync($api))->recent($shop, 180); // orders updated in the last 3 hours (newly arranged)
-                $missing = Order::where('marketplace_shop_id', $shop->id)->whereNull('tracking_number')
-                    ->whereIn('external_status', ['READY_TO_SHIP', 'PROCESSED', 'SHIPPED'])->where('created_at', '>=', now()->subDays(14))
-                    ->latest('id')->limit(40)->get(['id', 'external_order_sn']);
+                $sync = new ShopeeSync($api);
+                // Open orders (perlu dikirim / diproses / dikirim) straight from Shopee; newly arranged ones get their resi.
+                $stats['orders'] += $force ? $sync->reconcileOpen($shop) : $sync->recent($shop, 180);
+                $missing = Order::where('marketplace_shop_id', $shop->id)->where(fn ($w) => $w->whereNull('tracking_number')->orWhere('tracking_number', ''))
+                    ->whereNotIn('external_status', ['UNPAID', 'CANCELLED', 'IN_CANCEL', 'COMPLETED', 'TO_RETURN'])
+                    ->where('created_at', '>=', now()->subDays(30))->latest('id')->limit($force ? 150 : 40)->get(['id', 'external_order_sn']);
                 foreach ($missing as $o) {
                     try {
-                        if ($tn = $api->trackingNumber($shop, $o->external_order_sn)) {
+                        if ($tn = trim((string) $api->trackingNumber($shop, $o->external_order_sn))) {
                             $o->update(['tracking_number' => $tn]);
+                            $stats['resi']++;
                         }
                     } catch (\Throwable) {
                         // not arranged yet
                     }
                 }
             } catch (\Throwable $e) {
+                $stats['errors'][] = ($shop->shop_name ?: "Toko {$shop->id}").': '.$e->getMessage();
                 Log::warning("ScanOut refresh resi shop {$shop->id}: {$e->getMessage()}");
             }
         }
+
+        return $stats;
     }
 
     /** Give unknown parcels of a session their shop once the order / resi shows up in Pesanin. */
@@ -160,7 +171,7 @@ class ScanOut
         $user = $s->user;
         foreach ($s->parcels()->where('matched', false)->get() as $p) {
             $order = self::findOrder($user, $p->code);
-            if ($order && Str::upper((string) $order->tracking_number) === $p->code
+            if ($order && Str::upper(trim((string) $order->tracking_number)) === $p->code
                 && ! ScanOutParcel::where('user_id', $user->id)->where('order_id', $order->id)->exists()) {
                 $p->update(self::orderFields($user, $order));
             } elseif (! $order && ($b = self::findBooking($user, $p->code))) {
