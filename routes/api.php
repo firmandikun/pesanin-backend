@@ -209,6 +209,16 @@ Route::middleware(['auth:sanctum', 'member', 'subscribed'])->group(function () {
         Route::delete('/{session}/parcels/{parcel}', 'destroyParcel')->whereNumber(['session', 'parcel']);
     });
     Route::get('/marketplace/listings', [MarketplaceController::class, 'listings']);
+    Route::controller(\App\Http\Controllers\Api\ShopeeProductToolsController::class)->prefix('marketplace/listings')->group(function () {
+        Route::get('/boost', 'boostIndex');
+        Route::put('/boost/{shop}', 'boostUpdate')->whereNumber('shop')->middleware('throttle:30,1');
+        Route::post('/boost/{shop}/run', 'boostRun')->whereNumber('shop')->middleware('throttle:10,1');
+        Route::post('/stats/sync', 'statsSync')->middleware('throttle:4,1');
+        Route::post('/prices', 'prices')->middleware('throttle:20,1');
+        Route::post('/unlist', 'unlist')->middleware('throttle:20,1');
+        Route::get('/text/{shop}/{item}', 'itemText')->whereNumber(['shop', 'item']);
+        Route::put('/text/{shop}/{item}', 'updateText')->whereNumber(['shop', 'item'])->middleware('throttle:30,1');
+    });
     Route::put('/marketplace/listings/{listing}/link', [MarketplaceController::class, 'link']);
     Route::put('/marketplace/listings/{listing}/stock', [MarketplaceController::class, 'stock']);
     // Stok master lintas toko

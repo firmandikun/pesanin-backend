@@ -714,6 +714,8 @@ class MarketplaceController extends Controller
 
         return [
             'listings' => $listings,
+            // Dilihat / disukai / terjual per product (daily snapshots), "shop:item" => numbers.
+            'item_stats' => (object) \App\Support\Shopee\ShopeeProductTools::statsFor($rows->map(fn ($l) => [(int) $l->marketplace_shop_id, (int) $l->item_id])->unique(fn ($k) => "{$k[0]}:{$k[1]}")->values()),
             'stats' => [
                 'total' => (clone $base)->count(), 'linked' => (clone $base)->whereNotNull('product_id')->count(),
                 'out_of_stock' => (clone $base)->where('stock', '<=', 0)->count(), 'stock' => (int) (clone $base)->sum('stock'),

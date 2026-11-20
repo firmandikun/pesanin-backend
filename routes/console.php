@@ -31,6 +31,7 @@ Artisan::command('marketplace:sync {--what=orders}', function () {
             match ($this->option('what')) {
                 'products' => $sync->products($shop),
                 'ads' => $sync->ads($shop),
+                'stats' => (new \App\Support\Shopee\ShopeeProductTools)->syncStats($shop),
                 'recent' => [$sync->recent($shop), \App\Support\Shopee\ShopeeChatWatch::check($shop)],
                 default => $sync->orders($shop),
             };
@@ -56,6 +57,13 @@ Artisan::command('marketplace:sync {--what=orders}', function () {
 \Illuminate\Support\Facades\Schedule::command('marketplace:sync --what=recent')->everyThirtySeconds()->withoutOverlapping();
 \Illuminate\Support\Facades\Schedule::command('marketplace:sync --what=orders')->hourly()->withoutOverlapping();
 \Illuminate\Support\Facades\Schedule::command('marketplace:sync --what=products')->dailyAt('02:00');
+// Statistik produk (dilihat / disukai / terjual) snapshot, twice a day for the 7-day change.
+\Illuminate\Support\Facades\Schedule::command('marketplace:sync --what=stats')->twiceDaily(3, 15)->withoutOverlapping();
+// Naikkan Produk otomatis: refill free boost slots (5 per shop, 4 hours each).
+Artisan::command('marketplace:boost', function () {
+    $this->info('Toko diproses: '.\App\Support\Shopee\ShopeeProductTools::runAllBoosts());
+})->purpose('Boost Shopee products from each shop rotation list');
+\Illuminate\Support\Facades\Schedule::command('marketplace:boost')->everyTenMinutes()->withoutOverlapping();
 // Ad spend for today keeps changing, so refresh it through the day.
 \Illuminate\Support\Facades\Schedule::command('marketplace:sync --what=ads')->everyThreeHours()->withoutOverlapping();
 

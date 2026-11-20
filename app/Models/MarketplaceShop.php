@@ -19,6 +19,7 @@ class MarketplaceShop extends Model
             'refresh_token' => 'encrypted',
             'access_expires_at' => 'datetime',
             'ads_balance_at' => 'datetime',
+            'boost' => 'array',
             'refresh_expires_at' => 'datetime',
             'products_synced_at' => 'datetime',
             'orders_synced_at' => 'datetime',

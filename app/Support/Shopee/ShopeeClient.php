@@ -147,6 +147,53 @@ class ShopeeClient
         return $this->get($shop, '/api/v2/product/get_item_base_info', ['item_id_list' => implode(',', $itemIds)])['response']['item_list'] ?? [];
     }
 
+    /** Views, likes, units sold, rating and review count per product. @param int[] $itemIds up to 50 */
+    public function itemExtraInfo(MarketplaceShop $shop, array $itemIds): array
+    {
+        return $this->get($shop, '/api/v2/product/get_item_extra_info', ['item_id_list' => implode(',', $itemIds)])['response']['item_list'] ?? [];
+    }
+
+    /** "Naikkan Produk": up to 5 items at a time, each stays boosted 4 hours. @return array<int, string> failed item_id => reason */
+    public function boostItems(MarketplaceShop $shop, array $itemIds): array
+    {
+        $res = $this->post($shop, '/api/v2/product/boost_item', ['item_id_list' => array_values(array_map('intval', $itemIds))]);
+
+        return collect($res['response']['failure_list'] ?? [])->mapWithKeys(fn ($f) => [(int) ($f['item_id'] ?? 0) => (string) ($f['failed_reason'] ?? 'ditolak Shopee')])->all();
+    }
+
+    /** Items boosted right now. @return array<int, int> item_id => seconds left */
+    public function boostedList(MarketplaceShop $shop): array
+    {
+        return collect($this->get($shop, '/api/v2/product/get_boosted_list')['response']['item_list'] ?? [])
+            ->mapWithKeys(fn ($i) => [(int) $i['item_id'] => (int) ($i['cool_down_second'] ?? 0)])->all();
+    }
+
+    /** @param array<int, int> $prices model_id (0 = no variations) => original price @return array<int, string> failed model_id => reason */
+    public function updatePrice(MarketplaceShop $shop, int $itemId, array $prices): array
+    {
+        $res = $this->post($shop, '/api/v2/product/update_price', [
+            'item_id' => $itemId,
+            'price_list' => collect($prices)->map(fn ($p, $m) => array_filter(['model_id' => (int) $m ?: null, 'original_price' => (float) $p], fn ($v) => $v !== null))->values()->all(),
+        ]);
+
+        return collect($res['response']['failure_list'] ?? [])->mapWithKeys(fn ($f) => [(int) ($f['model_id'] ?? 0) => (string) ($f['failed_reason'] ?? 'ditolak Shopee')])->all();
+    }
+
+    public function updateItem(MarketplaceShop $shop, int $itemId, array $fields): array
+    {
+        return $this->post($shop, '/api/v2/product/update_item', ['item_id' => $itemId] + $fields)['response'] ?? [];
+    }
+
+    /** @param array<int, bool> $items item_id => true to hide (arsip), false to show again @return array<int, string> failed item_id => reason */
+    public function unlistItems(MarketplaceShop $shop, array $items): array
+    {
+        $res = $this->post($shop, '/api/v2/product/unlist_item', [
+            'item_list' => collect($items)->map(fn ($u, $id) => ['item_id' => (int) $id, 'unlist' => (bool) $u])->values()->all(),
+        ]);
+
+        return collect($res['response']['failure_list'] ?? [])->mapWithKeys(fn ($f) => [(int) ($f['item_id'] ?? 0) => (string) ($f['failed_reason'] ?? 'ditolak Shopee')])->all();
+    }
+
     public function modelList(MarketplaceShop $shop, int $itemId): array
     {
         return $this->get($shop, '/api/v2/product/get_model_list', ['item_id' => $itemId])['response'] ?? [];
