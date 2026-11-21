@@ -126,6 +126,34 @@ class ShopeeAfterSalesController extends Controller
         }];
     }
 
+    /** Rincian Pesanan (like Seller Centre): order, income breakdown, history and any return request. */
+    public function detail(Request $request, int $id)
+    {
+        $o = Order::where('user_id', $request->user()->id)->where('channel', 'shopee')->with('marketplaceShop:id,shop_name,shop_id,is_demo')->findOrFail($id);
+        // Income is an estimate until the order completes: refresh it from Shopee when looking at it.
+        if ($o->marketplaceShop && ! $o->marketplaceShop->is_demo && ! $o->escrow_final && ! in_array($o->external_status, ['UNPAID', 'CANCELLED'], true)) {
+            try {
+                (new ShopeeSync)->fees(\App\Models\MarketplaceShop::find($o->marketplace_shop_id), $o);
+                $o->refresh()->load('marketplaceShop:id,shop_name,shop_id,is_demo');
+            } catch (Throwable) {
+                // keep what is stored
+            }
+        }
+        $o = \App\Support\OrderQuota::mask($o, $request->user());
+        $history = collect([
+            ['Pesanan Baru', 'Pesanan dibuat oleh pembeli.', $o->created_at],
+            ['Pembayaran Dikonfirmasi', null, $o->paid_at],
+            ['Pesanan Dikirim', $o->tracking_number ? "Diserahkan ke kurir, resi {$o->tracking_number}." : null, $o->shipped_at],
+            [$o->external_status === 'CANCELLED' ? 'Pesanan Dibatalkan' : 'Pesanan Selesai', $o->external_status === 'CANCELLED' ? null : 'Pembeli menerima pesanan.', $o->completed_at],
+        ])->filter(fn ($h) => $h[2])->map(fn ($h) => ['title' => $h[0], 'desc' => $h[1], 'at' => $h[2]->toIso8601String()])->reverse()->values();
+
+        return [
+            'order' => $o,
+            'history' => $history,
+            'return' => ShopeeReturn::where('marketplace_shop_id', $o->marketplace_shop_id)->where('order_sn', $o->external_order_sn)->latest('id')->first(['id', 'return_sn', 'status', 'refund_amount']),
+        ];
+    }
+
     /** Cancel an unshipped order because the stock ran out (Shopee asks which products are out of stock). */
     public function cancel(Request $request, int $id)
     {

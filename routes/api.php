@@ -128,6 +128,7 @@ Route::middleware(['auth:sanctum', 'member', 'subscribed'])->group(function () {
     Route::get('/marketplace/returns', [MarketplaceController::class, 'returns']);
     Route::get('/marketplace/returns/{id}', [\App\Http\Controllers\Api\ShopeeAfterSalesController::class, 'show'])->whereNumber('id')->middleware('throttle:60,1');
     Route::post('/marketplace/returns/{id}/act', [\App\Http\Controllers\Api\ShopeeAfterSalesController::class, 'act'])->whereNumber('id')->middleware('throttle:20,1');
+    Route::get('/marketplace/orders/{id}', [\App\Http\Controllers\Api\ShopeeAfterSalesController::class, 'detail'])->whereNumber('id')->middleware('throttle:60,1');
     Route::post('/marketplace/orders/{id}/cancel', [\App\Http\Controllers\Api\ShopeeAfterSalesController::class, 'cancel'])->whereNumber('id')->middleware('throttle:20,1');
     Route::put('/marketplace/orders/{id}/note', [\App\Http\Controllers\Api\ShopeeAfterSalesController::class, 'note'])->whereNumber('id')->middleware('throttle:60,1');
     Route::get('/marketplace/balance', [MarketplaceController::class, 'balance']);
