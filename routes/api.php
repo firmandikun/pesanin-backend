@@ -230,6 +230,8 @@ Route::middleware(['auth:sanctum', 'member', 'subscribed'])->group(function () {
         Route::post('/prices', 'prices')->middleware('throttle:20,1');
         Route::post('/unlist', 'unlist')->middleware('throttle:20,1');
         Route::get('/text/{shop}/{item}', 'itemText')->whereNumber(['shop', 'item']);
+        Route::post('/sku/preview', 'skuPreview')->middleware('throttle:30,1');
+        Route::post('/sku/save', 'skuSave')->middleware('throttle:10,1');
         Route::put('/text/{shop}/{item}', 'updateText')->whereNumber(['shop', 'item'])->middleware('throttle:30,1');
     });
     Route::put('/marketplace/listings/{listing}/link', [MarketplaceController::class, 'link']);

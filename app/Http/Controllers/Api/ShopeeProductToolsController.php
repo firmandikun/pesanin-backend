@@ -102,6 +102,35 @@ class ShopeeProductToolsController extends Controller
         return (new ShopeeProductTools)->setUnlisted($request->user()->id, collect($d['items'])->map(fn ($i) => [(int) $i['shop_id'], (int) $i['item_id']])->all(), $d['unlist']);
     }
 
+    /** Buat SKU: suggestions for products without SKU (or the selected ones), editable before saving. */
+    public function skuPreview(Request $request)
+    {
+        $d = $request->validate(['mode' => 'required|in:abbr,number', 'prefix' => 'nullable|string|max:12', 'start' => 'nullable|integer|min:1',
+            'scope' => 'required|in:empty,selected', 'keys' => 'array|max:500', 'keys.*' => 'string', 'shop_id' => 'nullable|integer']);
+        $q = \App\Models\MarketplaceListing::where('user_id', $request->user()->id)->with('shop:id,shop_name,is_demo')
+            ->whereHas('shop', fn ($s) => $s->where('is_demo', false)->where('status', '!=', 'disconnected'))
+            ->when($d['shop_id'] ?? null, fn ($w, $id) => $w->where('marketplace_shop_id', $id));
+        if ($d['scope'] === 'selected') {
+            $keys = collect($d['keys'] ?? [])->map(fn ($k) => array_map('intval', explode(':', $k)));
+            abort_if($keys->isEmpty(), 422, 'Pilih produk dulu.');
+            $q->where(fn ($w) => $keys->each(fn ($k) => $w->orWhere(fn ($x) => $x->where('marketplace_shop_id', $k[0])->where('item_id', $k[1] ?? 0))));
+        } else {
+            $q->where(fn ($w) => $w->whereNull('sku')->orWhere('sku', ''));
+        }
+        $listings = $q->limit(500)->get();
+
+        return ['rows' => \App\Support\Shopee\SkuGenerator::suggest($request->user()->id, $listings, $d['mode'], (string) ($d['prefix'] ?? ''), (int) ($d['start'] ?? 1))];
+    }
+
+    public function skuSave(Request $request)
+    {
+        $d = $request->validate(['rows' => 'required|array|min:1|max:500', 'rows.*.id' => 'required|integer', 'rows.*.sku' => ['required', 'string', 'max:100', 'regex:/^[A-Za-z0-9._\/-]+$/']],
+            ['rows.*.sku.regex' => 'SKU hanya boleh huruf, angka, titik, garis miring, strip dan garis bawah (tanpa spasi).']);
+        $skus = collect($d['rows'])->mapWithKeys(fn ($r) => [(int) $r['id'] => strtoupper(trim($r['sku']))])->all();
+
+        return (new \App\Support\Shopee\SkuGenerator)->save($request->user()->id, $skus);
+    }
+
     public function itemText(Request $request, int $shop, int $item)
     {
         $s = $this->shop($request, $shop);
