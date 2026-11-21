@@ -88,15 +88,55 @@ class AdsGuard
         $listings = MarketplaceListing::whereIn('marketplace_shop_id', $shops->keys())->whereIn('item_id', $itemIds ?: [0])
             ->with('product:id,cost_price')->get()->groupBy(fn ($l) => $l->marketplace_shop_id.':'.$l->item_id);
 
-        // Fallback HPP map by stock_master_id or SKU across all user's listings (e.g. when SKU was just linked/created).
+        // Fallback HPP map by stock_master_id or SKU across all user's listings & products.
         $allFlat = $listings->flatten();
         $masterIds = $allFlat->pluck('stock_master_id')->filter()->unique()->all();
         $skus = $allFlat->pluck('sku')->filter()->map(fn ($s) => mb_strtolower(trim($s)))->unique()->all();
-        $hppByMaster = $masterIds ? MarketplaceListing::where('user_id', $user->id)->whereIn('stock_master_id', $masterIds)
-            ->where('cost_price', '>', 0)->pluck('cost_price', 'stock_master_id')->all() : [];
-        $hppBySku = $skus ? MarketplaceListing::where('user_id', $user->id)->where('cost_price', '>', 0)
-            ->whereIn(\Illuminate\Support\Facades\DB::raw('LOWER(TRIM(sku))'), $skus)->get(['sku', 'cost_price'])
-            ->mapWithKeys(fn ($x) => [mb_strtolower(trim($x->sku)) => (int) $x->cost_price])->all() : [];
+        $hppByMaster = [];
+        if ($masterIds) {
+            MarketplaceListing::where('user_id', $user->id)->whereIn('stock_master_id', $masterIds)
+                ->with('product:id,cost_price')->get(['stock_master_id', 'product_id', 'cost_price'])
+                ->each(function ($x) use (&$hppByMaster) {
+                    $c = (int) ($x->cost_price ?: $x->product?->cost_price ?: 0);
+                    if ($c > 0 && ! isset($hppByMaster[$x->stock_master_id])) {
+                        $hppByMaster[$x->stock_master_id] = $c;
+                    }
+                });
+        }
+        $hppBySku = [];
+        if ($skus) {
+            MarketplaceListing::where('user_id', $user->id)
+                ->whereIn(\Illuminate\Support\Facades\DB::raw('LOWER(TRIM(sku))'), $skus)
+                ->with('product:id,cost_price')->get(['sku', 'product_id', 'cost_price'])
+                ->each(function ($x) use (&$hppBySku) {
+                    $k = mb_strtolower(trim((string) $x->sku));
+                    $c = (int) ($x->cost_price ?: $x->product?->cost_price ?: 0);
+                    if ($k !== '' && $c > 0 && ! isset($hppBySku[$k])) {
+                        $hppBySku[$k] = $c;
+                    }
+                });
+            \App\Models\Product::where('user_id', $user->id)->where('cost_price', '>', 0)
+                ->whereIn(\Illuminate\Support\Facades\DB::raw('LOWER(TRIM(sku))'), $skus)->get(['sku', 'cost_price'])
+                ->each(function ($p) use (&$hppBySku) {
+                    $k = mb_strtolower(trim((string) $p->sku));
+                    if ($k !== '' && ! isset($hppBySku[$k])) {
+                        $hppBySku[$k] = (int) $p->cost_price;
+                    }
+                });
+        }
+
+        // Precompute average HPP ratio per shop for store-wide auto ads (where item_ids is empty).
+        $shopAutoHppRatio = [];
+        if ($campaigns->contains(fn ($c) => empty($c->item_ids) && in_array($c->ad_type, ['auto', 'shop_auto'], true))) {
+            MarketplaceListing::whereIn('marketplace_shop_id', $shops->keys())->where('status', 'NORMAL')
+                ->where('price', '>', 0)->with('product:id,cost_price')->get(['marketplace_shop_id', 'price', 'cost_price', 'product_id'])
+                ->groupBy('marketplace_shop_id')->each(function ($g, $sid) use (&$shopAutoHppRatio) {
+                    $withCost = $g->filter(fn ($l) => ($l->cost_price ?: $l->product?->cost_price) > 0);
+                    if ($withCost->isNotEmpty()) {
+                        $shopAutoHppRatio[$sid] = $withCost->avg(fn ($l) => ($l->cost_price ?: $l->product->cost_price) / $l->price);
+                    }
+                });
+        }
 
         $costOf = function ($l) use ($hppByMaster, $hppBySku): int {
             $direct = (int) ($l->cost_price ?: $l->product?->cost_price ?: 0);
@@ -111,7 +151,7 @@ class AdsGuard
             return ($skuKey !== '' && isset($hppBySku[$skuKey])) ? (int) $hppBySku[$skuKey] : 0;
         };
 
-        $rows = $campaigns->map(function ($c) use ($user, $listings, $cfg, $costOf) {
+        $rows = $campaigns->map(function ($c) use ($user, $listings, $cfg, $costOf, $shopAutoHppRatio) {
             $fee = self::feeRate($user, $c->marketplace_shop_id);
             // Per promoted product: average price, and HPP share (variations with an HPP only).
             $items = collect($c->item_ids ?? [])->map(function ($id) use ($c, $listings, $costOf) {
@@ -126,7 +166,9 @@ class AdsGuard
                 ];
             })->values();
             $known = $items->whereNotNull('hpp_ratio');
-            $hppRatio = $known->isEmpty() ? null : $known->avg('hpp_ratio');
+            $hppRatio = $known->isEmpty()
+                ? (in_array($c->ad_type, ['auto', 'shop_auto'], true) ? ($shopAutoHppRatio[$c->marketplace_shop_id] ?? null) : null)
+                : $known->avg('hpp_ratio');
             $margin = 1 - $fee - ($hppRatio ?? 0);
             $breakEven = $margin > 0 ? round(1 / $margin, 2) : null;
             $expense = (int) $c->expense;
