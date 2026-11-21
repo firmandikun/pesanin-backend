@@ -149,9 +149,39 @@ class ShopeeAfterSalesController extends Controller
 
         return [
             'order' => $o,
+            'ads' => $this->adCost($o),
             'history' => $history,
             'return' => ShopeeReturn::where('marketplace_shop_id', $o->marketplace_shop_id)->where('order_sn', $o->external_order_sn)->latest('id')->first(['id', 'return_sn', 'status', 'refund_amount']),
         ];
+    }
+
+    /**
+     * Biaya per Konversi of the ads promoting this order's products, exactly as the ads page / Seller Centre show it
+     * (ad spend ÷ ad conversions) for the order's day, and the same figure the profit report deducts per order.
+     */
+    private function adCost(Order $o): ?array
+    {
+        $day = $o->created_at->copy()->timezone(\App\Support\Dates::TZ);
+        $map = \App\Support\Analytics::adConversionMap((int) $o->marketplace_shop_id, $day->copy()->startOfDay(), $day->copy()->endOfDay());
+        $seen = [];
+        $lines = collect($o->items ?? [])->map(function ($i) use ($map, &$seen) {
+            $id = (int) ($i['item_id'] ?? 0);
+            if (! isset($map[$id]) || isset($seen[$id])) {
+                return null;
+            }
+            $seen[$id] = true;
+            $a = $map[$id];
+
+            return ['item_id' => $id, 'name' => $i['name'] ?? '', 'campaign' => $a['campaign'], 'expense' => $a['expense'], 'conversions' => $a['conversions'],
+                'per_conversion' => $a['conversions'] > 0 ? (int) round($a['cost_per_conversion']) : null];
+        })->filter()->values();
+        if ($lines->isEmpty()) {
+            return null;
+        }
+        $total = (int) $lines->sum(fn ($l) => $l['per_conversion'] ?? 0);
+
+        return ['date' => $day->toDateString(), 'lines' => $lines->all(), 'per_conversion' => $total,
+            'net_after_ads' => $o->escrow_amount !== null ? (int) $o->escrow_amount - $total : null];
     }
 
     /** Cancel an unshipped order because the stock ran out (Shopee asks which products are out of stock). */
