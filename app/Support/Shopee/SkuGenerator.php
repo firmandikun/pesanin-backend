@@ -20,9 +20,12 @@ class SkuGenerator
     /** Words that carry no meaning in a product name. */
     private const STOP = ['dan', 'untuk', 'yang', 'dengan', 'di', 'ke', 'dari', 'atau', 'new', 'original', 'ori', 'murah', 'promo', 'termurah', 'terbaru', 'bisa', 'cod', 'free', 'gratis', 'the', 'and', 'for', 'with', 'of'];
 
+    /** Same product: names equal once notes like "(Bisa COD 2)" / "[READY]" and spacing are ignored. */
     private static function key(string $name, ?string $variant): string
     {
-        return Str::lower(preg_replace('/\s+/', ' ', trim($name.'|'.($variant ?? ''))));
+        $clean = fn ($v) => Str::lower(trim(preg_replace('/\s+/', ' ', preg_replace('/\([^)]*\)|\[[^\]]*\]/', ' ', (string) $v))));
+
+        return $clean($name).'|'.$clean($variant);
     }
 
     public static function abbrName(string $name): string
@@ -38,19 +41,15 @@ class SkuGenerator
         return substr($code ?: 'PRD', 0, 8);
     }
 
+    /** Every word of the variation, 3 letters each, up to 4: "Airblade New + Baut" → AIR-NEW-BAU, "Hitam, XL" → HIT-XL. */
     public static function abbrVariant(?string $variant): string
     {
         if (! $variant) {
             return '';
         }
 
-        $parts = preg_split('/[,\/|;+]+/', Str::ascii($variant));
-        if (count(array_filter($parts, 'trim')) === 1) {
-            $parts = preg_split('/\s+/', trim($parts[0])); // "AIRBLADE OLD" → AIR-OLD
-        }
-
-        return collect($parts)->map(fn ($p) => preg_replace('/[^A-Za-z0-9]/', '', $p))->filter()
-            ->take(3)->map(fn ($p) => Str::upper(ctype_digit($p) ? $p : substr($p, 0, 3)))->implode('-');
+        return collect(preg_split('/[^A-Za-z0-9]+/', Str::ascii($variant)))->filter()
+            ->take(4)->map(fn ($p) => Str::upper(ctype_digit($p) ? $p : substr($p, 0, 3)))->implode('-');
     }
 
     /**
