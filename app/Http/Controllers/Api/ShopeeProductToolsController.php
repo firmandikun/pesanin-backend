@@ -159,4 +159,144 @@ class ShopeeProductToolsController extends Controller
 
         return ['ok' => true, 'name' => trim($d['name'])];
     }
+
+    /** Product performance report combining Shopee get_item_extra_info snapshots with period order sales. */
+    public function performance(Request $request)
+    {
+        $userId = $request->user()->id;
+        $shopId = $request->integer('shop_id') ?: null;
+        $from = $request->string('from')->toString() ?: now('Asia/Jakarta')->subDays(29)->toDateString();
+        $to = $request->string('to')->toString() ?: now('Asia/Jakarta')->toDateString();
+        $search = mb_strtolower(trim($request->string('q')->toString()));
+        $sort = $request->string('sort')->toString() ?: 'revenue';
+
+        $shops = MarketplaceShop::where('user_id', $userId)
+            ->where('status', '!=', 'disconnected')
+            ->get(['id', 'shop_name', 'is_demo', 'status']);
+
+        $listings = \App\Models\MarketplaceListing::where('user_id', $userId)
+            ->when($shopId, fn ($q) => $q->where('marketplace_shop_id', $shopId))
+            ->whereIn('marketplace_shop_id', $shops->pluck('id'))
+            ->get(['id', 'marketplace_shop_id', 'item_id', 'name', 'sku', 'image', 'price', 'stock', 'status']);
+
+        $grouped = $listings->groupBy(fn ($l) => "{$l->marketplace_shop_id}:{$l->item_id}");
+        $keys = $grouped->map(fn ($g) => [(int) $g->first()->marketplace_shop_id, (int) $g->first()->item_id])->values();
+        $stats = ShopeeProductTools::statsFor($keys);
+
+        $fromUtc = \Carbon\Carbon::parse($from, 'Asia/Jakarta')->startOfDay()->utc();
+        $toUtc = \Carbon\Carbon::parse($to, 'Asia/Jakarta')->endOfDay()->utc();
+        $orders = \App\Models\Order::where('user_id', $userId)
+            ->where('channel', 'shopee')
+            ->when($shopId, fn ($q) => $q->where('marketplace_shop_id', $shopId))
+            ->whereBetween('created_at', [$fromUtc, $toUtc])
+            ->whereNotIn('status', ['cancelled', 'refunded'])
+            ->where(fn ($w) => $w->whereNull('external_status')->orWhereNotIn('external_status', ['CANCELLED', 'IN_CANCEL']))
+            ->get(['id', 'marketplace_shop_id', 'items']);
+
+        $periodSales = [];
+        foreach ($orders as $o) {
+            $seenInOrder = [];
+            foreach ($o->items ?? [] as $it) {
+                $iid = (int) ($it['item_id'] ?? 0);
+                if (! $iid) {
+                    continue;
+                }
+                $key = "{$o->marketplace_shop_id}:{$iid}";
+                $qty = max(1, (int) ($it['qty'] ?? 1));
+                $unitPrice = (int) ($it['discounted_price'] ?? $it['price'] ?? 0);
+                $rev = (int) ($it['subtotal'] ?? ($unitPrice * $qty));
+                $periodSales[$key] ??= ['units' => 0, 'orders' => 0, 'revenue' => 0];
+                $periodSales[$key]['units'] += $qty;
+                $periodSales[$key]['revenue'] += $rev;
+                if (! isset($seenInOrder[$key])) {
+                    $periodSales[$key]['orders']++;
+                    $seenInOrder[$key] = true;
+                }
+            }
+        }
+
+        $shopNames = $shops->pluck('shop_name', 'id');
+        $rows = [];
+        foreach ($grouped as $key => $variants) {
+            $first = $variants->first();
+            $skus = $variants->pluck('sku')->filter()->unique()->values()->all();
+            if ($search !== '' && ! str_contains(mb_strtolower($first->name), $search) && ! str_contains(mb_strtolower(implode(' ', $skus)), $search)) {
+                continue;
+            }
+            $st = $stats[$key] ?? null;
+            $ps = $periodSales[$key] ?? ['units' => 0, 'orders' => 0, 'revenue' => 0];
+            $views = (int) ($st['views'] ?? 0);
+            $sales = (int) ($st['sales'] ?? 0);
+            $views7d = $st['views_7d'] ?? null;
+            $sales7d = $st['sales_7d'] ?? null;
+            $needsAttention = $views >= 100 && $ps['units'] === 0 && ($sales7d === null || $sales7d === 0);
+
+            $rows[] = [
+                'key' => $key,
+                'shop_id' => (int) $first->marketplace_shop_id,
+                'shop_name' => $shopNames[$first->marketplace_shop_id] ?? 'Toko',
+                'item_id' => (int) $first->item_id,
+                'name' => $first->name,
+                'sku' => $skus[0] ?? null,
+                'image' => $first->image,
+                'price_min' => (int) $variants->min('price'),
+                'price_max' => (int) $variants->max('price'),
+                'stock' => (int) $variants->sum('stock'),
+                'status' => $first->status,
+                'views' => $views,
+                'likes' => (int) ($st['likes'] ?? 0),
+                'sales' => $sales,
+                'rating' => $st['rating'] ?? null,
+                'comments' => (int) ($st['comments'] ?? 0),
+                'views_7d' => $views7d,
+                'sales_7d' => $sales7d,
+                'stat_date' => $st['date'] ?? null,
+                'period_units' => $ps['units'],
+                'period_orders' => $ps['orders'],
+                'period_revenue' => $ps['revenue'],
+                'conversion_rate' => $views > 0 ? round(($sales / $views) * 100, 2) : 0,
+                'needs_attention' => $needsAttention,
+            ];
+        }
+
+        usort($rows, function ($a, $b) use ($sort) {
+            switch ($sort) {
+                case 'units':
+                    return ($b['period_units'] <=> $a['period_units']) ?: ($b['period_revenue'] <=> $a['period_revenue']);
+                case 'views':
+                    return $b['views'] <=> $a['views'];
+                case 'likes':
+                    return $b['likes'] <=> $a['likes'];
+                case 'sales':
+                    return $b['sales'] <=> $a['sales'];
+                case 'rating':
+                    return (($b['rating'] ?? 0) <=> ($a['rating'] ?? 0)) ?: ($b['comments'] <=> $a['comments']);
+                case 'attention':
+                    return ($b['needs_attention'] <=> $a['needs_attention']) ?: ($b['views'] <=> $a['views']);
+                default:
+                    return ($b['period_revenue'] <=> $a['period_revenue']) ?: ($b['views'] <=> $a['views']);
+            }
+        });
+
+        $rated = array_filter($rows, fn ($r) => $r['rating'] !== null);
+        $dates = array_filter(array_column($rows, 'stat_date'));
+
+        return [
+            'from' => $from,
+            'to' => $to,
+            'shops' => $shops->values(),
+            'summary' => [
+                'total_products' => count($rows),
+                'total_views' => array_sum(array_column($rows, 'views')),
+                'total_likes' => array_sum(array_column($rows, 'likes')),
+                'total_sales' => array_sum(array_column($rows, 'sales')),
+                'period_units' => array_sum(array_column($rows, 'period_units')),
+                'period_revenue' => array_sum(array_column($rows, 'period_revenue')),
+                'avg_rating' => count($rated) ? round(array_sum(array_column($rated, 'rating')) / count($rated), 2) : null,
+                'low_conversion_count' => count(array_filter($rows, fn ($r) => $r['needs_attention'])),
+                'last_synced_date' => $dates ? max($dates) : null,
+            ],
+            'items' => $rows,
+        ];
+    }
 }
