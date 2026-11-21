@@ -17,11 +17,11 @@ class AiDiagnosisController extends Controller
         $user = $request->user();
         [$from, $to] = Dates::range($request->query('from'), $request->query('to'), 30);
         $snapshot = AiBusinessDiagnosis::snapshot($user, $from, $to);
-        $gemini = $user->integration('gemini');
+        $gemini = $user->integrations()->where('provider', 'gemini')->where('status', 'active')->first();
         $cacheKey = "ai_diag:{$user->id}:{$from->toDateString()}:{$to->toDateString()}";
 
         return [
-            'gemini_connected' => (bool) ($gemini && $gemini->status === 'active' && $gemini->key('api_key')),
+            'gemini_connected' => (bool) ($gemini && $gemini->key('api_key')),
             'snapshot' => $snapshot,
             'diagnosis' => Cache::get($cacheKey),
         ];
@@ -35,8 +35,8 @@ class AiDiagnosisController extends Controller
             'to' => 'nullable|date',
             'question' => 'nullable|string|max:500',
         ]);
-        $gemini = $user->integration('gemini');
-        $apiKey = $gemini?->status === 'active' ? $gemini->key('api_key') : null;
+        $gemini = $user->integrations()->where('provider', 'gemini')->where('status', 'active')->first();
+        $apiKey = $gemini?->key('api_key');
         abort_unless($apiKey, 422, 'API Key Gemini belum terhubung. Atur di Pengaturan → Integrasi.');
 
         [$from, $to] = Dates::range($data['from'] ?? null, $data['to'] ?? null, 30);
