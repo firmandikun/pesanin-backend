@@ -68,10 +68,26 @@ class StockMasterController extends Controller
         ];
     }
 
-    /** "Buat dari SKU yang sama": masters for every SKU shared by 2+ listings (starting stock = the lowest of them). */
+    /** "Buat dari SKU yang sama": sync latest SKUs from Shopee first, then generate/link masters and push stock. */
     public function generate(Request $request)
     {
         Plans::ensureFeature($request->user(), 'stock_master');
+        ignore_user_abort(true);
+        @set_time_limit(0);
+
+        $sync = new \App\Support\Shopee\ShopeeSync;
+        $shops = \App\Models\MarketplaceShop::where('user_id', $request->user()->id)
+            ->where('is_demo', false)
+            ->where('status', '!=', 'disconnected')
+            ->get();
+        foreach ($shops as $shop) {
+            try {
+                $sync->products($shop);
+            } catch (\Throwable) {
+                // Continue with remaining shops / local listings
+            }
+        }
+
         $r = MasterStock::generate($request->user());
         MasterStock::pushPending();
 
