@@ -273,10 +273,11 @@ Balas HANYA dalam format JSON valid dengan struktur persis berikut:
 }
 PROMPT;
 
+        $models = self::availableModels($apiKey);
         $lastErr = 'Gagal menghubungi Gemini AI.';
-        foreach (['gemini-3.8-flash', 'gemini-2.5-flash', 'gemini-2.5-pro'] as $model) {
+        foreach ($models as $model) {
             $res = Http::timeout(45)->post(
-                "https://generativelanguage.googleapis.com/v1beta/models/{$model}:generateContent?key=".urlencode($apiKey),
+                "https://generativelanguage.googleapis.com/v1beta/{$model}:generateContent?key=".urlencode($apiKey),
                 [
                     'contents' => [['parts' => [['text' => $prompt]]]],
                     'generationConfig' => [
@@ -297,11 +298,44 @@ PROMPT;
             $clean = preg_replace('/^```json\s*|\s*```$/', '', trim($text));
             $decoded = json_decode((string) $clean, true);
             if (is_array($decoded) && isset($decoded['executive_summary'])) {
-                return $decoded + ['model' => $model, 'generated_at' => now()->toIso8601String()];
+                return $decoded + ['model' => str_replace('models/', '', $model), 'generated_at' => now()->toIso8601String()];
             }
             $lastErr = 'Format jawaban AI tidak sesuai.';
         }
 
         throw new RuntimeException($lastErr);
+    }
+
+    /** Discover generateContent-capable models available for this API key, preferring newest flash/pro. */
+    private static function availableModels(string $apiKey): array
+    {
+        $fallback = ['models/gemini-3.1-pro-preview', 'models/gemini-3.8-flash', 'models/gemini-2.5-flash'];
+        try {
+            $res = Http::timeout(10)->get('https://generativelanguage.googleapis.com/v1beta/models', ['key' => $apiKey]);
+            if (! $res->successful()) {
+                return $fallback;
+            }
+            $list = collect($res->json('models', []))
+                ->filter(fn ($m) => in_array('generateContent', $m['supportedGenerationMethods'] ?? [], true))
+                ->pluck('name')
+                ->filter(fn ($n) => str_contains($n, 'gemini-') && ! str_contains($n, 'embedding') && ! str_contains($n, 'tts') && ! str_contains($n, 'image'))
+                ->sortByDesc(function ($n) {
+                    $score = 0;
+                    if (str_contains($n, 'gemini-3')) $score += 100;
+                    elseif (str_contains($n, 'gemini-2.5')) $score += 50;
+                    if (str_contains($n, 'flash')) $score += 20;
+                    if (str_contains($n, 'pro')) $score += 10;
+                    if (str_contains($n, 'lite')) $score -= 5;
+
+                    return $score;
+                })
+                ->values()
+                ->take(5)
+                ->all();
+
+            return $list ?: $fallback;
+        } catch (\Throwable) {
+            return $fallback;
+        }
     }
 }
