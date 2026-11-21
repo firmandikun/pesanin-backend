@@ -274,7 +274,7 @@ Balas HANYA dalam format JSON valid dengan struktur persis berikut:
 PROMPT;
 
         $lastErr = 'Gagal menghubungi Gemini AI.';
-        foreach (['gemini-2.5-flash', 'gemini-2.0-flash'] as $model) {
+        foreach (['gemini-3.8-flash', 'gemini-2.5-flash', 'gemini-2.5-pro'] as $model) {
             $res = Http::timeout(45)->post(
                 "https://generativelanguage.googleapis.com/v1beta/models/{$model}:generateContent?key=".urlencode($apiKey),
                 [
