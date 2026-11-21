@@ -33,7 +33,7 @@ class ShopeeChatController extends Controller
                         'id' => (string) $c['conversation_id'], 'to_id' => (int) ($c['to_id'] ?? 0),
                         'name' => $c['to_name'] ?? 'Pembeli', 'avatar' => $c['to_avatar'] ?? null,
                         'unread' => (int) ($c['unread_count'] ?? 0), 'pinned' => (bool) ($c['pinned'] ?? false),
-                        'last_text' => self::preview($c['latest_message_type'] ?? 'text', $c['latest_message_content'] ?? []),
+                        'last_text' => self::preview($c['latest_message_type'] ?? 'text', (array) ($c['latest_message_content'] ?? [])) ?: 'Info dari Shopee',
                         'last_from_me' => isset($c['latest_message_from_id']) && (int) $c['latest_message_from_id'] === (int) $shop->shop_id,
                         'last_message_id' => isset($c['latest_message_id']) ? (string) $c['latest_message_id'] : null,
                         'at' => self::time($c['last_message_timestamp'] ?? null),
@@ -101,7 +101,12 @@ class ShopeeChatController extends Controller
             'text' => self::preview($m['message_type'] ?? 'text', $m['content'] ?? []),
         ] + self::media($m['message_type'] ?? 'text', (array) ($m['content'] ?? [])) + [
             'at' => self::time($m['created_timestamp'] ?? null),
-        ])->sortBy('at')->values();
+        ])
+            // Shopee notices (e.g. "Asisten AI Toko telah dijeda") are not buyer/seller messages: shown as a small
+            // centred note when they carry text, dropped when they have nothing readable (Shopee hides those too).
+            ->map(fn ($m) => $m + ['system' => ! in_array($m['type'], self::BUBBLES, true)])
+            ->reject(fn ($m) => $m['system'] && $m['text'] === '' && ! $m['image'] && ! $m['video'])
+            ->sortBy('at')->values();
         if ($last = $messages->last()) {
             try {
                 (new ShopeeClient)->chatRead($shop, $conversation, $last['id']);
@@ -172,14 +177,30 @@ class ShopeeChatController extends Controller
         return ['message' => ['id' => (string) ($r['message_id'] ?? ''), 'from_me' => true, 'type' => 'image', 'text' => '[Gambar]', 'image' => $url, 'video' => null, 'at' => now()->toIso8601String()]];
     }
 
+    /** Message kinds Pesanin shows as a chat bubble; anything else is a Shopee notice (AI assistant, system, …). */
+    public const BUBBLES = ['text', 'image', 'sticker', 'video', 'item', 'product', 'order', 'item_list'];
+
+    /** Readable text inside any content shape (notices keep it under different keys). */
+    public static function contentText(array $c): string
+    {
+        foreach (['text', 'content', 'title', 'message', 'preview_text', 'notification_text', 'desc', 'description'] as $k) {
+            $v = data_get($c, $k);
+            if (is_string($v) && trim($v) !== '') {
+                return trim($v);
+            }
+        }
+
+        return '';
+    }
+
     /** Text for a message bubble or list preview; non-text messages get a label. */
     public static function preview(string $type, array $content): string
     {
         return match ($type) {
             'text' => (string) ($content['text'] ?? ''),
             'image' => '[Gambar]', 'sticker' => '[Stiker]', 'video' => '[Video]',
-            'item', 'product' => '[Produk]', 'order' => '[Pesanan]',
-            default => (string) ($content['text'] ?? '[Pesan]'),
+            'item', 'product' => '[Produk]', 'order' => '[Pesanan]', 'item_list' => '[Produk]',
+            default => self::contentText($content),
         };
     }
 
