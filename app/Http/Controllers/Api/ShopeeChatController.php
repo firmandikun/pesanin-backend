@@ -84,9 +84,19 @@ class ShopeeChatController extends Controller
         } catch (Throwable $e) {
             abort(422, $e->getMessage());
         }
+        // How far the buyer has read, when Shopee says so (field names vary); otherwise the page infers it from replies.
+        $buyerRead = null;
+        try {
+            $conv = (new ShopeeClient)->call($shop, 'GET', '/api/v2/sellerchat/get_one_conversation', ['conversation_id' => $conversation])['response'] ?? [];
+            $buyerRead = collect(['to_last_read_message_id', 'opposite_last_read_message_id', 'buyer_last_read_message_id', 'to_read_message_id'])
+                ->map(fn ($k) => $conv[$k] ?? null)->first(fn ($v) => $v !== null && $v !== '' && $v !== 0 && $v !== '0');
+        } catch (Throwable) {
+        }
         $messages = collect($r['messages'] ?? [])->map(fn ($m) => [
             'id' => (string) $m['message_id'],
-            'from_me' => (int) ($m['from_shop_id'] ?? 0) === (int) $shop->shop_id,
+            'from_me' => $me = (int) ($m['from_shop_id'] ?? 0) === (int) $shop->shop_id,
+            'read' => ! $me ? null : (isset($m['is_read']) ? (bool) $m['is_read'] : (($m['status'] ?? null) === 'read' ? true
+                : ($buyerRead !== null ? strcmp(str_pad((string) $m['message_id'], 25, '0', STR_PAD_LEFT), str_pad((string) $buyerRead, 25, '0', STR_PAD_LEFT)) <= 0 : null))),
             'type' => $m['message_type'] ?? 'text',
             'text' => self::preview($m['message_type'] ?? 'text', $m['content'] ?? []),
         ] + self::media($m['message_type'] ?? 'text', (array) ($m['content'] ?? [])) + [
