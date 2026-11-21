@@ -45,14 +45,7 @@ class StockMasterController extends Controller
             });
 
         $mastersPage = $q->paginate(min(100, max(1, $request->integer('per_page', 20))));
-        $mastersPage->through(function ($m) {
-            $hpp = (int) ($m->listings->map(fn ($l) => (int) ($l->cost_price ?: $l->product?->cost_price))->filter()->max() ?: 0);
-            $sellPrice = (int) round($m->listings->where('price', '>', 0)->avg('price') ?? 0);
-            $m->setAttribute('hpp', $hpp);
-            $m->setAttribute('sell_price', $sellPrice);
-
-            return $m;
-        });
+        $mastersPage->through(fn ($m) => $this->appendCostMetrics($m));
 
         return [
             'masters' => $mastersPage,
@@ -113,7 +106,7 @@ class StockMasterController extends Controller
             ->update(['stock_master_id' => $master->id]);
         MasterStock::push($master);
 
-        return $master->load('listings.shop:id,shop_name,is_demo,status');
+        return $this->present($master);
     }
 
     public function update(Request $request, StockMaster $master)
@@ -124,7 +117,7 @@ class StockMasterController extends Controller
         MasterStock::setStock($master, $d['stock'], $d['note'] ?? 'Ubah manual');
         MasterStock::push($master);
 
-        return $master->refresh()->load('listings.shop:id,shop_name,is_demo,status');
+        return $this->present($master);
     }
 
     /** Link another listing (e.g. one with a different/empty SKU) to this master. */
@@ -137,7 +130,7 @@ class StockMasterController extends Controller
         MasterStock::attach($master, $listing);
         MasterStock::push($master);
 
-        return $master->refresh()->load('listings.shop:id,shop_name,is_demo,status');
+        return $this->present($master);
     }
 
     public function detach(Request $request, StockMaster $master, MarketplaceListing $listing)
@@ -146,7 +139,7 @@ class StockMasterController extends Controller
         abort_unless($listing->stock_master_id === $master->id, 404);
         $listing->update(['stock_master_id' => null, 'stock_push_error' => null]);
 
-        return $master->refresh()->load('listings.shop:id,shop_name,is_demo,status');
+        return $this->present($master);
     }
 
     public function push(Request $request, StockMaster $master)
@@ -154,7 +147,27 @@ class StockMasterController extends Controller
         $this->own($request, $master);
         MasterStock::push($master);
 
-        return $master->refresh()->load('listings.shop:id,shop_name,is_demo,status');
+        return $this->present($master);
+    }
+
+    private function present(StockMaster $master): StockMaster
+    {
+        $master->refresh()->load([
+            'listings' => fn ($l) => $l->select('id', 'stock_master_id', 'marketplace_shop_id', 'product_id', 'item_id', 'model_id', 'name', 'model_name', 'sku', 'stock', 'price', 'cost_price', 'stock_push_error', 'image', 'status')
+                ->with(['shop:id,shop_name,is_demo,status', 'product:id,cost_price']),
+        ]);
+
+        return $this->appendCostMetrics($master);
+    }
+
+    private function appendCostMetrics(StockMaster $m): StockMaster
+    {
+        $hpp = (int) ($m->listings->map(fn ($l) => (int) ($l->cost_price ?: $l->product?->cost_price))->filter()->max() ?: 0);
+        $sellPrice = (int) round($m->listings->where('price', '>', 0)->avg('price') ?? 0);
+        $m->setAttribute('hpp', $hpp);
+        $m->setAttribute('sell_price', $sellPrice);
+
+        return $m;
     }
 
     public function movements(Request $request, StockMaster $master)

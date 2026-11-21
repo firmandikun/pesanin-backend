@@ -182,6 +182,8 @@ Route::middleware(['auth:sanctum', 'member', 'subscribed'])->group(function () {
     Route::get('/customers/{customer}', [\App\Http\Controllers\Api\InboxController::class, 'showCustomer']);
     Route::put('/customers/{customer}', [\App\Http\Controllers\Api\InboxController::class, 'updateCustomer']);
     Route::delete('/customers/{customer}', [\App\Http\Controllers\Api\InboxController::class, 'deleteCustomer']);
+    Route::get('/reports/ai-diagnosis', [\App\Http\Controllers\Api\AiDiagnosisController::class, 'index']);
+    Route::post('/reports/ai-diagnosis', [\App\Http\Controllers\Api\AiDiagnosisController::class, 'analyze'])->middleware('throttle:10,1');
     Route::get('/meta-chat', [\App\Http\Controllers\Api\MetaChatController::class, 'status']);
     Route::post('/meta-chat/connect', [\App\Http\Controllers\Api\MetaChatController::class, 'connect']);
     Route::delete('/meta-chat', [\App\Http\Controllers\Api\MetaChatController::class, 'disconnect']);

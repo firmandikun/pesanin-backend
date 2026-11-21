@@ -115,6 +115,7 @@ class SidebarConfig
                 ['label' => 'Iklan Meta', 'href' => '/reports/meta-ads'],
                 ['label' => 'Riset Produk', 'href' => '/reports/research'],
                 ['label' => 'Riset Pasar', 'href' => '/reports/market'],
+                ['label' => 'Diagnosa Bisnis AI', 'href' => '/reports/ai-diagnosis'],
             ],
         ],
         [

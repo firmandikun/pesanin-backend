@@ -17,7 +17,7 @@ use Throwable;
 /** Pengaturan → Integrasi (RajaOngkir, Midtrans, WhatsApp Cloud…) and their webhooks. */
 class IntegrationController extends Controller
 {
-    private const PROVIDERS = ['rajaongkir', 'midtrans', 'shopee_affiliate', 'serpapi', 'whatsapp_cloud'];
+    private const PROVIDERS = ['rajaongkir', 'midtrans', 'shopee_affiliate', 'serpapi', 'whatsapp_cloud', 'gemini'];
 
     public function index(Request $request)
     {
@@ -39,7 +39,7 @@ class IntegrationController extends Controller
 
         $data = $request->validate($provider === 'rajaongkir'
             ? ['api_key' => [$existing ? 'nullable' : 'required', 'string', 'max:300'], 'delivery_enabled' => 'sometimes|boolean', 'delivery_sandbox' => 'sometimes|boolean', 'delivery_vehicle' => 'sometimes|in:Motor,Mobil,Truk']
-            : ($provider === 'serpapi'
+            : (in_array($provider, ['serpapi', 'gemini'], true)
             ? ['api_key' => [$existing ? 'nullable' : 'required', 'string', 'max:300']]
             : ($provider === 'whatsapp_cloud'
             ? ['phone_number_id' => [$existing ? 'nullable' : 'required', 'regex:/^\d{6,30}$/'], 'access_token' => [$existing ? 'nullable' : 'required', 'string', 'max:600'], 'app_secret' => ['nullable', 'string', 'max:100'], 'waba_id' => ['nullable', 'regex:/^\d{6,30}$/']]
@@ -52,7 +52,7 @@ class IntegrationController extends Controller
         $integration->fill([
             'credentials' => $creds,
             'is_production' => match ($provider) {
-                'rajaongkir', 'shopee_affiliate', 'serpapi', 'whatsapp_cloud' => true,
+                'rajaongkir', 'shopee_affiliate', 'serpapi', 'whatsapp_cloud', 'gemini' => true,
                 default => (bool) $data['is_production'],
             },
             'settings' => match ($provider) {
@@ -73,6 +73,7 @@ class IntegrationController extends Controller
                     ! empty($integration->settings['delivery']['enabled']) ? (new \App\Support\RajaOngkir\KomerceDelivery($integration))->verify() : null],
                 'shopee_affiliate' => (new \App\Support\Research\ShopeeAffiliate($integration))->verify(),
                 'serpapi' => (new \App\Support\Research\GoogleTrends($integration))->account(),
+                'gemini' => \App\Support\AiBusinessDiagnosis::verifyKey((string) ($creds['api_key'] ?? '')),
                 // Number details double as the connection test; kept to label the chat source.
                 'whatsapp_cloud' => $integration->settings = array_merge($integration->settings ?? [], (fn ($n) => [
                     'display_phone' => $n['display_phone_number'] ?? null, 'verified_name' => $n['verified_name'] ?? null, 'quality' => $n['quality_rating'] ?? null,
