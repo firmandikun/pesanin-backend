@@ -140,6 +140,7 @@ Route::middleware(['auth:sanctum', 'member', 'subscribed'])->group(function () {
     Route::get('/chat', [\App\Http\Controllers\Api\ShopeeChatController::class, 'conversations']);
     Route::get('/chat/shopee/{shop}/{conversation}', [\App\Http\Controllers\Api\ShopeeChatController::class, 'messages']);
     Route::post('/chat/shopee/{shop}', [\App\Http\Controllers\Api\ShopeeChatController::class, 'send'])->middleware('throttle:30,1');
+    Route::post('/chat/shopee/{shop}/image', [\App\Http\Controllers\Api\ShopeeChatController::class, 'sendImage'])->middleware('throttle:20,1');
     Route::get('/chat/whatsapp/{phone}/{waId}', [\App\Http\Controllers\Api\WhatsAppChatController::class, 'messages']);
     Route::post('/chat/whatsapp/{phone}', [\App\Http\Controllers\Api\WhatsAppChatController::class, 'send'])->middleware('throttle:30,1');
     Route::get('/chat/{channel}/{page}/{conversation}', [\App\Http\Controllers\Api\MetaChatController::class, 'messages'])->whereIn('channel', ['facebook', 'instagram']);

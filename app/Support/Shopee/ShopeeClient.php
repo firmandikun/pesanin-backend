@@ -421,6 +421,26 @@ class ShopeeClient
         ]))['response'] ?? [];
     }
 
+    /** Upload a photo for chat (multipart). @return string the image URL Shopee hosts */
+    public function chatUploadImage(MarketplaceShop $shop, string $bytes, string $filename): string
+    {
+        $this->ensureFreshToken($shop);
+        $path = '/api/v2/sellerchat/upload_image';
+        $ts = time();
+        $url = $this->host.$path.'?'.http_build_query([
+            'partner_id' => $this->partnerId, 'timestamp' => $ts, 'access_token' => $shop->access_token,
+            'shop_id' => $shop->shop_id, 'sign' => $this->sign($path, $ts, $shop->access_token, $shop->shop_id),
+        ]);
+        $res = Http::timeout(60)->acceptJson()->attach('file', $bytes, $filename)->post($url);
+        $r = $this->unwrap($res->json() ?? [], $res->status())['response'] ?? [];
+        $img = $r['url'] ?? $r['image_url'] ?? $r['thumb_url'] ?? null;
+        if (! $img) {
+            throw new ShopeeException('Shopee tidak mengembalikan URL gambar.');
+        }
+
+        return $img;
+    }
+
     public function chatSend(MarketplaceShop $shop, int $toId, string $text): array
     {
         return $this->post($shop, '/api/v2/sellerchat/send_message', ['to_id' => $toId, 'message_type' => 'text', 'content' => ['text' => $text]])['response'] ?? [];

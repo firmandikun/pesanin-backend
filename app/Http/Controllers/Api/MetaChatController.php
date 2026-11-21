@@ -165,7 +165,8 @@ class MetaChatController extends Controller
 
         return ['messages' => collect($rows)->map(fn ($m) => [
             'id' => (string) $m['id'], 'from_me' => (string) ($m['from']['id'] ?? '') === (string) $self, 'type' => isset($m['attachments']) ? 'attachment' : 'text',
-            'text' => self::text($m), 'image' => $m['attachments']['data'][0]['image_data']['url'] ?? null,
+            'text' => self::text($m), 'image' => $m['attachments']['data'][0]['image_data']['url'] ?? $m['attachments']['data'][0]['video_data']['preview_url'] ?? null,
+            'video' => $m['attachments']['data'][0]['video_data']['url'] ?? null,
             'link' => $m['shares']['data'][0]['link'] ?? $m['story']['link'] ?? null,
             'at' => isset($m['created_time']) ? Carbon::parse($m['created_time'])->toIso8601String() : null,
         ])->sortBy('at')->values()];

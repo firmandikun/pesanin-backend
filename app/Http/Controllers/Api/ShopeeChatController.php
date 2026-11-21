@@ -89,7 +89,7 @@ class ShopeeChatController extends Controller
             'from_me' => (int) ($m['from_shop_id'] ?? 0) === (int) $shop->shop_id,
             'type' => $m['message_type'] ?? 'text',
             'text' => self::preview($m['message_type'] ?? 'text', $m['content'] ?? []),
-            'image' => $m['content']['url'] ?? null,
+        ] + self::media($m['message_type'] ?? 'text', (array) ($m['content'] ?? [])) + [
             'at' => self::time($m['created_timestamp'] ?? null),
         ])->sortBy('at')->values();
         if ($last = $messages->last()) {
@@ -126,6 +126,40 @@ class ShopeeChatController extends Controller
     private function own(Request $request, MarketplaceShop $shop): void
     {
         abort_unless($shop->user_id === $request->user()->id, 404);
+    }
+
+    /** Photo / video of a message (Shopee names the fields differently per type and version). */
+    public static function media(string $type, array $c): array
+    {
+        $first = fn (array $keys) => collect($keys)->map(fn ($k) => data_get($c, $k))->first(fn ($v) => is_string($v) && $v !== '');
+        $video = $type === 'video' ? $first(['video_url', 'url', 'video.url', 'video_info.video_url']) : null;
+
+        return [
+            'video' => $video,
+            // For a video the image is its poster; stickers and images show the picture itself.
+            'image' => match ($type) {
+                'video' => $first(['thumb_url', 'thumb_image_url', 'cover_url', 'cover_image_url', 'image_url']),
+                'image', 'sticker' => $first(['url', 'image_url', 'thumb_url', 'image.url']),
+                default => null,
+            },
+            'duration' => $type === 'video' ? (int) ($c['duration_seconds'] ?? $c['duration'] ?? 0) ?: null : null,
+        ];
+    }
+
+    /** Send a photo: upload it to Shopee chat, then post it as an image message. */
+    public function sendImage(Request $request, MarketplaceShop $shop)
+    {
+        $this->own($request, $shop);
+        $data = $request->validate(['to_id' => 'required|integer', 'file' => 'required|file|mimes:jpg,jpeg,png,gif,webp|max:10240']);
+        $api = new ShopeeClient;
+        try {
+            $url = $api->chatUploadImage($shop, file_get_contents($data['file']->getRealPath()), $data['file']->getClientOriginalName() ?: 'gambar.jpg');
+            $r = $api->call($shop, 'POST', '/api/v2/sellerchat/send_message', ['to_id' => (int) $data['to_id'], 'message_type' => 'image', 'content' => ['image_url' => $url]])['response'] ?? [];
+        } catch (Throwable $e) {
+            abort(422, 'Gagal mengirim gambar: '.$e->getMessage());
+        }
+
+        return ['message' => ['id' => (string) ($r['message_id'] ?? ''), 'from_me' => true, 'type' => 'image', 'text' => '[Gambar]', 'image' => $url, 'video' => null, 'at' => now()->toIso8601String()]];
     }
 
     /** Text for a message bubble or list preview; non-text messages get a label. */
