@@ -16,9 +16,20 @@ use Throwable;
  */
 class ShopeeChatController extends Controller
 {
+    /** Chat channels of the store's track: Shopee for Marketplace, Meta & WhatsApp for Social & Web, all with the add-on. */
+    public static function channelsFor(\App\Models\User $user): array
+    {
+        if (\App\Support\Plans::hasAddon($user)) {
+            return ['shopee', 'facebook', 'instagram', 'whatsapp'];
+        }
+
+        return \App\Support\Plans::track($user) === 'marketplace' ? ['shopee'] : ['facebook', 'instagram', 'whatsapp'];
+    }
+
     public function conversations(Request $request)
     {
-        $shops = $this->shops($request);
+        $allowed = self::channelsFor($request->user());
+        $shops = in_array('shopee', $allowed, true) ? $this->shops($request) : collect();
         $api = new ShopeeClient;
         $out = [];
         $errors = [];
@@ -44,12 +55,15 @@ class ShopeeChatController extends Controller
             }
         }
         // Facebook Messenger + Instagram Direct from connected Pages.
-        MetaChatController::refreshPages($request->user(), $request->boolean('refresh'));
         $channel = $request->query('channel');
-        $meta = in_array($channel, [null, '', 'facebook', 'instagram'], true)
+        $useMeta = in_array('facebook', $allowed, true);
+        if ($useMeta) {
+            MetaChatController::refreshPages($request->user(), $request->boolean('refresh'));
+        }
+        $meta = $useMeta && in_array($channel, [null, '', 'facebook', 'instagram'], true)
             ? MetaChatController::inbox($request->user(), $channel ?: null, $channel ? $request->query('source') : null, $request->boolean('refresh'))
             : ['conversations' => [], 'errors' => []];
-        $wa = in_array($channel, [null, '', 'whatsapp'], true) ? WhatsAppChatController::inbox($request->user(), $channel === 'whatsapp' ? $request->query('source') : null) : [];
+        $wa = in_array('whatsapp', $allowed, true) && in_array($channel, [null, '', 'whatsapp'], true) ? WhatsAppChatController::inbox($request->user(), $channel === 'whatsapp' ? $request->query('source') : null) : [];
         $out = array_merge($out, $meta['conversations'], $wa);
         usort($out, fn ($a, $b) => [$b['pinned'], $b['at']] <=> [$a['pinned'], $a['at']]);
         $out = InboxController::decorate($request->user(), $out);
@@ -59,17 +73,18 @@ class ShopeeChatController extends Controller
 
         return [
             // Sources the seller can filter by; Meta channels are listed once they can be connected.
-            'channels' => [
+            'allowed_channels' => $allowed,
+            'channels' => array_values(array_filter([
                 ['id' => 'shopee', 'label' => 'Shopee', 'available' => $all->isNotEmpty(), 'sources' => $all->map(fn ($s) => ['id' => $s->id, 'name' => $s->shop_name])->values()],
                 ['id' => 'facebook', 'label' => 'Facebook', 'available' => $pages->isNotEmpty(), 'sources' => $pages->map(fn ($p) => ['id' => $p['id'], 'name' => $p['name']])->values()],
                 ['id' => 'instagram', 'label' => 'Instagram', 'available' => $pages->whereNotNull('ig_id')->isNotEmpty(), 'sources' => $pages->whereNotNull('ig_id')->map(fn ($p) => ['id' => $p['id'], 'name' => '@'.$p['ig_username']])->values()],
                 ['id' => 'whatsapp', 'label' => 'WhatsApp', 'available' => (bool) ($waI = WhatsAppChatController::integration($request->user())),
                     'sources' => $waI ? [['id' => $waI->settings['phone_number_id'] ?? '', 'name' => $waI->settings['display_phone'] ?? 'WhatsApp']] : []],
-            ],
-            'available' => $shops->isNotEmpty() && count($errors) < $shops->count(),
-            'reason' => $shops->isEmpty() ? 'Belum ada toko Shopee terhubung.' : ($errors ? implode(' · ', $errors) : null),
-            'meta' => ['connected' => (bool) MetaChatController::integration($request->user()), 'errors' => $meta['errors'],
-                'configured' => (bool) (config('services.meta.app_id') && config('services.meta.chat_config_id'))],
+            ], fn ($c) => in_array($c['id'], $allowed, true))),
+            'available' => in_array('shopee', $allowed, true) ? $shops->isNotEmpty() && count($errors) < $shops->count() : true,
+            'reason' => ! in_array('shopee', $allowed, true) ? null : ($shops->isEmpty() ? 'Belum ada toko Shopee terhubung.' : ($errors ? implode(' · ', $errors) : null)),
+            'meta' => ['connected' => $useMeta && (bool) MetaChatController::integration($request->user()), 'errors' => $meta['errors'],
+                'configured' => $useMeta && (bool) (config('services.meta.app_id') && config('services.meta.chat_config_id'))],
             'whatsapp' => ['connected' => (bool) WhatsAppChatController::integration($request->user())],
             'conversations' => $out,
             'unread' => array_sum(array_column($out, 'unread')),

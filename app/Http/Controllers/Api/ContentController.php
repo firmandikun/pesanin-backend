@@ -50,7 +50,14 @@ class ContentController extends Controller
         $site = array_merge(AdminController::SITE_DEFAULTS, \App\Models\PlatformSetting::read('site', []));
 
         return $site + [
-            'plans' => collect(\App\Support\Plans::all())->map(fn ($p, $id) => ['id' => $id, 'name' => $p['name'], 'monthly' => $p['monthly'], 'limits' => $p['limits']])->values(),
+            'plans' => collect(\App\Support\Plans::all('marketplace'))->map(fn ($p, $id) => ['id' => $id, 'name' => $p['name'], 'monthly' => $p['monthly'], 'limits' => $p['limits']])->values(),
+            // Two-track price list for the pricing page (Marketplace vs Social & Web) + Enterprise "mulai dari".
+            'pricing' => [
+                'tracks' => \App\Support\Plans::TRACKS, 'yearly_discount' => \App\Support\Plans::YEARLY_DISCOUNT, 'addon_discount' => \App\Support\Plans::ADDON_DISCOUNT,
+                'catalog' => collect(\App\Support\Plans::TRACKS)->mapWithKeys(fn ($l, $t) => [$t => collect(\App\Support\Plans::all($t))->map(fn ($p, $id) => [
+                    'id' => $id, 'name' => $p['name'], 'monthly' => $p['monthly'], 'yearly' => \App\Support\Plans::price($id, 'yearly', $t), 'limits' => $p['limits'],
+                ])->values()]),
+            ],
             'sidebar' => \App\Support\SidebarConfig::visible(),
         ];
     }

@@ -83,7 +83,7 @@ class MarketplaceController extends Controller
         } catch (\Throwable) {
             return redirect($done.'?error='.urlencode('Link tidak valid. Minta link baru ke pemilik akun Pesanin.'));
         }
-        $limit = Plans::all()[Plans::current($user)]['limits']['shops'];
+        $limit = Plans::forUser($user)['limits']['shops'];
         if ($limit !== null && Plans::usage($user)['shops'] >= $limit) {
             return redirect($done.'?error='.urlencode('Batas toko di paket akun Pesanin ini sudah tercapai.'));
         }

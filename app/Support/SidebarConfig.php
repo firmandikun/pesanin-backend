@@ -199,6 +199,89 @@ class SidebarConfig
         return array_values(array_filter(self::all(), fn (array $item) => $item['visible']));
     }
 
+    /** Menus that belong to one track (GTM Playbook v2.0). Not listed = shown in both tracks. */
+    public const TRACK = ['products' => 'social', 'dropship' => 'social', 'orders' => 'social', 'operations' => 'social', 'promotions' => 'social', 'marketplace' => 'marketplace'];
+
+    /** Single menu entries inside shared groups that belong to one track, by link. */
+    public const CHILD_TRACK = [
+        '/broadcast' => 'social', '/broadcast/templates' => 'social', '/reports/meta-ads' => 'social', '/others/product-reports' => 'social',
+        '/reports/research' => 'marketplace', '/reports/market' => 'marketplace',
+        '/settings/addresses' => 'social', '/settings/tracking' => 'social', '/settings/domains' => 'social', '/settings/banned' => 'social',
+    ];
+
+    /** Menu entries that need a plan feature (shown with the plan that unlocks it). */
+    public const FEATURE_LINKS = ['/marketplace/stock' => 'stock_master', '/settings/tracking' => 'pixels', '/others/coupons' => 'coupons', '/affiliate' => 'affiliates'];
+
+    /** Menu entries that need a quota above 0 (e.g. custom domain from Starter Social & Web). */
+    public const QUOTA_LINKS = ['/settings/domains' => 'domains', '/others/team-members' => 'team'];
+
+    /**
+     * The sidebar for one store: only its track's menus, both tracks with the add-on or Enterprise.
+     * @return array{items: array, hidden: string[]} hidden = links of the other track (pages blocked in the shell)
+     */
+    public static function forUser(\App\Models\User $user): array
+    {
+        $items = self::visible();
+        if (Plans::hasAddon($user)) {
+            return ['items' => self::withPlanBadges($user, $items), 'hidden' => []];
+        }
+        $track = Plans::track($user);
+        $hidden = [];
+        $out = [];
+        foreach ($items as $item) {
+            $links = array_values(array_filter(array_merge([$item['href'] ?? null], array_column($item['children'] ?? [], 'href'))));
+            if (($t = self::TRACK[$item['key']] ?? null) && $t !== $track) {
+                array_push($hidden, ...$links);
+
+                continue;
+            }
+            if (! empty($item['children'])) {
+                $item['children'] = array_values(array_filter($item['children'], function ($c) use ($track, &$hidden) {
+                    $t = self::CHILD_TRACK[$c['href']] ?? null;
+                    if ($t && $t !== $track) {
+                        $hidden[] = $c['href'];
+
+                        return false;
+                    }
+
+                    return true;
+                }));
+            }
+            $out[] = $item;
+        }
+
+        return ['items' => self::withPlanBadges($user, $out), 'hidden' => array_values(array_unique(array_map(fn ($h) => strtok($h, '?'), array_filter($hidden, fn ($h) => str_starts_with($h, '/')))))];
+    }
+
+    /** Mark entries the plan does not include yet with the plan that unlocks them ("Starter", "Bisnis", …). */
+    private static function withPlanBadges(\App\Models\User $user, array $items): array
+    {
+        $plan = Plans::forUser($user);
+        $catalog = Plans::all($plan['track']);
+        $need = function (string $href) use ($user, $plan, $catalog): ?string {
+            if (($f = self::FEATURE_LINKS[$href] ?? null) && ! Plans::hasFeature($user, $f)) {
+                return $catalog[Plans::features()[$f]]['name'] ?? null;
+            }
+            if (($q = self::QUOTA_LINKS[$href] ?? null) && ($plan['limits'][$q] ?? null) !== null && $plan['limits'][$q] <= ($q === 'team' ? 1 : 0)) {
+                foreach ($catalog as $p) {
+                    if ($p['limits'][$q] === null || $p['limits'][$q] > ($q === 'team' ? 1 : 0)) {
+                        return $p['name'];
+                    }
+                }
+            }
+
+            return null;
+        };
+
+        return array_map(function ($item) use ($need) {
+            if (! empty($item['children'])) {
+                $item['children'] = array_map(fn ($c) => ($b = $need($c['href'])) ? $c + ['lock' => $b] : $c, $item['children']);
+            }
+
+            return $item;
+        }, $items);
+    }
+
     public static function isEnabled(string $key): bool
     {
         foreach (self::all() as $item) {

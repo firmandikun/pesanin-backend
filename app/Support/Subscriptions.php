@@ -9,19 +9,22 @@ use Illuminate\Support\Facades\DB;
 class Subscriptions
 {
     /** Issue an unpaid invoice, cancelling any earlier unpaid one. Renewing the active plan extends from its expiry. */
-    public static function createInvoice(User $user, string $plan, string $billing, string $method): SubscriptionInvoice
+    public static function createInvoice(User $user, string $plan, string $billing, string $method, ?string $track = null, bool $addon = false): SubscriptionInvoice
     {
-        $amount = Plans::price($plan, $billing);
-        $start = Plans::current($user) === $plan && $user->plan_expires_at?->isFuture() ? $user->plan_expires_at->copy()->startOfDay() : now();
+        $track ??= Plans::track($user);
+        $amount = Plans::price($plan, $billing, $track, $addon);
+        // Renewing the same plan & track extends from its expiry; any change starts now.
+        $same = Plans::current($user) === $plan && Plans::track($user) === $track;
+        $start = $same && $user->plan_expires_at?->isFuture() ? $user->plan_expires_at->copy()->startOfDay() : now();
         $end = $billing === 'yearly' ? $start->copy()->addYear() : $start->copy()->addMonth();
         $tax = (int) round($amount * Plans::TAX_PERCENT / 100);
 
-        return DB::transaction(function () use ($user, $plan, $billing, $method, $amount, $tax, $start, $end) {
+        return DB::transaction(function () use ($user, $plan, $billing, $method, $amount, $tax, $start, $end, $track, $addon) {
             $user->subscriptionInvoices()->where('status', 'unpaid')->update(['status' => 'cancelled']);
 
             return $user->subscriptionInvoices()->create([
                 'number' => 'INV/PSN/'.now()->format('ymd').'/'.strtoupper(bin2hex(random_bytes(3))),
-                'plan' => $plan, 'billing' => $billing,
+                'plan' => $plan, 'billing' => $billing, 'track' => $track, 'addon' => $addon,
                 'amount' => $amount, 'tax' => $tax, 'total' => $amount + $tax,
                 'method' => $method, 'pay_code' => self::payCode($method, $user->id),
                 'status' => 'unpaid', 'period_start' => $start->toDateString(), 'period_end' => $end->toDateString(),
@@ -35,8 +38,8 @@ class Subscriptions
     {
         DB::transaction(function () use ($invoice) {
             $invoice->update(['status' => 'paid', 'paid_at' => now()]);
-            $invoice->user->forceFill([
-                'plan' => $invoice->plan, 'plan_billing' => $invoice->billing,
+            $invoice->user->forceFill(array_filter(['plan_track' => $invoice->track], fn ($v) => $v !== null) + [
+                'plan' => $invoice->plan, 'plan_billing' => $invoice->billing, 'plan_addon' => (bool) $invoice->addon,
                 'plan_expires_at' => \Carbon\Carbon::parse($invoice->period_end)->endOfDay(), 'plan_auto_renew' => true,
             ])->save();
         });

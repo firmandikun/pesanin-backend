@@ -15,7 +15,7 @@ class OrderQuota
 {
     public static function limit(User $user): ?int
     {
-        return Plans::all()[Plans::current($user)]['limits']['orders'] ?? null;
+        return Plans::forUser($user)['limits']['orders'] ?? null;
     }
 
     /** Orders counted for the month of $at (web/manual and Shopee alike, abandoned checkouts excluded). */

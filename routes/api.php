@@ -96,7 +96,11 @@ Route::middleware(['auth:sanctum', 'member', 'admin'])->prefix('admin/dropship')
 
 Route::middleware(['auth:sanctum', 'member', 'subscribed'])->group(function () {
     Route::get('/me', [AuthController::class, 'me']);
-    Route::get('/sidebar', fn () => ['items' => \App\Support\SidebarConfig::visible()]);
+    Route::get('/sidebar', function (\Illuminate\Http\Request $request) {
+        $n = \App\Support\SidebarConfig::forUser($request->user());
+
+        return ['items' => $n['items'], 'hidden' => $n['hidden']];
+    });
     Route::post('/logout', [AuthController::class, 'logout']);
 
     Route::get('/dropship', [\App\Http\Controllers\Api\DropshipController::class, 'index']);
@@ -310,6 +314,7 @@ Route::middleware(['auth:sanctum', 'member', 'subscribed'])->group(function () {
     Route::post('/billing/checkout', [BillingController::class, 'checkout'])->middleware('throttle:20,1');
     Route::put('/billing/auto-renew', [BillingController::class, 'autoRenew']);
     Route::post('/billing/free', [BillingController::class, 'chooseFree']);
+    Route::put('/billing/track', [BillingController::class, 'track']);
     Route::post('/billing/invoices/{invoice}/cancel', [BillingController::class, 'cancel']);
     Route::post('/billing/invoices/{invoice}/simulate-pay', [BillingController::class, 'simulatePay']);
     Route::get('/user-settings', [FeatureController::class, 'userSettings']);

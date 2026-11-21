@@ -20,6 +20,11 @@ class PublicCheckoutController extends Controller
         if (! $request->boolean('preview')) {
             $product->increment('views');
         }
+        // "Powered by Pesanin" can only be removed from Bisnis (Social & Web) up.
+        if (! \App\Support\Plans::hasFeature($product->user, 'no_watermark')) {
+            $fs = $product->form_settings ?? [];
+            $product->setAttribute('form_settings', array_merge(is_array($fs) ? $fs : [], ['watermark_logo' => true]));
+        }
 
         return [
             'product' => $product->makeHidden(['cost_price', 'user_id', 'views', 'sku', 'user', 'responsible_user_id']),

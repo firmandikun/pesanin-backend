@@ -29,15 +29,17 @@ class AdminController extends Controller
             return 0; // free trial brings in nothing yet
         }
         $plan = Plans::current($u);
-        $monthly = Plans::all()[$plan]['monthly'] ?? 0;
+        if ($plan === 'enterprise') {
+            return (int) ($u->plan_price ?: Plans::all(Plans::track($u))['enterprise']['monthly']);
+        }
 
-        return $u->plan_billing === 'yearly' ? (int) round($monthly * Plans::YEARLY_MONTHS_PAID / 12) : $monthly;
+        return $u->plan_billing === 'yearly' ? (int) round(Plans::price($plan, 'yearly', Plans::track($u), Plans::hasAddon($u)) / 12) : Plans::monthly($plan, Plans::track($u), Plans::hasAddon($u));
     }
 
     public function overview()
     {
-        $users = User::where('is_admin', false)->get(['id', 'plan', 'plan_billing', 'plan_expires_at', 'created_at', 'suspended_at']);
-        $byPlan = collect(Plans::all())->map(fn ($p, $id) => ['plan' => $id, 'name' => $p['name'], 'users' => 0, 'mrr' => 0])->all();
+        $users = User::where('is_admin', false)->get(['id', 'plan', 'plan_billing', 'plan_expires_at', 'created_at', 'suspended_at', 'plan_track', 'plan_addon', 'plan_price']);
+        $byPlan = collect(Plans::PLANS)->map(fn ($p, $id) => ['plan' => $id, 'name' => $p['name'], 'users' => 0, 'mrr' => 0])->all();
         foreach ($users as $u) {
             $plan = Plans::current($u);
             $byPlan[$plan]['users']++;
@@ -111,6 +113,7 @@ class AdminController extends Controller
         return [
             'id' => $u->id, 'name' => $u->name, 'email' => $u->email, 'store_name' => $u->store_name, 'whatsapp' => $u->whatsapp,
             'plan' => $u->plan, 'active_plan' => Plans::current($u), 'plan_billing' => $u->plan_billing, 'plan_expires_at' => $u->plan_expires_at,
+            'plan_track' => Plans::track($u), 'plan_addon' => (bool) $u->plan_addon, 'plan_price' => $u->plan_price, 'plan_label' => Plans::forUser($u)['name'].' · '.Plans::TRACK_SHORT[Plans::track($u)],
             'subscription' => Plans::status($u),
             'is_admin' => $u->is_admin, 'suspended_at' => $u->suspended_at, 'created_at' => $u->created_at, 'mrr' => self::mrrOf($u),
             'orders_count' => $u->orders_count ?? null, 'shops_count' => $u->marketplace_shops_count ?? null, 'products_count' => $u->products_count ?? null,
@@ -134,7 +137,10 @@ class AdminController extends Controller
     public function updateUser(Request $request, User $user)
     {
         $data = $request->validate([
-            'plan' => ['sometimes', Rule::in(array_keys(Plans::all()))],
+            'plan' => ['sometimes', Rule::in(array_keys(Plans::PLANS))],
+            'plan_track' => ['sometimes', Rule::in(array_keys(Plans::TRACKS))],
+            'plan_addon' => 'sometimes|boolean',
+            'plan_price' => 'sometimes|nullable|integer|min:0|max:1000000000',
             'plan_billing' => 'sometimes|nullable|in:monthly,yearly,trial',
             'plan_expires_at' => 'sometimes|nullable|date',
             'suspended' => 'sometimes|boolean',
@@ -144,7 +150,7 @@ class AdminController extends Controller
             abort_if(($data['suspended'] ?? false) || (array_key_exists('is_admin', $data) && ! $data['is_admin']), 422, 'Tidak bisa menonaktifkan atau mencabut admin akun sendiri.');
         }
         $changes = [];
-        foreach (['plan', 'plan_billing'] as $k) {
+        foreach (['plan', 'plan_billing', 'plan_track', 'plan_addon', 'plan_price'] as $k) {
             if (array_key_exists($k, $data)) {
                 $changes[$k] = $data[$k];
             }
@@ -206,7 +212,10 @@ class AdminController extends Controller
     public function platform()
     {
         return [
-            'plans' => collect(Plans::all())->map(fn ($p, $id) => ['id' => $id, 'name' => $p['name'], 'monthly' => $p['monthly'], 'limits' => $p['limits'],
+            'tracks' => Plans::TRACKS,
+            'catalog' => collect(Plans::TRACKS)->mapWithKeys(fn ($label, $t) => [$t => collect(Plans::all($t))->map(fn ($p, $id) => ['id' => $id, 'name' => $p['name'], 'monthly' => $p['monthly'], 'limits' => $p['limits'],
+                'default' => ['name' => Plans::CATALOG[$t][$id]['name'], 'monthly' => Plans::CATALOG[$t][$id]['monthly'], 'limits' => Plans::CATALOG[$t][$id]['limits']]])->values()]),
+            'plans' => collect(Plans::all('marketplace'))->map(fn ($p, $id) => ['id' => $id, 'name' => $p['name'], 'monthly' => $p['monthly'], 'limits' => $p['limits'],
                 'default' => ['name' => Plans::PLANS[$id]['name'], 'monthly' => Plans::PLANS[$id]['monthly'], 'limits' => Plans::PLANS[$id]['limits']]])->values(),
             'limit_labels' => collect(array_keys(Plans::PLANS['gratis']['limits']))->mapWithKeys(fn ($k) => [$k => Plans::LABELS[$k]]),
             'features' => collect(Plans::features())->map(fn ($need, $f) => ['key' => $f, 'label' => Plans::LABELS[$f], 'plan' => $need, 'default' => Plans::FEATURES[$f]])->values(),
@@ -219,21 +228,23 @@ class AdminController extends Controller
     {
         $limitKeys = array_keys(Plans::PLANS['gratis']['limits']);
         $data = $request->validate([
-            'plans' => 'sometimes|array', 'plans.*.name' => 'required|string|max:30', 'plans.*.monthly' => 'required|integer|min:0|max:100000000',
-            'plans.*.limits' => 'required|array', 'plans.*.limits.*' => 'nullable|integer|min:0|max:100000000',
+            'catalog' => 'sometimes|array', 'catalog.*' => 'array', 'catalog.*.*.name' => 'required|string|max:30', 'catalog.*.*.monthly' => 'required|integer|min:0|max:1000000000',
+            'catalog.*.*.limits' => 'required|array', 'catalog.*.*.limits.*' => 'nullable|integer|min:0|max:100000000',
             'features' => 'sometimes|array', 'features.*' => ['required', Rule::in(array_keys(Plans::PLANS))],
             'site' => 'sometimes|array', 'site.registration_open' => 'boolean', 'site.notice' => 'nullable|string|max:300',
             'site.notice_tone' => 'in:info,warning,success', 'site.whatsapp' => ['nullable', 'regex:/^62\d{8,14}$/'], 'site.email' => 'nullable|email',
             'site.instagram' => ['nullable', 'url', 'max:200', 'regex:#^https://(www\.)?instagram\.com/#'], 'site.tiktok' => ['nullable', 'url', 'max:200', 'regex:#^https://(www\.)?tiktok\.com/#'],
             'sidebar' => 'sometimes|array', 'sidebar.*' => 'boolean',
         ]);
-        if (isset($data['plans'])) {
-            $plans = [];
-            foreach (array_intersect_key($data['plans'], Plans::PLANS) as $id => $p) {
-                $plans[$id] = ['name' => $p['name'], 'monthly' => $id === 'gratis' ? 0 : $p['monthly'],
-                    'limits' => array_intersect_key($p['limits'], array_flip($limitKeys))];
+        if (isset($data['catalog'])) {
+            $out = [];
+            foreach (array_intersect_key($data['catalog'], Plans::TRACKS) as $t => $plans) {
+                foreach (array_intersect_key($plans, Plans::PLANS) as $id => $p) {
+                    $out[$t][$id] = ['name' => $p['name'], 'monthly' => $id === 'gratis' ? 0 : $p['monthly'],
+                        'limits' => array_intersect_key($p['limits'], array_flip($limitKeys))];
+                }
             }
-            \App\Models\PlatformSetting::write('plans', $plans);
+            \App\Models\PlatformSetting::write('plans_v2', $out);
         }
         if (isset($data['features'])) {
             \App\Models\PlatformSetting::write('features', array_intersect_key($data['features'], Plans::FEATURES));

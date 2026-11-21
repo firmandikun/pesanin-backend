@@ -40,9 +40,19 @@ class BillingController extends Controller
         }
 
         $plan = Plans::current($user);
+        $track = Plans::track($user);
+        $catalog = fn (string $t) => collect(Plans::all($t))->map(fn ($p, $id) => [
+            'id' => $id, 'name' => $p['name'], 'rank' => $p['rank'], 'monthly' => $p['monthly'],
+            'yearly' => Plans::price($id, 'yearly', $t), 'limits' => $p['limits'], 'self_serve' => in_array($id, Plans::SELF_SERVE, true),
+            'addon_monthly' => in_array($id, Plans::SELF_SERVE, true) ? Plans::monthly($id, $t, true) - $p['monthly'] : 0,
+            'features' => collect(Plans::features())->filter(fn ($need, $f) => $p['rank'] >= Plans::PLANS[$need]['rank'] && (Plans::FEATURE_TRACK[$f] ?? $t) === $t)->keys()->values(),
+        ])->values();
 
         return [
             'plan' => $plan,
+            'track' => $track, 'addon' => Plans::hasAddon($user), 'effective' => Plans::forUser($user),
+            'tracks' => Plans::TRACKS, 'yearly_discount' => Plans::YEARLY_DISCOUNT, 'addon_discount' => Plans::ADDON_DISCOUNT,
+            'catalog' => ['marketplace' => $catalog('marketplace'), 'social' => $catalog('social')],
             'billing' => $plan === 'gratis' ? null : $user->plan_billing,
             'expires_at' => $plan === 'gratis' ? null : $user->plan_expires_at,
             'auto_renew' => (bool) $user->plan_auto_renew,
@@ -51,11 +61,7 @@ class BillingController extends Controller
             'trial_days' => Plans::TRIAL_DAYS,
             'grace_days' => Plans::GRACE_DAYS,
             'usage' => Plans::usage($user),
-            'plans' => collect(Plans::all())->map(fn ($p, $id) => [
-                'id' => $id, 'name' => $p['name'], 'rank' => $p['rank'], 'monthly' => $p['monthly'],
-                'yearly' => Plans::price($id, 'yearly'), 'limits' => $p['limits'],
-                'features' => collect(Plans::features())->filter(fn ($need) => $p['rank'] >= Plans::all()[$need]['rank'])->keys()->values(),
-            ])->values(),
+            'plans' => $catalog($track),
             'tax_percent' => Plans::TAX_PERCENT,
             'methods' => Plans::METHODS,
             'invoices' => $user->subscriptionInvoices()->latest('id')->limit(30)->get(),
@@ -67,13 +73,16 @@ class BillingController extends Controller
     {
         $user = $request->user();
         $data = $request->validate([
-            'plan' => ['required', Rule::in(array_keys(array_filter(Plans::all(), fn ($p) => $p['monthly'] > 0)))],
+            'plan' => ['required', Rule::in(Plans::SELF_SERVE)],
+            'track' => ['nullable', Rule::in(array_keys(Plans::TRACKS))],
+            'addon' => 'nullable|boolean',
             'billing' => 'required|in:monthly,yearly',
             'method' => ['required', Rule::in(Plans::METHODS)],
         ]);
 
-        $invoice = Subscriptions::createInvoice($user, $data['plan'], $data['billing'], $data['method']);
-        ActivityLog::record($user, 'billing.checkout', "Membuat tagihan {$invoice->number} paket ".Plans::all()[$data['plan']]['name']);
+        $track = $data['track'] ?? Plans::track($user);
+        $invoice = Subscriptions::createInvoice($user, $data['plan'], $data['billing'], $data['method'], $track, (bool) ($data['addon'] ?? false));
+        ActivityLog::record($user, 'billing.checkout', "Membuat tagihan {$invoice->number} paket ".Plans::all($track)[$data['plan']]['name'].' '.Plans::TRACK_SHORT[$track].(! empty($data['addon']) ? ' + add-on' : ''));
 
         // Pay through Pesanin's own Midtrans account when configured (.env MIDTRANS_SERVER_KEY).
         if ($mt = \App\Support\Midtrans\Midtrans::platform()) {
@@ -106,8 +115,8 @@ class BillingController extends Controller
 
         DB::transaction(function () use ($invoice) {
             $invoice->update(['status' => 'paid', 'paid_at' => now()]);
-            $invoice->user->forceFill([
-                'plan' => $invoice->plan, 'plan_billing' => $invoice->billing,
+            $invoice->user->forceFill(array_filter(['plan_track' => $invoice->track], fn ($v) => $v !== null) + [
+                'plan' => $invoice->plan, 'plan_billing' => $invoice->billing, 'plan_addon' => (bool) $invoice->addon,
                 'plan_expires_at' => Carbon::parse($invoice->period_end)->endOfDay(), 'plan_auto_renew' => true,
             ])->save();
         });
@@ -125,6 +134,18 @@ class BillingController extends Controller
         ActivityLog::record($user, 'billing.free', 'Memilih paket Gratis');
 
         return $user->fresh();
+    }
+
+    /** Switch track while on Gratis or the trial (a paid plan changes track through a new invoice). */
+    public function track(Request $request)
+    {
+        $user = $request->user();
+        $data = $request->validate(['track' => ['required', Rule::in(array_keys(Plans::TRACKS))]]);
+        abort_unless(in_array(Plans::status($user)['status'], ['free', 'trial', 'expired'], true), 422, 'Paket berbayar pindah jalur lewat tagihan baru: pilih paket di jalur yang diinginkan.');
+        $user->forceFill(['plan_track' => $data['track']])->save();
+        ActivityLog::record($user, 'billing.track', 'Pindah ke jalur '.Plans::TRACKS[$data['track']]);
+
+        return ['track' => $data['track'], 'effective' => Plans::forUser($user->fresh())];
     }
 
     public function autoRenew(Request $request)

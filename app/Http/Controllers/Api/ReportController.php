@@ -67,6 +67,15 @@ class ReportController extends Controller
                 'orders' => (clone $orders)->whereBetween('created_at', \App\Support\Dates::today())->count(),
                 'revenue' => (int) (clone $orders)->whereBetween('created_at', \App\Support\Dates::today())->sum('total'),
             ],
+            'track' => \App\Support\Plans::track($user),
+            // Marketplace activation (GTM Playbook): connect Shopee, HPP on 3+ products, orders in, profit visible.
+            'onboarding_marketplace' => [
+                'shop' => $hasShop = $user->marketplaceShops()->where('is_demo', false)->where('status', 'active')->exists(),
+                'hpp' => $hpp = \App\Models\MarketplaceListing::where('user_id', $user->id)->where('cost_price', '>', 0)->count() >= 3,
+                'order' => $shopeeOrder = $user->orders()->where('channel', 'shopee')->exists(),
+                'profit' => $hasShop && $hpp && $shopeeOrder,
+                'whatsapp' => (bool) $user->whatsapp,
+            ],
             'onboarding' => [
                 'product' => $user->products()->exists(),
                 'order' => $user->orders()->where('is_abandoned', false)->exists(),

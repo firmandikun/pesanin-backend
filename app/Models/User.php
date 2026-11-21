@@ -29,6 +29,7 @@ class User extends Authenticatable
             'plan_expires_at' => 'datetime',
             'trial_ends_at' => 'datetime',
             'plan_auto_renew' => 'boolean',
+            'plan_addon' => 'boolean',
             'is_admin' => 'boolean',
             'suspended_at' => 'datetime',
         ];

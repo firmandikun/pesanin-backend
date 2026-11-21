@@ -26,10 +26,15 @@ class AuthController extends Controller
             'email' => 'required|email|unique:users,email',
             'whatsapp' => 'nullable|string|max:30',
             'password' => 'required|string|min:8',
+            'track' => 'nullable|in:marketplace,social',
         ]);
         $data['store_slug'] = $this->uniqueStoreSlug($data['store_name']);
+        // The track the visitor came for (pricing tab / ad landing page); Marketplace by default.
+        $track = $data['track'] ?? 'marketplace';
+        unset($data['track']);
 
         $user = User::create($data);
+        $user->forceFill(['plan_track' => $track])->save();
         \App\Support\Plans::startTrial($user);
         DefaultTemplates::seed($user);
         ActivityLog::record($user, 'register', 'Akun dibuat');
@@ -51,7 +56,7 @@ class AuthController extends Controller
             }
             ActivityLog::record($user, 'login', 'Login ke dashboard');
 
-            return ['token' => $user->createToken('web')->plainTextToken, 'user' => $user->toArray() + ['member' => null, 'sidebar' => \App\Support\SidebarConfig::visible()]];
+            return ['token' => $user->createToken('web')->plainTextToken, 'user' => $user->toArray() + ['member' => null] + self::nav($user)];
         }
 
         // Team member: signs in to the owner's store with a token named after the member.
@@ -63,7 +68,7 @@ class AuthController extends Controller
         $member->forceFill(['last_login_at' => now()])->save();
         ActivityLog::record($member->owner, 'login', "Login anggota tim: {$member->name}");
 
-        return ['token' => $member->owner->createToken($member->tokenName())->plainTextToken, 'user' => $member->owner->toArray() + ['member' => $this->memberInfo($member), 'sidebar' => \App\Support\SidebarConfig::visible()]];
+        return ['token' => $member->owner->createToken($member->tokenName())->plainTextToken, 'user' => $member->owner->toArray() + ['member' => $this->memberInfo($member)] + self::nav($member->owner)];
     }
 
     /** "Masuk dengan Google": verify the Google ID token, then sign in (or create the store on first use). */
@@ -89,6 +94,7 @@ class AuthController extends Controller
             $name = Str::limit($claims['name'] ?? Str::before($email, '@'), 100, '');
             $store = 'Toko '.Str::limit($claims['given_name'] ?? $name, 90, '');
             $user = User::create(['name' => $name, 'store_name' => $store, 'store_slug' => $this->uniqueStoreSlug($store), 'email' => $email, 'password' => Str::random(40)]);
+            $user->forceFill(['plan_track' => in_array($request->input('track'), ['marketplace', 'social'], true) ? $request->input('track') : 'marketplace'])->save();
             \App\Support\Plans::startTrial($user);
             DefaultTemplates::seed($user);
             ActivityLog::record($user, 'register', 'Akun dibuat lewat Google');
@@ -111,8 +117,15 @@ class AuthController extends Controller
 
         return $request->user()->toArray() + [
             'member' => $member ? $this->memberInfo($member) : null,
-            'sidebar' => \App\Support\SidebarConfig::visible(),
-        ];
+        ] + self::nav($request->user());
+    }
+
+    /** Sidebar for the store's track + the links of the other track (blocked pages). */
+    public static function nav(User $user): array
+    {
+        $n = \App\Support\SidebarConfig::forUser($user);
+
+        return ['sidebar' => $n['items'], 'hidden_paths' => $n['hidden'], 'plan_track' => \App\Support\Plans::track($user), 'plan_addon' => \App\Support\Plans::hasAddon($user)];
     }
 
     private function memberInfo(TeamMember $m): array

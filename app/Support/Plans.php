@@ -12,22 +12,58 @@ class Plans
 {
     public const TAX_PERCENT = 11;
 
-    /** Yearly billing = pay 10 months, get 12. */
-    public const YEARLY_MONTHS_PAID = 10;
+    /**
+     * Two tracks (GTM Playbook v2.0): sellers only pay for the way they sell.
+     *  - marketplace: Shopee sellers (orders, shops, fees, profit per SKU)
+     *  - social: Meta Ads / WhatsApp / IG / COD sellers (checkout links, landing pages, domains, pixels)
+     * The other track can be added to a paid plan as an add-on at ADDON_DISCOUNT% off.
+     */
+    public const TRACKS = ['marketplace' => 'Pesanin Marketplace', 'social' => 'Pesanin Social & Web'];
 
-    public const PLANS = [
-        'gratis' => ['name' => 'Gratis', 'rank' => 0, 'monthly' => 0, 'limits' => ['orders' => 100, 'products' => 3, 'landing_pages' => 1, 'domains' => 0, 'team' => 1, 'shops' => 1, 'research' => 5, 'broadcast' => 100]],
-        'starter' => ['name' => 'Starter', 'rank' => 1, 'monthly' => 49000, 'limits' => ['orders' => 1000, 'products' => 20, 'landing_pages' => 5, 'domains' => 1, 'team' => 2, 'shops' => 2, 'research' => 20, 'broadcast' => 2000]],
-        'bisnis' => ['name' => 'Bisnis', 'rank' => 2, 'monthly' => 129000, 'limits' => ['orders' => 10000, 'products' => null, 'landing_pages' => null, 'domains' => 3, 'team' => 5, 'shops' => 5, 'research' => 100, 'broadcast' => 20000]],
-        'pro' => ['name' => 'Pro', 'rank' => 3, 'monthly' => 249000, 'limits' => ['orders' => null, 'products' => null, 'landing_pages' => null, 'domains' => 10, 'team' => 20, 'shops' => 20, 'research' => 300, 'broadcast' => 100000]],
+    public const TRACK_SHORT = ['marketplace' => 'Marketplace', 'social' => 'Social & Web'];
+
+    /** Yearly billing: this % off the monthly price. */
+    public const YEARLY_DISCOUNT = 20;
+
+    /** Second track as add-on: this % off its price. */
+    public const ADDON_DISCOUNT = 30;
+
+    /** Kept for the yearly toggle in older pages: 12 months at YEARLY_DISCOUNT% off. */
+    public const YEARLY_MONTHS_PAID = 9.6;
+
+    /** Price list and quotas per track. Enterprise is a custom contract (price per store, set by Pesanin). */
+    public const CATALOG = [
+        'marketplace' => [
+            'gratis' => ['name' => 'Gratis', 'rank' => 0, 'monthly' => 0, 'limits' => ['orders' => 100, 'products' => 3, 'landing_pages' => 1, 'domains' => 0, 'team' => 1, 'shops' => 1, 'research' => 5, 'broadcast' => 100]],
+            'starter' => ['name' => 'Starter', 'rank' => 1, 'monthly' => 79000, 'limits' => ['orders' => 1500, 'products' => 20, 'landing_pages' => 2, 'domains' => 0, 'team' => 2, 'shops' => 2, 'research' => 20, 'broadcast' => 500]],
+            'bisnis' => ['name' => 'Bisnis', 'rank' => 2, 'monthly' => 169000, 'limits' => ['orders' => 10000, 'products' => 50, 'landing_pages' => 5, 'domains' => 1, 'team' => 5, 'shops' => 5, 'research' => 100, 'broadcast' => 2000]],
+            'pro' => ['name' => 'Pro', 'rank' => 3, 'monthly' => 349000, 'limits' => ['orders' => 30000, 'products' => null, 'landing_pages' => 10, 'domains' => 3, 'team' => 20, 'shops' => 15, 'research' => 300, 'broadcast' => 10000]],
+            'enterprise' => ['name' => 'Enterprise', 'rank' => 4, 'monthly' => 1500000, 'limits' => ['orders' => null, 'products' => null, 'landing_pages' => null, 'domains' => null, 'team' => null, 'shops' => null, 'research' => null, 'broadcast' => null]],
+        ],
+        'social' => [
+            'gratis' => ['name' => 'Gratis', 'rank' => 0, 'monthly' => 0, 'limits' => ['orders' => 50, 'products' => 1, 'landing_pages' => 1, 'domains' => 0, 'team' => 1, 'shops' => 0, 'research' => 5, 'broadcast' => 100]],
+            'starter' => ['name' => 'Starter', 'rank' => 1, 'monthly' => 99000, 'limits' => ['orders' => 1000, 'products' => 20, 'landing_pages' => 5, 'domains' => 1, 'team' => 2, 'shops' => 0, 'research' => 20, 'broadcast' => 2000]],
+            'bisnis' => ['name' => 'Bisnis', 'rank' => 2, 'monthly' => 199000, 'limits' => ['orders' => 10000, 'products' => null, 'landing_pages' => null, 'domains' => 3, 'team' => 5, 'shops' => 0, 'research' => 100, 'broadcast' => 20000]],
+            'pro' => ['name' => 'Pro', 'rank' => 3, 'monthly' => 399000, 'limits' => ['orders' => 30000, 'products' => null, 'landing_pages' => null, 'domains' => 10, 'team' => 20, 'shops' => 0, 'research' => 300, 'broadcast' => 100000]],
+            'enterprise' => ['name' => 'Enterprise', 'rank' => 4, 'monthly' => 1500000, 'limits' => ['orders' => null, 'products' => null, 'landing_pages' => null, 'domains' => null, 'team' => null, 'shops' => null, 'research' => null, 'broadcast' => null]],
+        ],
     ];
 
+    /** Plan ids, ranks and quota keys (identical in both tracks). */
+    public const PLANS = self::CATALOG['marketplace'];
+
+    /** Plans a store can buy itself; Enterprise goes through sales. */
+    public const SELF_SERVE = ['starter', 'bisnis', 'pro'];
+
     /** Lowest plan that unlocks a feature. */
-    public const FEATURES = ['pixels' => 'starter', 'rotators' => 'bisnis', 'coupons' => 'bisnis', 'affiliates' => 'pro', 'stock_master' => 'starter'];
+    public const FEATURES = ['pixels' => 'starter', 'rotators' => 'starter', 'coupons' => 'bisnis', 'affiliates' => 'bisnis', 'stock_master' => 'starter', 'no_watermark' => 'bisnis'];
+
+    /** Track a feature belongs to (also unlocked by the other track's add-on, and always by Enterprise). */
+    public const FEATURE_TRACK = ['pixels' => 'social', 'rotators' => 'social', 'coupons' => 'social', 'affiliates' => 'social', 'no_watermark' => 'social', 'stock_master' => 'marketplace'];
 
     public const LABELS = [
         'orders' => 'pesanan bulan ini', 'products' => 'produk', 'landing_pages' => 'landing page', 'domains' => 'custom domain', 'team' => 'anggota tim', 'shops' => 'toko marketplace', 'research' => 'riset pasar hari ini', 'broadcast' => 'penerima broadcast bulan ini',
-        'pixels' => 'Tracking pixel', 'rotators' => 'WhatsApp Rotator', 'coupons' => 'Kupon diskon', 'affiliates' => 'Program afiliasi', 'stock_master' => 'Stok master lintas toko',
+        'pixels' => 'Tracking pixel', 'rotators' => 'WhatsApp Rotator', 'coupons' => 'Kupon & order bump', 'affiliates' => 'Program afiliasi', 'stock_master' => 'Stok master lintas toko', 'no_watermark' => 'Tanpa watermark Pesanin',
     ];
 
     /** Every new store gets this plan free for TRIAL_DAYS. */
@@ -40,11 +76,17 @@ class Plans
 
     public const METHODS = ['va_bca', 'va_bni', 'va_bri', 'va_mandiri', 'qris', 'dana', 'ovo', 'shopeepay'];
 
-    /** Plan catalog with the admin's changes (name, monthly price, quotas) applied over PLANS. */
-    public static function all(): array
+    public static function otherTrack(string $track): string
     {
-        $over = \App\Models\PlatformSetting::read('plans', []);
-        $plans = self::PLANS;
+        return $track === 'social' ? 'marketplace' : 'social';
+    }
+
+    /** Plan catalog of a track with the admin's changes (name, monthly price, quotas) applied. */
+    public static function all(string $track = 'marketplace'): array
+    {
+        $track = isset(self::CATALOG[$track]) ? $track : 'marketplace';
+        $over = \App\Models\PlatformSetting::read('plans_v2', [])[$track] ?? [];
+        $plans = self::CATALOG[$track];
         foreach ($plans as $id => &$p) {
             $o = $over[$id] ?? [];
             if (isset($o['name']) && $o['name'] !== '') {
@@ -69,6 +111,44 @@ class Plans
         $over = \App\Models\PlatformSetting::read('features', []);
 
         return collect(self::FEATURES)->map(fn ($need, $f) => isset(self::PLANS[$over[$f] ?? '']) ? $over[$f] : $need)->all();
+    }
+
+    public static function track(User $user): string
+    {
+        return isset(self::CATALOG[$user->plan_track ?? '']) ? $user->plan_track : 'marketplace';
+    }
+
+    /** Add-on of the other track is part of the plan (Enterprise always includes both). */
+    public static function hasAddon(User $user): bool
+    {
+        $plan = self::current($user);
+
+        return $plan === 'enterprise' || ($plan !== 'gratis' && (bool) $user->plan_addon);
+    }
+
+    /**
+     * The plan as it applies to this store: its track's quotas, widened by the add-on (highest of both tracks),
+     * Enterprise at its contract price. @return array{id: string, name: string, rank: int, monthly: int, limits: array, track: string, addon: bool}
+     */
+    public static function forUser(User $user): array
+    {
+        $id = self::current($user);
+        $track = self::track($user);
+        $p = self::all($track)[$id];
+        $addon = self::hasAddon($user) && $id !== 'enterprise';
+        if ($addon) {
+            $o = self::all(self::otherTrack($track))[$id];
+            foreach ($p['limits'] as $k => $v) {
+                $w = $o['limits'][$k];
+                $p['limits'][$k] = $v === null || $w === null ? null : max($v, $w);
+            }
+            $p['name'] .= ' + '.self::TRACK_SHORT[self::otherTrack($track)];
+        }
+        if ($id === 'enterprise' && $user->plan_price) {
+            $p['monthly'] = (int) $user->plan_price;
+        }
+
+        return $p + ['id' => $id, 'track' => $track, 'addon' => $addon];
     }
 
     /** Active plan id. A lapsed paid plan stays in effect through its grace period, then falls back to Gratis limits. */
@@ -124,11 +204,23 @@ class Plans
         $user->forceFill(['plan' => self::TRIAL_PLAN, 'plan_billing' => 'trial', 'plan_expires_at' => $ends, 'trial_ends_at' => $ends, 'plan_auto_renew' => false])->save();
     }
 
-    public static function price(string $plan, string $billing): int
+    /** Monthly price of a plan, with the other track as add-on at ADDON_DISCOUNT% off. */
+    public static function monthly(string $plan, string $track = 'marketplace', bool $addon = false): int
     {
-        $m = self::all()[$plan]['monthly'];
+        $m = self::all($track)[$plan]['monthly'] ?? 0;
+        if ($addon && $plan !== 'gratis' && $plan !== 'enterprise') {
+            $m += (int) (round(self::all(self::otherTrack($track))[$plan]['monthly'] * (100 - self::ADDON_DISCOUNT) / 100 / 1000) * 1000);
+        }
 
-        return $billing === 'yearly' ? $m * self::YEARLY_MONTHS_PAID : $m;
+        return $m;
+    }
+
+    /** Amount of one billing period. Yearly = 12 months at YEARLY_DISCOUNT% off (per-month price rounded down to Rp1.000). */
+    public static function price(string $plan, string $billing, string $track = 'marketplace', bool $addon = false): int
+    {
+        $m = self::monthly($plan, $track, $addon);
+
+        return $billing === 'yearly' ? (int) (floor($m * (100 - self::YEARLY_DISCOUNT) / 100 / 1000) * 1000 * 12) : $m;
     }
 
     public static function usage(User $user): array
@@ -148,27 +240,46 @@ class Plans
     /** Abort with 402 when creating one more $quota would exceed the plan. */
     public static function ensureQuota(User $user, string $quota): void
     {
-        $plan = self::current($user);
-        $limit = self::all()[$plan]['limits'][$quota];
+        $p = self::forUser($user);
+        $limit = $p['limits'][$quota];
         if ($limit !== null && self::usage($user)[$quota] >= $limit) {
-            self::deny("Batas {$limit} ".self::LABELS[$quota].' di paket '.self::all()[$plan]['name'].' sudah tercapai. Upgrade paket untuk menambah lagi.', $quota);
+            $hint = $limit === 0 && $quota === 'shops'
+                ? 'Toko marketplace tersedia di jalur '.self::TRACKS['marketplace'].'. Aktifkan add-on Marketplace di Paket & Tagihan.'
+                : 'Upgrade paket untuk menambah lagi.';
+            self::deny($limit === 0 ? 'Paket '.$p['name'].' belum termasuk '.self::LABELS[$quota].'. '.$hint : "Batas {$limit} ".self::LABELS[$quota].' di paket '.$p['name'].' sudah tercapai. '.$hint, $quota);
         }
     }
 
     public static function hasFeature(User $user, string $feature): bool
     {
-        $need = self::features()[$feature] ?? null;
-
-        return ! $need || self::all()[self::current($user)]['rank'] >= self::all()[$need]['rank'];
+        return self::featureBlock($user, $feature) === null;
     }
 
     public static function ensureFeature(User $user, string $feature): void
     {
-        $need = self::features()[$feature] ?? null;
-        $plan = self::current($user);
-        if ($need && self::all()[$plan]['rank'] < self::all()[$need]['rank']) {
-            self::deny(self::LABELS[$feature].' tersedia mulai paket '.self::all()[$need]['name'].'. Upgrade paket untuk memakainya.', $feature);
+        if ($msg = self::featureBlock($user, $feature)) {
+            self::deny($msg, $feature);
         }
+    }
+
+    /** Why a feature is locked for this store (plan too low, or it belongs to the other track), or null. */
+    public static function featureBlock(User $user, string $feature): ?string
+    {
+        $need = self::features()[$feature] ?? null;
+        if (! $need) {
+            return null;
+        }
+        $plan = self::current($user);
+        $track = self::track($user);
+        $ft = self::FEATURE_TRACK[$feature] ?? null;
+        if ($ft && $ft !== $track && ! self::hasAddon($user)) {
+            return self::LABELS[$feature].' ada di jalur '.self::TRACKS[$ft].'. Aktifkan add-on '.self::TRACK_SHORT[$ft].' (hemat '.self::ADDON_DISCOUNT.'%) di Paket & Tagihan.';
+        }
+        if (self::PLANS[$plan]['rank'] < self::PLANS[$need]['rank']) {
+            return self::LABELS[$feature].' tersedia mulai paket '.self::all($track)[$need]['name'].'. Upgrade paket untuk memakainya.';
+        }
+
+        return null;
     }
 
     /** Riset Pasar searches today on Pesanin's shared keys (own keys are not counted). */
