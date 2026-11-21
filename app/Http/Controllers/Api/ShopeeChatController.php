@@ -101,12 +101,28 @@ class ShopeeChatController extends Controller
             'text' => self::preview($m['message_type'] ?? 'text', $m['content'] ?? []),
         ] + self::media($m['message_type'] ?? 'text', (array) ($m['content'] ?? [])) + [
             'at' => self::time($m['created_timestamp'] ?? null),
+            'order_sn' => self::orderSn((array) ($m['content'] ?? [])),
+            'buyer' => ! ((int) ($m['from_shop_id'] ?? 0) === (int) $shop->shop_id) && (int) ($m['from_id'] ?? 0) > 0,
         ])
-            // Shopee notices (e.g. "Asisten AI Toko telah dijeda") are not buyer/seller messages: shown as a small
-            // centred note when they carry text, dropped when they have nothing readable (Shopee hides those too).
-            ->map(fn ($m) => $m + ['system' => ! in_array($m['type'], self::BUBBLES, true)])
+            // A message is a chat bubble when it is a known kind or the buyer wrote it (e.g. an order card + question).
+            // Shopee's own notices ("Asisten AI Toko telah dijeda", AI/bot hints) are a small centred note when they
+            // carry text, and dropped when they have nothing readable (Shopee hides those too).
+            ->map(fn ($m) => $m + ['system' => ! in_array($m['type'], self::BUBBLES, true)
+                && ! ($m['buyer'] && ! preg_match('/(^|_)(notif\w*|system\w*|ai|assistant|faq|bot|auto\w*|tips?|hint|guide)(_|$)/i', $m['type']))])
             ->reject(fn ($m) => $m['system'] && $m['text'] === '' && ! $m['image'] && ! $m['video'])
             ->sortBy('at')->values();
+        // Order cards: the Pesanin order behind each order number, so the bubble can show and open it.
+        $sns = $messages->pluck('order_sn')->filter()->unique()->values()->all();
+        $orders = $sns ? \App\Models\Order::where('user_id', $request->user()->id)->where('channel', 'shopee')->whereIn('external_order_sn', $sns)->get()->keyBy('external_order_sn') : collect();
+        $messages = $messages->map(function ($m) use ($orders) {
+            $o = $m['order_sn'] ? ($orders[$m['order_sn']] ?? null) : null;
+            $item = $o ? (collect($o->items ?? [])->first() ?? []) : [];
+
+            return $m + ['order' => $m['order_sn'] ? [
+                'sn' => $m['order_sn'], 'id' => $o?->id, 'status' => $o?->external_status, 'total' => $o ? (int) $o->total : null,
+                'name' => $item['name'] ?? null, 'image' => $item['image'] ?? null, 'count' => $o ? collect($o->items ?? [])->sum('qty') : null,
+            ] : null];
+        })->values();
         if ($last = $messages->last()) {
             try {
                 (new ShopeeClient)->chatRead($shop, $conversation, $last['id']);
@@ -143,22 +159,47 @@ class ShopeeChatController extends Controller
         abort_unless($shop->user_id === $request->user()->id, 404);
     }
 
-    /** Photo / video of a message (Shopee names the fields differently per type and version). */
+    /** Photo(s) / video of a message (Shopee names the fields differently per type and version). */
     public static function media(string $type, array $c): array
     {
         $first = fn (array $keys) => collect($keys)->map(fn ($k) => data_get($c, $k))->first(fn ($v) => is_string($v) && $v !== '');
         $video = $type === 'video' ? $first(['video_url', 'url', 'video.url', 'video_info.video_url']) : null;
+        $images = match ($type) {
+            'video' => array_filter([$first(['thumb_url', 'thumb_image_url', 'cover_url', 'cover_image_url', 'image_url'])]),
+            // Product / order cards are not photos the buyer sent.
+            'text', 'item', 'product', 'item_list', 'order' => [],
+            // Photos, stickers and any other kind (e.g. "image + text" in one message): every image link inside.
+            default => self::imageUrls($c),
+        };
 
         return [
             'video' => $video,
-            // For a video the image is its poster; stickers and images show the picture itself.
-            'image' => match ($type) {
-                'video' => $first(['thumb_url', 'thumb_image_url', 'cover_url', 'cover_image_url', 'image_url']),
-                'image', 'sticker' => $first(['url', 'image_url', 'thumb_url', 'image.url']),
-                default => null,
-            },
+            'image' => $images[0] ?? null,
+            'images' => array_slice(array_values($images), 0, 9),
             'duration' => $type === 'video' ? (int) ($c['duration_seconds'] ?? $c['duration'] ?? 0) ?: null : null,
         ];
+    }
+
+    /** All image links in a content block, wherever Shopee put them (url, image_url_list, images[].url, …). */
+    public static function imageUrls(array $c): array
+    {
+        $out = [];
+        $walk = function ($v, $key = '') use (&$walk, &$out) {
+            if (is_array($v)) {
+                foreach ($v as $k => $x) {
+                    $walk($x, is_string($k) ? $k : $key);
+                }
+            } elseif (is_string($v) && preg_match('#^https?://#i', $v) && ! preg_match('/\.(mp4|mov|m3u8)(\?|$)/i', $v)
+                && ! preg_match('/video/i', (string) $key)
+                // Prefer the full image over its thumbnail when both are there.
+                && (preg_match('#/file/|\.(jpe?g|png|gif|webp)(\?|$)|susercontent|img#i', $v) || preg_match('/url|image|img|pic|photo/i', (string) $key))) {
+                $out[] = ['url' => $v, 'thumb' => (bool) preg_match('/thumb/i', (string) $key)];
+            }
+        };
+        $walk($c);
+        $full = array_column(array_filter($out, fn ($x) => ! $x['thumb']), 'url');
+
+        return array_values(array_unique($full ?: array_column($out, 'url')));
     }
 
     /** Send a photo: upload it to Shopee chat, then post it as an image message. */
@@ -180,6 +221,15 @@ class ShopeeChatController extends Controller
     /** Message kinds Pesanin shows as a chat bubble; anything else is a Shopee notice (AI assistant, system, …). */
     public const BUBBLES = ['text', 'image', 'sticker', 'video', 'item', 'product', 'order', 'item_list'];
 
+    /** Order number a message refers to (order card, order tracking card, …). */
+    public static function orderSn(array $c): ?string
+    {
+        $v = collect(['order_sn', 'order.order_sn', 'order_info.order_sn', 'ordersn', 'order_id_str'])->map(fn ($k) => data_get($c, $k))
+            ->first(fn ($v) => is_string($v) && $v !== '');
+
+        return $v ?: null;
+    }
+
     /** Readable text inside any content shape (notices keep it under different keys). */
     public static function contentText(array $c): string
     {
@@ -199,7 +249,7 @@ class ShopeeChatController extends Controller
         return match ($type) {
             'text' => (string) ($content['text'] ?? ''),
             'image' => '[Gambar]', 'sticker' => '[Stiker]', 'video' => '[Video]',
-            'item', 'product' => '[Produk]', 'order' => '[Pesanan]', 'item_list' => '[Produk]',
+            'item', 'product' => '[Produk]', 'order' => self::contentText($content) ?: '[Pesanan]', 'item_list' => '[Produk]',
             default => self::contentText($content),
         };
     }
