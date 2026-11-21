@@ -59,37 +59,53 @@ class ShopeeAfterSalesController extends Controller
         return $d;
     }
 
-    /** Everything needed to answer one request: buyer photos/videos & text, negotiation, solutions, dispute reasons. */
+    /**
+     * Everything needed to answer one request: buyer photos/videos & text, negotiation, solutions, dispute reasons.
+     * Shopee's optional blocks vary in shape; anything unexpected is skipped (and logged) instead of failing the page.
+     */
     public function show(Request $request, int $id)
     {
         $r = $this->ret($request, $id);
-        $d = $this->shopee(fn () => $this->refresh($r));
-        $open = in_array($d['status'] ?? $r->status, ShopeeReturn::NEEDS_SELLER, true);
-        $try = function (callable $fn) {
+        $err = null;
+        try {
+            $d = $this->refresh($r);
+        } catch (Throwable $e) {
+            \Illuminate\Support\Facades\Log::warning("Retur {$r->return_sn} detail: ".$e->getMessage());
+            $d = [];
+            $err = $e instanceof ShopeeException ? 'Shopee menolak: '.$e->getMessage() : 'Rincian terbaru dari Shopee belum bisa diambil, data yang tampil dari sinkron terakhir.';
+        }
+        $r->refresh();
+        $open = in_array($r->status, ShopeeReturn::NEEDS_SELLER, true);
+        $list = fn ($v) => is_array($v) ? array_values(array_filter($v, 'is_array')) : [];
+        $try = function (string $path) use ($r) {
             try {
-                return $fn();
-            } catch (Throwable) {
+                return $this->api($r, 'GET', $path);
+            } catch (Throwable $e) {
+                \Illuminate\Support\Facades\Log::info("Retur {$r->return_sn} {$path}: ".$e->getMessage());
+
                 return [];
             }
         };
-        $neg = $d['negotiation'] ?? [];
+        $neg = is_array($d['negotiation'] ?? null) ? $d['negotiation'] : [];
+        $sol = $open ? $try('get_available_solutions') : [];
+        $reasons = $open ? $try('get_return_dispute_reason') : [];
 
         return [
-            'return' => $r->fresh(),
-            'images' => array_values(array_filter((array) ($d['image'] ?? []))),
-            'videos' => collect($d['buyer_videos'] ?? [])->pluck('video_url')->filter()->values()->all(),
+            'return' => $r,
+            'error' => $err,
+            'images' => array_values(array_filter(array_map(fn ($x) => is_string($x) ? $x : ($x['url'] ?? $x['image_url'] ?? null), is_array($d['image'] ?? null) ? $d['image'] : []))),
+            'videos' => collect($list($d['buyer_videos'] ?? null))->map(fn ($v) => $v['video_url'] ?? null)->filter()->values()->all(),
             'needs_logistics' => (bool) ($d['needs_logistics'] ?? false),
-            'return_address' => $d['return_address'] ?? null,
             'negotiation' => $neg ? [
                 'status' => $neg['negotiation_status'] ?? null, 'solution' => $neg['latest_solution'] ?? null,
-                'offer_amount' => isset($neg['latest_offer_amount']) ? (int) round($neg['latest_offer_amount']) : null,
-                'offer_by' => $neg['latest_offer_creator'] ?? null, 'counter_limit' => $neg['counter_offer_limit'] ?? null,
-                'max_refund' => isset($neg['max_refundable_amount']) ? (int) round($neg['max_refundable_amount']) : null,
+                'offer_amount' => is_numeric($neg['latest_offer_amount'] ?? null) ? (int) round($neg['latest_offer_amount']) : null,
+                'offer_by' => is_string($neg['latest_offer_creator'] ?? null) ? $neg['latest_offer_creator'] : null, 'counter_limit' => $neg['counter_offer_limit'] ?? null,
+                'max_refund' => is_numeric($neg['max_refundable_amount'] ?? null) ? (int) round($neg['max_refundable_amount']) : null,
             ] : null,
-            'solutions' => $open ? collect($try(fn () => $this->api($r, 'GET', 'get_available_solutions'))['solution'] ?? [])
-                ->map(fn ($s) => ['solution' => $s['name'] ?? $s['solution'] ?? null, 'max_refund' => (int) round($s['max_refund_amount'] ?? 0)])->filter(fn ($s) => $s['solution'])->values()->all() : [],
-            'dispute_reasons' => $open ? collect($try(fn () => $this->api($r, 'GET', 'get_return_dispute_reason'))['dispute_reason_list'] ?? [])
-                ->map(fn ($x) => ['id' => (int) $x['reason_id'], 'text' => $x['reason_text'] ?? ''])->values()->all() : [],
+            'solutions' => collect($list($sol['solution'] ?? $sol['solution_list'] ?? null))
+                ->map(fn ($x) => ['solution' => $x['name'] ?? $x['solution'] ?? null, 'max_refund' => (int) round((float) ($x['max_refund_amount'] ?? 0))])->filter(fn ($x) => is_string($x['solution']))->values()->all(),
+            'dispute_reasons' => collect($list($reasons['dispute_reason_list'] ?? $reasons['dispute_reason'] ?? null))
+                ->map(fn ($x) => ['id' => (int) ($x['reason_id'] ?? 0), 'text' => (string) ($x['reason_text'] ?? '')])->filter(fn ($x) => $x['id'])->values()->all(),
         ];
     }
 
@@ -149,9 +165,14 @@ class ShopeeAfterSalesController extends Controller
 
         return [
             'order' => $o,
-            'ads' => $this->adCost($o),
+            // A cancelled order earns nothing: the income Shopee estimated before the cancel no longer applies.
+            'cancelled' => $cancelled = $o->external_status === 'CANCELLED',
+            'ads' => $ads = $cancelled ? null : $this->adCost($o),
+            'cogs' => $cogs = $this->cogs($o),
+            // Laba bersih: penghasilan dari Shopee − HPP − biaya iklan per konversi.
+            'profit' => ! $cancelled && $o->escrow_amount !== null && $cogs['total'] !== null ? (int) $o->escrow_amount - $cogs['total'] - ($ads['per_conversion'] ?? 0) : null,
             'history' => $history,
-            'return' => ShopeeReturn::where('marketplace_shop_id', $o->marketplace_shop_id)->where('order_sn', $o->external_order_sn)->latest('id')->first(['id', 'return_sn', 'status', 'refund_amount']),
+            'return' => ShopeeReturn::where('marketplace_shop_id', $o->marketplace_shop_id)->where('order_sn', $o->external_order_sn)->latest('id')->first(['id', 'return_sn', 'status', 'refund_amount', 'reason', 'text_reason', 'due_at', 'requested_at', 'tracking_number']),
         ];
     }
 
@@ -182,6 +203,28 @@ class ShopeeAfterSalesController extends Controller
 
         return ['date' => $day->toDateString(), 'lines' => $lines->all(), 'per_conversion' => $total,
             'net_after_ads' => $o->escrow_amount !== null ? (int) $o->escrow_amount - $total : null];
+    }
+
+    /** HPP of what this order sold: the listing's HPP (variation, else product), else the linked Pesanin product's. */
+    private function cogs(Order $o): array
+    {
+        $listings = \App\Models\MarketplaceListing::where('marketplace_shop_id', $o->marketplace_shop_id)
+            ->whereIn('item_id', collect($o->items ?? [])->pluck('item_id')->filter()->all() ?: [0])->with('product:id,cost_price')->get();
+        $lines = collect($o->items ?? [])->map(function ($i) use ($listings) {
+            $l = $listings->first(fn ($x) => (int) $x->item_id === (int) ($i['item_id'] ?? 0) && (int) $x->model_id === (int) ($i['model_id'] ?? 0))
+                ?? $listings->first(fn ($x) => (int) $x->item_id === (int) ($i['item_id'] ?? 0) && (int) $x->model_id === 0);
+            $hpp = $l ? ((int) $l->cost_price ?: (int) $l->product?->cost_price) : 0;
+            if (! $hpp && ! empty($i['product_id'])) {
+                $hpp = (int) \App\Models\Product::whereKey($i['product_id'])->value('cost_price');
+            }
+            $qty = (int) ($i['qty'] ?? 1);
+
+            return ['name' => $i['name'] ?? '', 'variant' => $i['variant'] ?? null, 'qty' => $qty, 'hpp' => $hpp ?: null, 'total' => $hpp ? $hpp * $qty : null];
+        })->values();
+        $missing = $lines->whereNull('hpp')->count();
+
+        return ['lines' => $lines->all(), 'missing' => $missing, 'total' => $missing ? null : (int) $lines->sum('total'),
+            'partial' => (int) $lines->sum('total')];
     }
 
     /** Cancel an unshipped order because the stock ran out (Shopee asks which products are out of stock). */

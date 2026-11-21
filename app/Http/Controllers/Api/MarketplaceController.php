@@ -166,8 +166,14 @@ class MarketplaceController extends Controller
             ->when($data['search'] ?? null, fn ($b, $s) => $b->where(fn ($w) => $w->where('return_sn', 'like', "%{$s}%")->orWhere('order_sn', 'like', "%{$s}%")
                 ->orWhere('buyer_username', 'like', "%{$s}%")->orWhere('tracking_number', 'like', "%{$s}%")));
 
-        return $q->orderByRaw('CASE WHEN status IN (\'REQUESTED\', \'PROCESSING\') THEN 0 ELSE 1 END')->latest('requested_at')
+        $page = $q->orderByRaw('CASE WHEN status IN (\'REQUESTED\', \'PROCESSING\') THEN 0 ELSE 1 END')->latest('requested_at')
             ->paginate($data['per_page'] ?? 10);
+        // The Pesanin order behind each request, so the card opens its Rincian Pesanan.
+        $ids = \App\Models\Order::where('user_id', $request->user()->id)->where('channel', 'shopee')
+            ->whereIn('external_order_sn', $page->getCollection()->pluck('order_sn')->filter()->all() ?: [''])->pluck('id', 'external_order_sn');
+        $page->getCollection()->each(fn ($r) => $r->setAttribute('order_id', $ids[$r->order_sn] ?? null));
+
+        return $page;
     }
 
     /** First full sync (products, orders, ads) runs after the response is sent, so the redirect is instant and nothing times out. */
