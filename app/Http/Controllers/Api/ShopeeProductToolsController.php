@@ -169,6 +169,7 @@ class ShopeeProductToolsController extends Controller
         $to = $request->string('to')->toString() ?: now('Asia/Jakarta')->toDateString();
         $search = mb_strtolower(trim($request->string('q')->toString()));
         $sort = $request->string('sort')->toString() ?: 'revenue';
+        $adFilter = $request->string('ad_filter')->toString() ?: 'all';
 
         $shops = MarketplaceShop::where('user_id', $userId)
             ->where('status', '!=', 'disconnected')
@@ -182,6 +183,41 @@ class ShopeeProductToolsController extends Controller
         $grouped = $listings->groupBy(fn ($l) => "{$l->marketplace_shop_id}:{$l->item_id}");
         $keys = $grouped->map(fn ($g) => [(int) $g->first()->marketplace_shop_id, (int) $g->first()->item_id])->values();
         $stats = ShopeeProductTools::statsFor($keys);
+
+        $adCampaigns = \App\Models\ShopeeAdCampaign::whereIn('marketplace_shop_id', $shops->pluck('id'))
+            ->when($shopId, fn ($q) => $q->where('marketplace_shop_id', $shopId))
+            ->withSum(['stats as expense' => fn ($q) => $q->whereBetween('date', [$from, $to])], 'expense')
+            ->withSum(['stats as gmv' => fn ($q) => $q->whereBetween('date', [$from, $to])], 'gmv')
+            ->withSum(['stats as clicks' => fn ($q) => $q->whereBetween('date', [$from, $to])], 'clicks')
+            ->withSum(['stats as impressions' => fn ($q) => $q->whereBetween('date', [$from, $to])], 'impressions')
+            ->withSum(['stats as orders' => fn ($q) => $q->whereBetween('date', [$from, $to])], 'orders')
+            ->get();
+
+        $adByItem = [];
+        $shopAutoAds = [];
+        foreach ($adCampaigns as $c) {
+            $itemIds = array_values(array_filter(array_map('intval', $c->item_ids ?? [])));
+            if (! count($itemIds)) {
+                if (($c->ad_type === 'auto' || $c->ad_type === 'shop_auto') && ($c->status ?? 'ongoing') === 'ongoing') {
+                    $shopAutoAds[$c->marketplace_shop_id] = true;
+                }
+                continue;
+            }
+            $share = 1 / count($itemIds);
+            foreach ($itemIds as $iid) {
+                $k = "{$c->marketplace_shop_id}:{$iid}";
+                $adByItem[$k] ??= ['campaigns' => 0, 'active' => false, 'expense' => 0.0, 'gmv' => 0.0, 'clicks' => 0.0, 'impressions' => 0.0, 'orders' => 0.0];
+                $adByItem[$k]['campaigns']++;
+                if (($c->status ?? 'ongoing') === 'ongoing') {
+                    $adByItem[$k]['active'] = true;
+                }
+                $adByItem[$k]['expense'] += ((float) $c->expense) * $share;
+                $adByItem[$k]['gmv'] += ((float) $c->gmv) * $share;
+                $adByItem[$k]['clicks'] += ((float) $c->clicks) * $share;
+                $adByItem[$k]['impressions'] += ((float) $c->impressions) * $share;
+                $adByItem[$k]['orders'] += ((float) $c->orders) * $share;
+            }
+        }
 
         $fromUtc = \Carbon\Carbon::parse($from, 'Asia/Jakarta')->startOfDay()->utc();
         $toUtc = \Carbon\Carbon::parse($to, 'Asia/Jakarta')->endOfDay()->utc();
@@ -225,6 +261,19 @@ class ShopeeProductToolsController extends Controller
             }
             $st = $stats[$key] ?? null;
             $ps = $periodSales[$key] ?? ['units' => 0, 'orders' => 0, 'revenue' => 0];
+            $ad = $adByItem[$key] ?? null;
+            $hasAutoAd = ($first->status === 'NORMAL') && ! empty($shopAutoAds[$first->marketplace_shop_id]);
+            $isAdvertised = $ad !== null || $hasAutoAd;
+            if ($adFilter === 'advertised' && ! $isAdvertised) {
+                continue;
+            }
+            if ($adFilter === 'organic' && $isAdvertised) {
+                continue;
+            }
+            $adExpense = $ad ? (int) round($ad['expense']) : 0;
+            $adGmv = $ad ? (int) round($ad['gmv']) : 0;
+            $adRoas = $adExpense > 0 ? round($adGmv / $adExpense, 2) : 0;
+
             $views = (int) ($st['views'] ?? 0);
             $sales = (int) ($st['sales'] ?? 0);
             $views7d = $st['views_7d'] ?? null;
@@ -256,6 +305,16 @@ class ShopeeProductToolsController extends Controller
                 'period_revenue' => $ps['revenue'],
                 'conversion_rate' => $views > 0 ? round(($sales / $views) * 100, 2) : 0,
                 'needs_attention' => $needsAttention,
+                'is_advertised' => $isAdvertised,
+                'ad_active' => $ad ? $ad['active'] : $hasAutoAd,
+                'ad_auto' => $ad === null && $hasAutoAd,
+                'ad_campaigns' => $ad ? $ad['campaigns'] : ($hasAutoAd ? 1 : 0),
+                'ad_expense' => $adExpense,
+                'ad_gmv' => $adGmv,
+                'ad_clicks' => $ad ? (int) round($ad['clicks']) : 0,
+                'ad_impressions' => $ad ? (int) round($ad['impressions']) : 0,
+                'ad_orders' => $ad ? (int) round($ad['orders']) : 0,
+                'ad_roas' => $adRoas,
             ];
         }
 
@@ -273,13 +332,19 @@ class ShopeeProductToolsController extends Controller
                     return (($b['rating'] ?? 0) <=> ($a['rating'] ?? 0)) ?: ($b['comments'] <=> $a['comments']);
                 case 'attention':
                     return ($b['needs_attention'] <=> $a['needs_attention']) ?: ($b['views'] <=> $a['views']);
+                case 'ad_expense':
+                    return ($b['ad_expense'] <=> $a['ad_expense']) ?: ($b['ad_gmv'] <=> $a['ad_gmv']);
+                case 'ad_roas':
+                    return ($b['ad_roas'] <=> $a['ad_roas']) ?: ($b['ad_gmv'] <=> $a['ad_gmv']);
                 default:
-                    return ($b['period_revenue'] <=> $a['period_revenue']) ?: ($b['views'] <=> $a['views']);
+                    return ($b['period_revenue'] <=> $a['period_revenue']) ?: ($b['ad_expense'] <=> $a['ad_expense']) ?: ($b['views'] <=> $a['views']);
             }
         });
 
         $rated = array_filter($rows, fn ($r) => $r['rating'] !== null);
         $dates = array_filter(array_column($rows, 'stat_date'));
+        $totalAdExpense = array_sum(array_column($rows, 'ad_expense'));
+        $totalAdGmv = array_sum(array_column($rows, 'ad_gmv'));
 
         return [
             'from' => $from,
@@ -294,6 +359,10 @@ class ShopeeProductToolsController extends Controller
                 'period_revenue' => array_sum(array_column($rows, 'period_revenue')),
                 'avg_rating' => count($rated) ? round(array_sum(array_column($rated, 'rating')) / count($rated), 2) : null,
                 'low_conversion_count' => count(array_filter($rows, fn ($r) => $r['needs_attention'])),
+                'advertised_count' => count(array_filter($rows, fn ($r) => $r['is_advertised'])),
+                'total_ad_expense' => $totalAdExpense,
+                'total_ad_gmv' => $totalAdGmv,
+                'total_ad_roas' => $totalAdExpense > 0 ? round($totalAdGmv / $totalAdExpense, 2) : 0,
                 'last_synced_date' => $dates ? max($dates) : null,
             ],
             'items' => $rows,
