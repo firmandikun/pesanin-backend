@@ -84,7 +84,7 @@ class SkuGenerator
             }
             $rows[] = [
                 'id' => $l->id, 'shop_id' => $l->marketplace_shop_id, 'shop_name' => $l->shop?->shop_name, 'item_id' => (int) $l->item_id, 'model_id' => (int) $l->model_id,
-                'name' => $l->name, 'model_name' => $l->model_name, 'image' => $l->image, 'current' => $l->sku, 'sku' => mb_substr($byKey[$k], 0, 100),
+                'name' => $l->name, 'model_name' => $l->model_name, 'image' => $l->image, 'current' => $l->sku, 'sku' => mb_substr($byKey[$k], 0, 100), 'stock' => (int) $l->stock,
             ];
         }
 
@@ -164,5 +164,45 @@ class SkuGenerator
         }
 
         return ['updated' => $updated, 'failed' => $failed];
+    }
+
+    /**
+     * One shared stock per SKU: listings that now carry the same SKU are joined in a Stok Master with the stock the
+     * seller entered, which is then pushed to every shop. @param array<string, int> $stocks SKU => stock
+     * @return int masters set
+     */
+    public static function shareStock(\App\Models\User $user, array $stocks): int
+    {
+        $n = 0;
+        foreach ($stocks as $sku => $stock) {
+            $norm = \App\Support\MasterStock::norm((string) $sku);
+            $listings = MarketplaceListing::where('user_id', $user->id)->whereNotNull('sku')->get()
+                ->filter(fn ($l) => \App\Support\MasterStock::norm($l->sku) === $norm);
+            if ($norm === '' || $listings->isEmpty()) {
+                continue;
+            }
+            $master = \App\Support\MasterStock::find($user, (string) $sku);
+            if (! $master) {
+                $first = $listings->first();
+                $master = new \App\Models\StockMaster(['sku' => trim((string) $sku), 'name' => $first->name.($first->model_name ? " · {$first->model_name}" : ''),
+                    'image' => $first->image, 'stock' => max(0, (int) $stock), 'tracking_since' => now(), 'push_pending' => true]);
+                $master->user_id = $user->id;
+                $master->save();
+            }
+            foreach ($listings as $l) {
+                if ($l->stock_master_id !== $master->id) {
+                    \App\Support\MasterStock::attach($master, $l);
+                }
+            }
+            \App\Support\MasterStock::setStock($master, max(0, (int) $stock), 'Stok diatur saat Buat SKU');
+            try {
+                \App\Support\MasterStock::push($master->refresh());
+            } catch (Throwable) {
+                // stays push_pending; the scheduler retries
+            }
+            $n++;
+        }
+
+        return $n;
     }
 }

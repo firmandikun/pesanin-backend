@@ -126,9 +126,22 @@ class ShopeeProductToolsController extends Controller
     {
         $d = $request->validate(['rows' => 'required|array|min:1|max:500', 'rows.*.id' => 'required|integer', 'rows.*.sku' => ['required', 'string', 'max:100', 'regex:/^[A-Za-z0-9._\/-]+$/']],
             ['rows.*.sku.regex' => 'SKU hanya boleh huruf, angka, titik, garis miring, strip dan garis bawah (tanpa spasi).']);
+        $stocks = $request->validate(['stocks' => 'nullable|array|max:500', 'stocks.*' => 'integer|min:0|max:1000000'])['stocks'] ?? [];
         $skus = collect($d['rows'])->mapWithKeys(fn ($r) => [(int) $r['id'] => strtoupper(trim($r['sku']))])->all();
+        $res = (new \App\Support\Shopee\SkuGenerator)->save($request->user()->id, $skus);
+        // Shared stock for SKUs used by several listings (only those whose SKU was saved).
+        $ok = collect($skus)->except(array_keys($res['failed']))->values()->map(fn ($x) => strtoupper($x))->unique()->all();
+        $stocks = collect($stocks)->mapWithKeys(fn ($v, $k) => [strtoupper((string) $k) => (int) $v])->only($ok)->all();
+        $res['masters'] = 0;
+        if ($stocks) {
+            if (! \App\Support\Plans::hasFeature($request->user(), 'stock_master')) {
+                $res['stock_note'] = 'Stok bersama butuh fitur Stok Master (upgrade paket). SKU tetap tersimpan.';
+            } else {
+                $res['masters'] = \App\Support\Shopee\SkuGenerator::shareStock($request->user(), $stocks);
+            }
+        }
 
-        return (new \App\Support\Shopee\SkuGenerator)->save($request->user()->id, $skus);
+        return $res;
     }
 
     public function itemText(Request $request, int $shop, int $item)
