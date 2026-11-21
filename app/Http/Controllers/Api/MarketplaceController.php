@@ -256,7 +256,14 @@ class MarketplaceController extends Controller
             ->withSum(['stats as items_sold' => fn ($q) => $q->whereBetween('date', [$from, $to])], 'items_sold')
             ->get();
         $listings = MarketplaceListing::whereIn('marketplace_shop_id', $shopIds)->whereIn('item_id', $campaigns->pluck('item_ids')->flatten()->unique())
-            ->get()->groupBy('item_id')->map(fn ($g) => ['item_id' => (int) $g->first()->item_id, 'name' => $g->first()->name, 'image' => $g->first()->image, 'product_id' => $g->firstWhere('product_id')?->product_id]);
+            ->get()->groupBy('item_id')->map(fn ($g) => [
+                'item_id' => (int) $g->first()->item_id,
+                'name' => $g->first()->name,
+                'image' => $g->first()->image,
+                'product_id' => $g->firstWhere('product_id')?->product_id,
+                'sku' => $g->pluck('sku')->filter()->unique()->first() ?: $g->first()->item_sku,
+                'skus' => $g->pluck('sku')->filter()->unique()->values()->all(),
+            ]);
         $shopNormalListings = MarketplaceListing::whereIn('marketplace_shop_id', $shopIds)->where('status', 'NORMAL')
             ->get()->groupBy('marketplace_shop_id')
             ->map(fn ($g) => $g->groupBy('item_id')->map(fn ($ig) => [
@@ -264,6 +271,8 @@ class MarketplaceController extends Controller
                 'name' => $ig->first()->name,
                 'image' => $ig->first()->image,
                 'product_id' => $ig->firstWhere('product_id')?->product_id,
+                'sku' => $ig->pluck('sku')->filter()->unique()->first() ?: $ig->first()->item_sku,
+                'skus' => $ig->pluck('sku')->filter()->unique()->values()->all(),
             ])->values()->all());
 
         $row = fn ($c) => [
@@ -433,7 +442,7 @@ class MarketplaceController extends Controller
                 $result['recent'] = $sync->recent($shop, 60);
                 $sync->settle($shop, 25);
             }
-            if (in_array($what, ['all', 'products'])) {
+            if (in_array($what, ['all', 'products']) || ($what === 'ads' && $request->boolean('with_products'))) {
                 $sync->shopInfo($shop);
                 $result['products'] = $sync->products($shop);
             }

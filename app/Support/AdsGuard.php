@@ -88,18 +88,41 @@ class AdsGuard
         $listings = MarketplaceListing::whereIn('marketplace_shop_id', $shops->keys())->whereIn('item_id', $itemIds ?: [0])
             ->with('product:id,cost_price')->get()->groupBy(fn ($l) => $l->marketplace_shop_id.':'.$l->item_id);
 
-        $rows = $campaigns->map(function ($c) use ($user, $listings, $cfg) {
+        // Fallback HPP map by stock_master_id or SKU across all user's listings (e.g. when SKU was just linked/created).
+        $allFlat = $listings->flatten();
+        $masterIds = $allFlat->pluck('stock_master_id')->filter()->unique()->all();
+        $skus = $allFlat->pluck('sku')->filter()->map(fn ($s) => mb_strtolower(trim($s)))->unique()->all();
+        $hppByMaster = $masterIds ? MarketplaceListing::where('user_id', $user->id)->whereIn('stock_master_id', $masterIds)
+            ->where('cost_price', '>', 0)->pluck('cost_price', 'stock_master_id')->all() : [];
+        $hppBySku = $skus ? MarketplaceListing::where('user_id', $user->id)->where('cost_price', '>', 0)
+            ->whereIn(\Illuminate\Support\Facades\DB::raw('LOWER(TRIM(sku))'), $skus)->get(['sku', 'cost_price'])
+            ->mapWithKeys(fn ($x) => [mb_strtolower(trim($x->sku)) => (int) $x->cost_price])->all() : [];
+
+        $costOf = function ($l) use ($hppByMaster, $hppBySku): int {
+            $direct = (int) ($l->cost_price ?: $l->product?->cost_price ?: 0);
+            if ($direct > 0) {
+                return $direct;
+            }
+            if ($l->stock_master_id && isset($hppByMaster[$l->stock_master_id])) {
+                return (int) $hppByMaster[$l->stock_master_id];
+            }
+            $skuKey = $l->sku ? mb_strtolower(trim($l->sku)) : '';
+
+            return ($skuKey !== '' && isset($hppBySku[$skuKey])) ? (int) $hppBySku[$skuKey] : 0;
+        };
+
+        $rows = $campaigns->map(function ($c) use ($user, $listings, $cfg, $costOf) {
             $fee = self::feeRate($user, $c->marketplace_shop_id);
             // Per promoted product: average price, and HPP share (variations with an HPP only).
-            $items = collect($c->item_ids ?? [])->map(function ($id) use ($c, $listings) {
+            $items = collect($c->item_ids ?? [])->map(function ($id) use ($c, $listings, $costOf) {
                 $g = $listings[$c->marketplace_shop_id.':'.$id] ?? collect();
-                $withCost = $g->filter(fn ($l) => ($l->cost_price ?: $l->product?->cost_price) > 0 && $l->price > 0);
+                $withCost = $g->filter(fn ($l) => $costOf($l) > 0 && $l->price > 0);
 
                 return [
                     'item_id' => (int) $id, 'name' => $g->first()?->name, 'image' => $g->first()?->image,
                     'price' => (int) round($g->avg('price') ?? 0),
-                    'hpp' => $withCost->isEmpty() ? null : (int) round($withCost->avg(fn ($l) => $l->cost_price ?: $l->product->cost_price)),
-                    'hpp_ratio' => $withCost->isEmpty() ? null : $withCost->avg(fn ($l) => ($l->cost_price ?: $l->product->cost_price) / $l->price),
+                    'hpp' => $withCost->isEmpty() ? null : (int) round($withCost->avg(fn ($l) => $costOf($l))),
+                    'hpp_ratio' => $withCost->isEmpty() ? null : $withCost->avg(fn ($l) => $costOf($l) / $l->price),
                 ];
             })->values();
             $known = $items->whereNotNull('hpp_ratio');
