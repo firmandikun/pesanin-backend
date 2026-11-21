@@ -159,7 +159,7 @@ class AiBusinessDiagnosis
             ->sortByDesc('net_profit')->take(10)->values()->all();
 
         // Ads guard leaks
-        $guard = AdsGuard::report($user, null, $fromStr, $toStr);
+        $guard = AdsGuard::evaluate($user, null, $fromStr, $toStr);
         $losingAds = collect($guard['campaigns'] ?? [])
             ->whereIn('status', ['rugi', 'tanpa_penjualan', 'tipis'])
             ->take(10)
@@ -190,19 +190,19 @@ class AiBusinessDiagnosis
             }
         }
 
-        $t = $profit['totals'];
+        $t = $profit['summary'];
 
         return [
             'period' => ['from' => $fromStr, 'to' => $toStr],
             'financials' => [
-                'revenue' => $t['revenue'],
-                'cogs' => $t['cogs'],
-                'platform_fees' => $t['fees'],
-                'ad_spend' => $t['ads'],
-                'expenses' => $t['expenses'],
-                'net_profit' => $t['net'],
-                'net_margin_pct' => $t['revenue'] > 0 ? round(($t['net'] / $t['revenue']) * 100, 1) : 0,
-                'orders_count' => $t['orders'],
+                'revenue' => (int) ($t['revenue'] ?? 0),
+                'cogs' => (int) ($t['cogs'] ?? 0),
+                'platform_fees' => (int) ($t['fees'] ?? 0),
+                'ad_spend' => (int) ($t['ads'] ?? 0),
+                'expenses' => (int) ($t['opex'] ?? 0),
+                'net_profit' => (int) ($t['net_profit'] ?? 0),
+                'net_margin_pct' => (float) ($t['margin'] ?? 0),
+                'orders_count' => (int) ($t['orders'] ?? 0),
                 'cancelled_orders' => $cancelledCount,
                 'returns_count' => $returnsCount,
                 'ad_waste_estimate' => (int) (($guard['summary']['loss'] ?? 0) + ($guard['summary']['wasted'] ?? 0)),
