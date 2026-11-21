@@ -23,9 +23,11 @@ class StockMasterController extends Controller
             ->when($request->query('filter') === 'error', fn ($w) => $w->whereHas('listings', fn ($l) => $l->whereNotNull('stock_push_error')))
             ->orderBy('sku');
         $listings = MarketplaceListing::where('user_id', $user->id)->whereHas('shop', fn ($s) => $s->where('status', '!=', 'disconnected'));
-        // SKUs used by 2+ listings that have no master yet: what "Buat dari SKU yang sama" would create.
-        $candidates = (clone $listings)->whereNull('stock_master_id')->whereNotNull('sku')->where('sku', '!=', '')->get(['sku'])
-            ->groupBy(fn ($l) => MasterStock::norm($l->sku))->filter(fn ($g) => $g->count() >= 2)->count();
+        // SKUs used by 2+ listings or unlinked listings with SKU + HPP already filled.
+        $candidates = (clone $listings)->whereNull('stock_master_id')->whereNotNull('sku')->where('sku', '!=', '')
+            ->with('product:id,cost_price')->get(['id', 'sku', 'cost_price', 'product_id'])
+            ->groupBy(fn ($l) => MasterStock::norm($l->sku))
+            ->filter(fn ($g, $k) => $k !== '' && ($g->count() >= 2 || $g->contains(fn ($l) => ($l->cost_price ?: $l->product?->cost_price) > 0)))->count();
 
         // Modal di gudang: units still in the warehouse × their HPP (from the linked listings / products), i.e. money
         // that has not turned back into cash yet; plus what it would bring at the current selling price.

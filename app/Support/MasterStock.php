@@ -28,8 +28,8 @@ class MasterStock
     }
 
     /**
-     * Create masters for SKUs used by at least $min listings without a master yet, linking them. The starting stock is
-     * the LOWEST stock among them, so nothing is promised that one of the shops does not have.
+     * Create masters for SKUs used by at least $min listings without a master yet, OR any unlinked listing
+     * that already has a SKU and HPP filled. Also syncs HPP across all listings sharing the same master.
      * @return array{masters: int, listings: int}
      */
     public static function generate(User $user, int $min = 2): array
@@ -37,7 +37,10 @@ class MasterStock
         $groups = MarketplaceListing::where('user_id', $user->id)->whereNull('stock_master_id')
             ->whereNotNull('sku')->where('sku', '!=', '')
             ->whereHas('shop', fn ($q) => $q->where('status', '!=', 'disconnected'))
-            ->get()->groupBy(fn ($l) => self::norm($l->sku))->filter(fn ($g, $k) => $k !== '' && $g->count() >= $min);
+            ->with('product:id,cost_price')
+            ->get()
+            ->groupBy(fn ($l) => self::norm($l->sku))
+            ->filter(fn ($g, $k) => $k !== '' && ($g->count() >= $min || $g->contains(fn ($l) => ($l->cost_price ?: $l->product?->cost_price) > 0)));
         [$masters, $linked] = [0, 0];
         foreach ($groups as $group) {
             $first = $group->first();
@@ -52,6 +55,16 @@ class MasterStock
             MarketplaceListing::whereIn('id', $group->pluck('id'))->update(['stock_master_id' => $master->id]);
             $master->update(['push_pending' => true]);
             $linked += $group->count();
+
+            // Propagate HPP if at least one listing in this master has cost_price / product.cost_price
+            $hpp = (int) MarketplaceListing::where('stock_master_id', $master->id)
+                ->with('product:id,cost_price')->get(['id', 'cost_price', 'product_id'])
+                ->map(fn ($l) => (int) ($l->cost_price ?: $l->product?->cost_price))->filter()->max();
+            if ($hpp > 0) {
+                MarketplaceListing::where('stock_master_id', $master->id)
+                    ->where(fn ($w) => $w->whereNull('cost_price')->orWhere('cost_price', '<=', 0))
+                    ->update(['cost_price' => $hpp]);
+            }
         }
 
         return ['masters' => $masters, 'listings' => $linked];
