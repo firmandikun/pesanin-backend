@@ -29,17 +29,29 @@ class ShopeeSync
     {
         $count = 0;
         $offset = 0;
+        $syncedItemIds = [];
         $skuMap = Product::where('user_id', $shop->user_id)->whereNotNull('sku')->pluck('id', 'sku');
         do {
             $page = $this->api->itemList($shop, $offset);
             $ids = array_column($page['item'] ?? [], 'item_id');
-            foreach (array_chunk($ids, 50) as $chunk) {
-                foreach ($this->api->itemBaseInfo($shop, $chunk) as $item) {
-                    $count += $this->upsertItem($shop, $item, $skuMap->all());
+            if ($ids) {
+                $syncedItemIds = array_merge($syncedItemIds, array_map('intval', $ids));
+                foreach (array_chunk($ids, 50) as $chunk) {
+                    foreach ($this->api->itemBaseInfo($shop, $chunk) as $item) {
+                        $count += $this->upsertItem($shop, $item, $skuMap->all());
+                    }
                 }
             }
             $offset = $page['next_offset'] ?? 0;
         } while (! empty($page['has_next_page']));
+
+        // Remove listings that no longer exist in Shopee (deleted / removed from NORMAL & UNLIST).
+        $stale = MarketplaceListing::where('marketplace_shop_id', $shop->id);
+        if ($syncedItemIds) {
+            $stale->whereNotIn('item_id', array_values(array_unique($syncedItemIds)));
+        }
+        $stale->delete();
+
         $shop->update(['products_synced_at' => now(), 'last_error' => null]);
 
         return $count;
@@ -77,6 +89,13 @@ class ShopeeSync
             // Same SKU as an existing stok master → join it.
             \App\Support\MasterStock::autoAttach($listing);
         }
+
+        // Remove variations that were deleted in Shopee for this item.
+        $modelIds = array_map(fn ($r) => (int) $r[0], $rows);
+        MarketplaceListing::where('marketplace_shop_id', $shop->id)
+            ->where('item_id', $item['item_id'])
+            ->when($modelIds, fn ($q) => $q->whereNotIn('model_id', $modelIds))
+            ->delete();
 
         return count($rows);
     }

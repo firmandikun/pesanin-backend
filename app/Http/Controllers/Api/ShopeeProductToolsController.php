@@ -109,6 +109,7 @@ class ShopeeProductToolsController extends Controller
             'scope' => 'required|in:empty,selected', 'keys' => 'array|max:500', 'keys.*' => 'string', 'shop_id' => 'nullable|integer']);
         $q = \App\Models\MarketplaceListing::where('user_id', $request->user()->id)->with('shop:id,shop_name,is_demo')
             ->whereHas('shop', fn ($s) => $s->where('is_demo', false)->where('status', '!=', 'disconnected'))
+            ->where('status', 'NORMAL')
             ->when($d['shop_id'] ?? null, fn ($w, $id) => $w->where('marketplace_shop_id', $id));
         if ($d['scope'] === 'selected') {
             $keys = collect($d['keys'] ?? [])->map(fn ($k) => array_map('intval', explode(':', $k)));

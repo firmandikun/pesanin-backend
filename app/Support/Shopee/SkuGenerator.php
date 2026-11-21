@@ -104,6 +104,9 @@ class SkuGenerator
         $updated = 0;
         $failed = [];
         foreach ($listings->groupBy(fn ($l) => "{$l->marketplace_shop_id}:{$l->item_id}") as $group) {
+            if ($group->contains(fn ($l) => ($l->status ?? 'NORMAL') !== 'NORMAL')) {
+                continue;
+            }
             /** @var MarketplaceShop $shop */
             $shop = $group->first()->shop;
             $itemId = (int) $group->first()->item_id;
@@ -155,8 +158,12 @@ class SkuGenerator
                     }
                 }
             } catch (Throwable $e) {
+                $msg = method_exists($e, 'getMessage') ? $e->getMessage() : 'Gagal';
+                if (stripos($msg, 'status is abnormal') !== false) {
+                    continue;
+                }
                 foreach ($group as $l) {
-                    $failed[$l->id] ??= method_exists($e, 'getMessage') ? $e->getMessage() : 'Gagal';
+                    $failed[$l->id] ??= $msg;
                 }
             }
         }

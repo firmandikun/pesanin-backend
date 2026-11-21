@@ -16,8 +16,8 @@ class StockMasterController extends Controller
     {
         $user = $request->user();
         $q = StockMaster::where('user_id', $user->id)
-            ->with(['listings' => fn ($l) => $l->select('id', 'stock_master_id', 'marketplace_shop_id', 'item_id', 'model_id', 'name', 'model_name', 'sku', 'stock', 'stock_push_error', 'image', 'status')
-                ->with('shop:id,shop_name,is_demo,status')])
+            ->with(['listings' => fn ($l) => $l->select('id', 'stock_master_id', 'marketplace_shop_id', 'product_id', 'item_id', 'model_id', 'name', 'model_name', 'sku', 'stock', 'price', 'cost_price', 'stock_push_error', 'image', 'status')
+                ->with(['shop:id,shop_name,is_demo,status', 'product:id,cost_price'])])
             ->when($request->query('search'), fn ($w, $s) => $w->where(fn ($x) => $x->where('sku', 'like', "%{$s}%")->orWhere('name', 'like', "%{$s}%")))
             ->when($request->query('filter') === 'empty', fn ($w) => $w->where('stock', '<=', 0))
             ->when($request->query('filter') === 'error', fn ($w) => $w->whereHas('listings', fn ($l) => $l->whereNotNull('stock_push_error')))
@@ -42,8 +42,18 @@ class StockMasterController extends Controller
                 }
             });
 
+        $mastersPage = $q->paginate(min(100, max(1, $request->integer('per_page', 20))));
+        $mastersPage->through(function ($m) {
+            $hpp = (int) ($m->listings->map(fn ($l) => (int) ($l->cost_price ?: $l->product?->cost_price))->filter()->max() ?: 0);
+            $sellPrice = (int) round($m->listings->where('price', '>', 0)->avg('price') ?? 0);
+            $m->setAttribute('hpp', $hpp);
+            $m->setAttribute('sell_price', $sellPrice);
+
+            return $m;
+        });
+
         return [
-            'masters' => $q->paginate(min(100, max(1, $request->integer('per_page', 20)))),
+            'masters' => $mastersPage,
             'stats' => $value + [
                 'masters' => StockMaster::where('user_id', $user->id)->count(),
                 'linked' => (clone $listings)->whereNotNull('stock_master_id')->count(),
