@@ -117,9 +117,14 @@ class SkuGenerator
                     $updated++;
                 }
                 if ($variations->isNotEmpty()) {
-                    $res = $api->call($shop, 'POST', '/api/v2/product/update_model', ['item_id' => $itemId,
-                        'model_list' => $variations->map(fn ($l) => ['model_id' => (int) $l->model_id, 'model_sku' => $skus[$l->id]])->values()->all()]);
-                    $errs = collect($res['response']['failure_list'] ?? [])->mapWithKeys(fn ($f) => [(int) ($f['model_id'] ?? 0) => (string) ($f['failed_reason'] ?? 'ditolak Shopee')]);
+                    $errs = collect();
+                    foreach ($variations->chunk(50) as $chunk) {
+                        $res = $api->call($shop, 'POST', '/api/v2/product/update_model', ['item_id' => $itemId,
+                            'model' => $chunk->map(fn ($l) => ['model_id' => (int) $l->model_id, 'model_sku' => $skus[$l->id]])->values()->all()]);
+                        foreach ($res['response']['failure_list'] ?? [] as $f) {
+                            $errs[(int) ($f['model_id'] ?? 0)] = (string) ($f['failed_reason'] ?? 'ditolak Shopee');
+                        }
+                    }
                     foreach ($variations as $l) {
                         if (isset($errs[(int) $l->model_id])) {
                             $failed[$l->id] = $errs[(int) $l->model_id];

@@ -178,7 +178,9 @@ class ShopeeProductToolsController extends Controller
         $listings = \App\Models\MarketplaceListing::where('user_id', $userId)
             ->when($shopId, fn ($q) => $q->where('marketplace_shop_id', $shopId))
             ->whereIn('marketplace_shop_id', $shops->pluck('id'))
-            ->get(['id', 'marketplace_shop_id', 'item_id', 'name', 'sku', 'image', 'price', 'stock', 'status']);
+            ->where('status', 'NORMAL')
+            ->with('stockMaster:id,stock')
+            ->get(['id', 'marketplace_shop_id', 'item_id', 'model_id', 'model_name', 'stock_master_id', 'name', 'sku', 'image', 'price', 'stock', 'status']);
 
         $grouped = $listings->groupBy(fn ($l) => "{$l->marketplace_shop_id}:{$l->item_id}");
         $keys = $grouped->map(fn ($g) => [(int) $g->first()->marketplace_shop_id, (int) $g->first()->item_id])->values();
@@ -230,8 +232,10 @@ class ShopeeProductToolsController extends Controller
             ->get(['id', 'marketplace_shop_id', 'items']);
 
         $periodSales = [];
+        $variantSales = [];
         foreach ($orders as $o) {
             $seenInOrder = [];
+            $seenVarInOrder = [];
             foreach ($o->items ?? [] as $it) {
                 $iid = (int) ($it['item_id'] ?? 0);
                 if (! $iid) {
@@ -248,6 +252,17 @@ class ShopeeProductToolsController extends Controller
                     $periodSales[$key]['orders']++;
                     $seenInOrder[$key] = true;
                 }
+
+                $mid = (int) ($it['model_id'] ?? 0);
+                $vName = mb_strtolower(trim((string) ($it['variant'] ?? '')));
+                $vKey = $mid > 0 ? "{$key}:m:{$mid}" : ($vName !== '' ? "{$key}:n:{$vName}" : "{$key}:m:0");
+                $variantSales[$vKey] ??= ['units' => 0, 'orders' => 0, 'revenue' => 0];
+                $variantSales[$vKey]['units'] += $qty;
+                $variantSales[$vKey]['revenue'] += $rev;
+                if (! isset($seenVarInOrder[$vKey])) {
+                    $variantSales[$vKey]['orders']++;
+                    $seenVarInOrder[$vKey] = true;
+                }
             }
         }
 
@@ -262,17 +277,58 @@ class ShopeeProductToolsController extends Controller
             $st = $stats[$key] ?? null;
             $ps = $periodSales[$key] ?? ['units' => 0, 'orders' => 0, 'revenue' => 0];
             $ad = $adByItem[$key] ?? null;
-            $hasAutoAd = ($first->status === 'NORMAL') && ! empty($shopAutoAds[$first->marketplace_shop_id]);
+            $hasAutoAd = ! empty($shopAutoAds[$first->marketplace_shop_id]);
+            $adActive = ($ad && $ad['active']) || $hasAutoAd;
             $isAdvertised = $ad !== null || $hasAutoAd;
-            if ($adFilter === 'advertised' && ! $isAdvertised) {
+            if ($adFilter === 'advertised' && ! $adActive) {
                 continue;
             }
-            if ($adFilter === 'organic' && $isAdvertised) {
+            if ($adFilter === 'organic' && $adActive) {
                 continue;
             }
+
+            // Use Stok Master when linked (deduplicated per stock_master_id so shared SKU isn't double-counted)
+            $seenMasters = [];
+            $masterStock = 0;
+            $hasMasterStock = false;
+            $shopeeStock = (int) $variants->sum('stock');
+            foreach ($variants as $v) {
+                if ($v->stock_master_id && $v->stockMaster) {
+                    $hasMasterStock = true;
+                    if (! isset($seenMasters[$v->stock_master_id])) {
+                        $seenMasters[$v->stock_master_id] = true;
+                        $masterStock += (int) $v->stockMaster->stock;
+                    }
+                } else {
+                    $masterStock += (int) $v->stock;
+                }
+            }
+
             $adExpense = $ad ? (int) round($ad['expense']) : 0;
             $adGmv = $ad ? (int) round($ad['gmv']) : 0;
             $adRoas = $adExpense > 0 ? round($adGmv / $adExpense, 2) : 0;
+
+            $variantRows = $variants->map(function ($v) use ($key, $variantSales) {
+                $mid = (int) ($v->model_id ?? 0);
+                $vName = mb_strtolower(trim((string) ($v->model_name ?? '')));
+                $vs = ($mid > 0 ? ($variantSales["{$key}:m:{$mid}"] ?? null) : null)
+                    ?? ($vName !== '' ? ($variantSales["{$key}:n:{$vName}"] ?? null) : null)
+                    ?? ($variantSales["{$key}:m:0"] ?? ['units' => 0, 'orders' => 0, 'revenue' => 0]);
+
+                return [
+                    'id' => $v->id,
+                    'model_id' => $mid,
+                    'name' => $v->model_name ?: ($v->sku ?: 'Standar'),
+                    'sku' => $v->sku,
+                    'price' => (int) $v->price,
+                    'stock' => ($v->stock_master_id && $v->stockMaster) ? (int) $v->stockMaster->stock : (int) $v->stock,
+                    'shopee_stock' => (int) $v->stock,
+                    'has_master_stock' => (bool) ($v->stock_master_id && $v->stockMaster),
+                    'period_units' => $vs['units'],
+                    'period_orders' => $vs['orders'],
+                    'period_revenue' => $vs['revenue'],
+                ];
+            })->sortByDesc('period_units')->values()->all();
 
             $views = (int) ($st['views'] ?? 0);
             $sales = (int) ($st['sales'] ?? 0);
@@ -290,7 +346,9 @@ class ShopeeProductToolsController extends Controller
                 'image' => $first->image,
                 'price_min' => (int) $variants->min('price'),
                 'price_max' => (int) $variants->max('price'),
-                'stock' => (int) $variants->sum('stock'),
+                'stock' => $hasMasterStock ? $masterStock : $shopeeStock,
+                'shopee_stock' => $shopeeStock,
+                'has_master_stock' => $hasMasterStock,
                 'status' => $first->status,
                 'views' => $views,
                 'likes' => (int) ($st['likes'] ?? 0),
@@ -306,7 +364,7 @@ class ShopeeProductToolsController extends Controller
                 'conversion_rate' => $views > 0 ? round(($sales / $views) * 100, 2) : 0,
                 'needs_attention' => $needsAttention,
                 'is_advertised' => $isAdvertised,
-                'ad_active' => $ad ? $ad['active'] : $hasAutoAd,
+                'ad_active' => $adActive,
                 'ad_auto' => $ad === null && $hasAutoAd,
                 'ad_campaigns' => $ad ? $ad['campaigns'] : ($hasAutoAd ? 1 : 0),
                 'ad_expense' => $adExpense,
@@ -315,6 +373,7 @@ class ShopeeProductToolsController extends Controller
                 'ad_impressions' => $ad ? (int) round($ad['impressions']) : 0,
                 'ad_orders' => $ad ? (int) round($ad['orders']) : 0,
                 'ad_roas' => $adRoas,
+                'variants' => $variantRows,
             ];
         }
 
@@ -359,7 +418,7 @@ class ShopeeProductToolsController extends Controller
                 'period_revenue' => array_sum(array_column($rows, 'period_revenue')),
                 'avg_rating' => count($rated) ? round(array_sum(array_column($rated, 'rating')) / count($rated), 2) : null,
                 'low_conversion_count' => count(array_filter($rows, fn ($r) => $r['needs_attention'])),
-                'advertised_count' => count(array_filter($rows, fn ($r) => $r['is_advertised'])),
+                'advertised_count' => count(array_filter($rows, fn ($r) => $r['ad_active'])),
                 'total_ad_expense' => $totalAdExpense,
                 'total_ad_gmv' => $totalAdGmv,
                 'total_ad_roas' => $totalAdExpense > 0 ? round($totalAdGmv / $totalAdExpense, 2) : 0,
