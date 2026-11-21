@@ -442,7 +442,7 @@ class MarketplaceController extends Controller
                 $result['recent'] = $sync->recent($shop, 60);
                 $sync->settle($shop, 25);
             }
-            if (in_array($what, ['all', 'products']) || ($what === 'ads' && $request->boolean('with_products'))) {
+            if (in_array($what, ['all', 'products'])) {
                 $sync->shopInfo($shop);
                 $result['products'] = $sync->products($shop);
             }

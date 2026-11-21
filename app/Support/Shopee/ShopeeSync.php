@@ -24,6 +24,24 @@ class ShopeeSync
         $shop->update(['shop_name' => $info['shop_name'] ?? $shop->shop_name, 'region' => $info['region'] ?? $shop->region]);
     }
 
+    /** Refresh listing details (SKU, name, image, price, stock) for specific Shopee item IDs. */
+    public function syncItems(MarketplaceShop $shop, array $itemIds): int
+    {
+        $ids = array_values(array_unique(array_filter(array_map('intval', $itemIds))));
+        if (! $ids) {
+            return 0;
+        }
+        $skuMap = Product::where('user_id', $shop->user_id)->whereNotNull('sku')->pluck('id', 'sku')->all();
+        $count = 0;
+        foreach (array_chunk($ids, 50) as $chunk) {
+            foreach ($this->api->itemBaseInfo($shop, $chunk) as $item) {
+                $count += $this->upsertItem($shop, $item, $skuMap);
+            }
+        }
+
+        return $count;
+    }
+
     /** @return int listings upserted */
     public function products(MarketplaceShop $shop): int
     {
@@ -987,6 +1005,16 @@ class ShopeeSync
 
         $shop->update(['ads_balance' => $this->api->adsBalance($shop), 'ads_balance_at' => now()]);
         $this->adCampaigns($shop, $days);
+
+        // Refresh product info (SKU, name, image, price, stock) for all advertised items right away.
+        $adItemIds = ShopeeAdCampaign::where('marketplace_shop_id', $shop->id)->pluck('item_ids')->flatten()->all();
+        if ($adItemIds) {
+            try {
+                $this->syncItems($shop, $adItemIds);
+            } catch (\Throwable) {
+                // Keep ads sync successful even if one item fetch fails
+            }
+        }
 
         return count($rows);
     }
