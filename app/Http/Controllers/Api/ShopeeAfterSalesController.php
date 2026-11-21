@@ -77,11 +77,13 @@ class ShopeeAfterSalesController extends Controller
         $r->refresh();
         $open = in_array($r->status, ShopeeReturn::NEEDS_SELLER, true);
         $list = fn ($v) => is_array($v) ? array_values(array_filter($v, 'is_array')) : [];
-        $try = function (string $path) use ($r) {
+        $errors = [];
+        $try = function (string $path) use ($r, &$errors) {
             try {
                 return $this->api($r, 'GET', $path);
             } catch (Throwable $e) {
                 \Illuminate\Support\Facades\Log::info("Retur {$r->return_sn} {$path}: ".$e->getMessage());
+                $errors[$path] = $e->getMessage();
 
                 return [];
             }
@@ -89,6 +91,10 @@ class ShopeeAfterSalesController extends Controller
         $neg = is_array($d['negotiation'] ?? null) ? $d['negotiation'] : [];
         $sol = $open ? $try('get_available_solutions') : [];
         $reasons = $open ? $try('get_return_dispute_reason') : [];
+        if ($open && $reasons && ! self::disputeReasons($reasons)) {
+            // Unknown shape: keep it in the log so the parser can be taught it.
+            \Illuminate\Support\Facades\Log::warning("Retur {$r->return_sn} dispute reasons, bentuk tidak dikenal: ".mb_substr(json_encode($reasons), 0, 2000));
+        }
 
         return [
             'return' => $r,
@@ -104,9 +110,48 @@ class ShopeeAfterSalesController extends Controller
             ] : null,
             'solutions' => collect($list($sol['solution'] ?? $sol['solution_list'] ?? null))
                 ->map(fn ($x) => ['solution' => $x['name'] ?? $x['solution'] ?? null, 'max_refund' => (int) round((float) ($x['max_refund_amount'] ?? 0))])->filter(fn ($x) => is_string($x['solution']))->values()->all(),
-            'dispute_reasons' => collect($list($reasons['dispute_reason_list'] ?? $reasons['dispute_reason'] ?? null))
-                ->map(fn ($x) => ['id' => (int) ($x['reason_id'] ?? 0), 'text' => (string) ($x['reason_text'] ?? '')])->filter(fn ($x) => $x['id'])->values()->all(),
+            'dispute_reasons' => self::disputeReasons($reasons),
+            'dispute_error' => $open ? ($errors['get_return_dispute_reason'] ?? null) : null,
         ];
+    }
+
+    /**
+     * Banding reasons out of Shopee's response, whatever its shape: a list of {id, text} objects (any key names),
+     * two parallel lists (ids + texts), or an id => text map, at the top level or one level down.
+     * @return array<int, array{id: int, text: string}>
+     */
+    public static function disputeReasons(mixed $res): array
+    {
+        if (! is_array($res) || ! $res) {
+            return [];
+        }
+        $fromObjects = function (array $list) {
+            return collect($list)->filter(fn ($v) => is_array($v))->map(function ($x) {
+                $id = collect($x)->first(fn ($v, $k) => is_numeric($v) && preg_match('/id|reason/i', (string) $k));
+                $text = collect($x)->first(fn ($v, $k) => is_string($v) && ! is_numeric($v) && trim($v) !== '');
+
+                return ['id' => (int) $id, 'text' => trim((string) $text)];
+            })->filter(fn ($x) => $x['id'] && $x['text'] !== '')->values()->all();
+        };
+        $candidates = [$res, ...array_values(array_filter($res, 'is_array'))];
+        foreach ($candidates as $c) {
+            if (array_is_list($c) && $c && is_array($c[0] ?? null) && ($out = $fromObjects($c))) {
+                return $out;
+            }
+            // Parallel lists: one of ids, one of texts.
+            $lists = array_values(array_filter($c, fn ($v) => is_array($v) && array_is_list($v) && $v));
+            $ids = collect($lists)->first(fn ($l) => collect($l)->every(fn ($v) => is_numeric($v)));
+            $texts = collect($lists)->first(fn ($l) => collect($l)->every(fn ($v) => is_string($v) && ! is_numeric($v)));
+            if ($ids && $texts && count($ids) === count($texts)) {
+                return collect($ids)->map(fn ($id, $i) => ['id' => (int) $id, 'text' => trim($texts[$i])])->values()->all();
+            }
+            // id => text map.
+            if (! array_is_list($c) && collect($c)->every(fn ($v, $k) => is_numeric($k) && is_string($v))) {
+                return collect($c)->map(fn ($t, $id) => ['id' => (int) $id, 'text' => trim($t)])->values()->all();
+            }
+        }
+
+        return [];
     }
 
     /** action: accept (refund in full / accept the return), offer, accept_offer, dispute. */
