@@ -60,6 +60,11 @@ Artisan::command('marketplace:sync {--what=orders}', function () {
 // Statistik produk (dilihat / disukai / terjual) snapshot, twice a day for the 7-day change.
 \Illuminate\Support\Facades\Schedule::command('marketplace:sync --what=stats')->twiceDaily(3, 15)->withoutOverlapping();
 // Naikkan Produk otomatis: refill free boost slots (5 per shop, 4 hours each).
+// Scan Out: keep the handover history 10 days.
+Artisan::command('scan-out:prune', function () {
+    $this->info('Sesi scan out dihapus: '.\App\Support\ScanOut::prune());
+})->purpose('Delete Scan Out sessions older than 10 days');
+\Illuminate\Support\Facades\Schedule::command('scan-out:prune')->dailyAt('01:30');
 Artisan::command('marketplace:boost', function () {
     $this->info('Toko diproses: '.\App\Support\Shopee\ShopeeProductTools::runAllBoosts());
 })->purpose('Boost Shopee products from each shop rotation list');

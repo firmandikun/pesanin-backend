@@ -23,6 +23,14 @@ class ScanOut
 {
     public const TTL_HOURS = 12;
 
+    /** Riwayat Scan Out disimpan 10 hari, lalu dihapus (sesi + resinya). */
+    public const KEEP_DAYS = 10;
+
+    public static function prune(): int
+    {
+        return ScanOutSession::where('started_at', '<', now()->subDays(self::KEEP_DAYS))->delete();
+    }
+
     public static function normalize(string $code): string
     {
         return Str::upper(preg_replace('/\s+/', '', trim($code)));
@@ -196,17 +204,56 @@ class ScanOut
         ];
     }
 
+    /**
+     * The expedition a parcel goes with (the courier who picks it up), without the service level:
+     * from the order's courier when known ("SPX Standard" → SPX Express), otherwise from the resi format.
+     */
+    public static function expedition(?string $courier, string $code): string
+    {
+        $c = Str::lower((string) $courier);
+        $byName = [
+            'SPX Express' => ['spx', 'shopee express', 'shopee xpress'], 'J&T Express' => ['j&t', 'jnt', 'j & t'], 'J&T Cargo' => ['j&t cargo', 'jt cargo'],
+            'JNE' => ['jne'], 'SiCepat' => ['sicepat'], 'Anteraja' => ['anteraja'], 'Ninja Xpress' => ['ninja'], 'ID Express' => ['id express', 'idexpress'],
+            'POS Indonesia' => ['pos '], 'Lion Parcel' => ['lion'], 'GoSend' => ['gosend', 'gojek'], 'GrabExpress' => ['grab'], 'Paxel' => ['paxel'],
+            'Wahana' => ['wahana'], 'TIKI' => ['tiki'], 'SAP Express' => ['sap'], 'Lex' => ['lex', 'lazada'],
+        ];
+        if ($c !== '') {
+            foreach (['J&T Cargo', ...array_keys($byName)] as $name) {
+                foreach ($byName[$name] as $needle) {
+                    if (str_contains($c.' ', $needle)) {
+                        return $name;
+                    }
+                }
+            }
+
+            return Str::title(trim(preg_replace('/\b(reguler|regular|standard|standar|ekonomi|economy|eco|hemat|kargo|cargo|instant|sameday|next ?day|yes|oke|reg)\b/i', '', (string) $courier))) ?: (string) $courier;
+        }
+
+        return match (true) {
+            str_starts_with($code, 'SPX') => 'SPX Express',
+            (bool) preg_match('/^(JX|JP|JD|JO|JZ|JT)\d{8,}$/', $code) => 'J&T Express',
+            (bool) preg_match('/^(CGK|BDO|SUB|MES|JOG|SRG|DPS|UPG|PLM|BPN|PKU|JNE)/', $code) => 'JNE',
+            str_starts_with($code, 'NLID') || str_starts_with($code, 'NV') => 'Ninja Xpress',
+            (bool) preg_match('/^ID[ESX]/', $code) => 'ID Express',
+            str_starts_with($code, 'LP') => 'Lion Parcel',
+            str_starts_with($code, 'GK-') || str_starts_with($code, 'GK') && strlen($code) > 15 => 'GoSend',
+            (bool) preg_match('/^1[01]\d{12}$/', $code) => 'Anteraja',
+            (bool) preg_match('/^00\d{10}$/', $code) => 'SiCepat',
+            default => 'Ekspedisi lain',
+        };
+    }
+
     public static function row(ScanOutParcel $p): array
     {
         return $p->only(['id', 'code', 'matched', 'shop_name', 'courier', 'order_sn', 'customer_name', 'items_summary', 'scanned_by'])
-            + ['scanned_at' => $p->scanned_at?->toIso8601String()];
+            + ['scanned_at' => $p->scanned_at?->toIso8601String(), 'expedition' => self::expedition($p->courier, $p->code)];
     }
 
-    /** Count per shop / per courier and the total for one session. */
+    /** Count per shop / per expedition and the total for one session. */
     public static function summary(ScanOutSession $s): array
     {
         self::rematch($s);
-        $rows = $s->parcels()->get(['shop_name', 'courier', 'matched']);
+        $rows = $s->parcels()->get(['code', 'shop_name', 'courier', 'matched'])->each(fn ($r) => $r->expedition = self::expedition($r->courier, $r->code));
         $group = fn (string $key, string $empty) => $rows->groupBy(fn ($r) => $r->{$key} ?: $empty)
             ->map(fn ($g, $k) => ['name' => $k, 'count' => $g->count()])->sortByDesc('count')->values();
 
@@ -214,7 +261,7 @@ class ScanOut
             'total' => $rows->count(),
             'unknown' => $rows->where('matched', false)->count(),
             'by_shop' => $group('shop_name', 'Tidak dikenal'),
-            'by_courier' => $group('courier', 'Tanpa kurir'),
+            'by_expedition' => $group('expedition', 'Ekspedisi lain'),
         ];
     }
 

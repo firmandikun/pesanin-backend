@@ -31,15 +31,15 @@ class Member
     private const ROLE = [
         'cs' => [
             '#^\w+ (chat|chat-labels|quick-replies|customers|orders|labels)(/|$)#', '#^GET (products|inventory|rotator-chats|followup-templates)(/|$)#',
-            '#^GET marketplace/(shops|listings)$#', '#^\w+ r/payment-confirmations(/|$)#', '#^GET r/(staff|coupons)$#',
+            '#^GET marketplace/(shops|listings)$#', '#^\w+ marketplace/(returns|orders)(/|$)#', '#^\w+ r/payment-confirmations(/|$)#', '#^GET r/(staff|coupons)$#',
         ],
         'gudang' => [
-            '#^\w+ (orders|labels|products|inventory|transactions|scan-out)(/|$)#', '#^\w+ marketplace/(shops|listings|listing-costs)(/|$)#',
+            '#^\w+ (orders|labels|products|inventory|transactions|scan-out)(/|$)#', '#^\w+ marketplace/(shops|listings|listing-costs|returns|orders)(/|$)#',
             '#^GET r/staff$#',
         ],
         'advertiser' => [
             '#^\w+ (reports|research|landing-pages|landing-reports|product-reports|rotator-stats|affiliate-stats)(/|$)#',
-            '#^(GET meta-ads(/report)?|PUT meta-ads/accounts|POST meta-ads/sync)$#', '#^GET marketplace/(ads|shops)$#',
+            '#^(GET meta-ads(/report)?|PUT meta-ads/accounts|POST meta-ads/sync)$#', '#^GET marketplace/(ads|shops)$#', '#^\w+ marketplace/promotions(/|$)#', '#^GET marketplace/listings$#',
             '#^\w+ r/(pixels|ad-spends|rotators|affiliates|coupons)(/|$)#', '#^GET (products|orders)(/|$)#',
             '#^\w+ (broadcasts|whatsapp/templates)(/|$)#', '#^GET (customers|chat-labels)(/|$)#',
         ],

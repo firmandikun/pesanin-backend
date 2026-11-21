@@ -17,7 +17,7 @@ class ScanOutController extends Controller
 {
     public function index(Request $request)
     {
-        $sessions = ScanOutSession::where('user_id', $request->user()->id)->withCount('parcels')
+        $sessions = ScanOutSession::where('user_id', $request->user()->id)->where('started_at', '>=', now()->subDays(\App\Support\ScanOut::KEEP_DAYS))->withCount('parcels')
             ->latest('started_at')->paginate(15);
         $sessions->getCollection()->transform(fn ($s) => $s->only(['id', 'status', 'scanned_by', 'parcels_count']) + [
             'started_at' => $s->started_at?->toIso8601String(), 'finished_at' => $s->finished_at?->toIso8601String(), 'open' => $s->isOpen(),

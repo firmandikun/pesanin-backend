@@ -126,6 +126,10 @@ Route::middleware(['auth:sanctum', 'member', 'subscribed'])->group(function () {
     Route::post('/marketplace/shopee/demo', [MarketplaceController::class, 'demo']);
     Route::post('/marketplace/shops/{shop}/sync', [MarketplaceController::class, 'sync'])->middleware('throttle:60,1');
     Route::get('/marketplace/returns', [MarketplaceController::class, 'returns']);
+    Route::get('/marketplace/returns/{id}', [\App\Http\Controllers\Api\ShopeeAfterSalesController::class, 'show'])->whereNumber('id')->middleware('throttle:60,1');
+    Route::post('/marketplace/returns/{id}/act', [\App\Http\Controllers\Api\ShopeeAfterSalesController::class, 'act'])->whereNumber('id')->middleware('throttle:20,1');
+    Route::post('/marketplace/orders/{id}/cancel', [\App\Http\Controllers\Api\ShopeeAfterSalesController::class, 'cancel'])->whereNumber('id')->middleware('throttle:20,1');
+    Route::put('/marketplace/orders/{id}/note', [\App\Http\Controllers\Api\ShopeeAfterSalesController::class, 'note'])->whereNumber('id')->middleware('throttle:60,1');
     Route::get('/marketplace/balance', [MarketplaceController::class, 'balance']);
     Route::get('/marketplace/shops/{shop}/transactions', [MarketplaceController::class, 'transactions']);
     Route::get('/marketplace/shops/{shop}/transactions/export', [MarketplaceController::class, 'exportTransactions']);
@@ -209,6 +213,14 @@ Route::middleware(['auth:sanctum', 'member', 'subscribed'])->group(function () {
         Route::delete('/{session}/parcels/{parcel}', 'destroyParcel')->whereNumber(['session', 'parcel']);
     });
     Route::get('/marketplace/listings', [MarketplaceController::class, 'listings']);
+    // Promosi toko Shopee (diskon, voucher, paket diskon, kombo hemat, flash sale, produk unggulan)
+    Route::controller(\App\Http\Controllers\Api\ShopeePromotionController::class)->prefix('marketplace/promotions')->group(function () {
+        Route::get('/flash/slots', 'timeSlots')->middleware('throttle:30,1');
+        Route::put('/top_picks/{id}/toggle', 'toggleTopPicks')->middleware('throttle:20,1');
+        Route::get('/{type}', 'index')->middleware('throttle:60,1');
+        Route::post('/{type}', 'store')->middleware('throttle:20,1');
+        Route::post('/{type}/{id}/stop', 'stop')->middleware('throttle:20,1');
+    });
     Route::controller(\App\Http\Controllers\Api\ShopeeProductToolsController::class)->prefix('marketplace/listings')->group(function () {
         Route::get('/boost', 'boostIndex');
         Route::put('/boost/{shop}', 'boostUpdate')->whereNumber('shop')->middleware('throttle:30,1');

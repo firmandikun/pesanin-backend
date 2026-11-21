@@ -12,9 +12,11 @@ class AdsGuardController extends Controller
 {
     public function index(Request $request)
     {
+        $d = $request->validate(['from' => 'nullable|date_format:Y-m-d', 'to' => 'nullable|date_format:Y-m-d|after_or_equal:from']);
         $days = $request->integer('days') ?: null;
 
-        return AdsGuard::evaluate($request->user(), in_array($days, [3, 7, 14, 30], true) ? $days : null);
+        return AdsGuard::evaluate($request->user(), in_array($days, [3, 7, 14, 30], true) ? $days : null,
+            ! empty($d['from']) && ! empty($d['to']) ? $d['from'] : null, ! empty($d['from']) && ! empty($d['to']) ? $d['to'] : null);
     }
 
     public function action(Request $request, int $campaign)

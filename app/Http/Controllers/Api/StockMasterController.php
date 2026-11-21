@@ -27,9 +27,24 @@ class StockMasterController extends Controller
         $candidates = (clone $listings)->whereNull('stock_master_id')->whereNotNull('sku')->where('sku', '!=', '')->get(['sku'])
             ->groupBy(fn ($l) => MasterStock::norm($l->sku))->filter(fn ($g) => $g->count() >= 2)->count();
 
+        // Modal di gudang: units still in the warehouse × their HPP (from the linked listings / products), i.e. money
+        // that has not turned back into cash yet; plus what it would bring at the current selling price.
+        $value = ['stock_value' => 0, 'stock_units' => 0, 'sell_value' => 0, 'no_hpp' => 0];
+        StockMaster::where('user_id', $user->id)->where('stock', '>', 0)
+            ->with(['listings' => fn ($l) => $l->select('id', 'stock_master_id', 'product_id', 'price', 'cost_price')->with('product:id,cost_price')])
+            ->chunk(500, function ($masters) use (&$value) {
+                foreach ($masters as $m) {
+                    $hpp = $m->listings->map(fn ($l) => (int) ($l->cost_price ?: $l->product?->cost_price))->filter()->max();
+                    $price = (int) round($m->listings->where('price', '>', 0)->avg('price') ?? 0);
+                    $value['stock_units'] += $m->stock;
+                    $value['sell_value'] += $m->stock * $price;
+                    $hpp ? $value['stock_value'] += $m->stock * $hpp : $value['no_hpp']++;
+                }
+            });
+
         return [
             'masters' => $q->paginate(min(100, max(1, $request->integer('per_page', 20)))),
-            'stats' => [
+            'stats' => $value + [
                 'masters' => StockMaster::where('user_id', $user->id)->count(),
                 'linked' => (clone $listings)->whereNotNull('stock_master_id')->count(),
                 'unlinked_with_sku' => (clone $listings)->whereNull('stock_master_id')->whereNotNull('sku')->where('sku', '!=', '')->count(),

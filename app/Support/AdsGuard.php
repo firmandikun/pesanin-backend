@@ -65,12 +65,17 @@ class AdsGuard
     }
 
     /** Every ad of the seller with its verdict, worst first. */
-    public static function evaluate(User $user, ?int $days = null): array
+    public static function evaluate(User $user, ?int $days = null, ?string $from = null, ?string $to = null): array
     {
         $cfg = self::settings($user);
-        $days ??= $cfg['days'];
-        $to = now(Dates::TZ)->toDateString();
-        $from = now(Dates::TZ)->subDays($days - 1)->toDateString();
+        if ($from && $to) {
+            // A period picked on the ads page (same dates as the table above it).
+            $days = (int) Carbon::parse($from)->diffInDays(Carbon::parse($to)) + 1;
+        } else {
+            $days ??= $cfg['days'];
+            $to = now(Dates::TZ)->toDateString();
+            $from = now(Dates::TZ)->subDays($days - 1)->toDateString();
+        }
         $shops = MarketplaceShop::where('user_id', $user->id)->where('is_demo', false)->get()->keyBy('id');
         $campaigns = ShopeeAdCampaign::whereIn('marketplace_shop_id', $shops->keys())->where('status', 'ongoing')
             ->withSum(['stats as expense' => fn ($q) => $q->whereBetween('date', [$from, $to])], 'expense')
@@ -140,6 +145,8 @@ class AdsGuard
                 // Shopee's ROAS target ignores PPN: this one gives a real ROAS 20% above break-even.
                 'suggested_target' => $breakEven ? round($breakEven * 1.2 * (1 + self::PPN), 1) : null,
                 'profit' => $profit, 'status' => $status, 'items' => $items, 'editable' => $editable,
+                // Breakdown of the profit: sales − HPP of what the ads sold − Shopee fees − ad spend incl. PPN.
+                'hpp_total' => $hppRatio === null ? null : (int) round($gmv * $hppRatio), 'fee_total' => (int) round($gmv * $fee),
             ] + $metrics + ['evaluation' => self::verdicts($metrics + compact('expense', 'expenseReal', 'gmv', 'orders', 'roasReal', 'breakEven', 'profit', 'status'))];
         })->sortBy(fn ($r) => [array_search($r['status'], self::STATUSES, true), -$r['expense']])->values();
 
