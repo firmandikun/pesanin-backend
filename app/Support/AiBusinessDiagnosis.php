@@ -42,6 +42,7 @@ class AiBusinessDiagnosis
         $toStr = $to->toDateString();
 
         // Map ad spend per shop:item for the period
+        $shopNames = MarketplaceShop::where('user_id', $user->id)->pluck('shop_name', 'id');
         $shopIds = MarketplaceShop::where('user_id', $user->id)->where('status', '!=', 'disconnected')->pluck('id');
         $adByItem = [];
         $campaigns = ShopeeAdCampaign::whereIn('marketplace_shop_id', $shopIds)
@@ -128,6 +129,7 @@ class AiBusinessDiagnosis
                     'key' => $pKey,
                     'name' => $name,
                     'sku' => $sku ?: null,
+                    'shop_name' => $o->channel === 'shopee' ? ($shopNames[$o->marketplace_shop_id] ?? 'Shopee') : ucfirst((string) $o->channel),
                     'channel' => $o->channel,
                     'units' => 0,
                     'revenue' => 0,
@@ -158,12 +160,12 @@ class AiBusinessDiagnosis
         $bestProducts = $productRows->filter(fn ($p) => $p['revenue'] > 0)
             ->sortByDesc('net_profit')->take(10)->values()->all();
 
-        // Ads guard leaks
+        // Ads guard leaks + healthy ads for complete ads audit
         $guard = AdsGuard::evaluate($user, null, $fromStr, $toStr);
-        $losingAds = collect($guard['campaigns'] ?? [])
-            ->whereIn('status', ['rugi', 'tanpa_penjualan', 'tipis'])
-            ->take(10)
+        $adsCampaigns = collect($guard['campaigns'] ?? [])
+            ->take(20)
             ->map(fn ($c) => [
+                'shop_name' => $shopNames[$c['shop_id']] ?? 'Shopee',
                 'name' => $c['name'],
                 'status' => $c['status'],
                 'expense_real' => $c['expense_real'],
@@ -171,8 +173,44 @@ class AiBusinessDiagnosis
                 'orders' => $c['orders'],
                 'roas_real' => $c['roas_real'],
                 'break_even' => $c['break_even'],
+                'suggested_target' => $c['suggested_target'],
                 'profit' => $c['profit'],
+                'ctr' => $c['ctr'],
+                'cr' => $c['cr'],
             ])->values()->all();
+        $losingAds = collect($adsCampaigns)->whereIn('status', ['rugi', 'tanpa_penjualan', 'tipis'])->values()->all();
+
+        // Per-shop breakdown (revenue, fees %, COGS, net profit, cancellations, returns)
+        $cancelledByShop = Order::where('user_id', $user->id)
+            ->whereBetween('created_at', [$from->copy()->startOfDay()->utc(), $to->copy()->endOfDay()->utc()])
+            ->where(fn ($w) => $w->whereIn('status', ['cancelled', 'refunded'])->orWhere('external_status', 'CANCELLED'))
+            ->selectRaw('marketplace_shop_id, COUNT(*) as cnt')
+            ->groupBy('marketplace_shop_id')
+            ->pluck('cnt', 'marketplace_shop_id');
+        $returnsByShop = ShopeeReturn::where('user_id', $user->id)
+            ->whereBetween('created_at', [$from->copy()->startOfDay()->utc(), $to->copy()->endOfDay()->utc()])
+            ->selectRaw('marketplace_shop_id, COUNT(*) as cnt')
+            ->groupBy('marketplace_shop_id')
+            ->pluck('cnt', 'marketplace_shop_id');
+
+        $byShop = collect($profit['by_channel'] ?? [])->map(function ($ch) use ($cancelledByShop, $returnsByShop) {
+            $sid = $ch['shop_id'] ?? null;
+            $rev = (int) ($ch['revenue'] ?? 0);
+            $fees = (int) ($ch['fees'] ?? 0);
+
+            return [
+                'shop_name' => $ch['label'] ?? 'Toko',
+                'orders' => (int) ($ch['orders'] ?? 0),
+                'revenue' => $rev,
+                'cogs' => (int) ($ch['cogs'] ?? 0),
+                'platform_fees' => $fees,
+                'fee_rate_pct' => $rev > 0 ? round(($fees / $rev) * 100, 1) : 0,
+                'net_profit' => (int) ($ch['net_profit'] ?? 0),
+                'margin_pct' => (float) ($ch['margin'] ?? 0),
+                'cancelled_orders' => $sid ? (int) ($cancelledByShop[$sid] ?? 0) : 0,
+                'returns_count' => $sid ? (int) ($returnsByShop[$sid] ?? 0) : 0,
+            ];
+        })->values()->all();
 
         // Stock masters & warehouse modal
         $masters = StockMaster::where('user_id', $user->id)
@@ -209,8 +247,10 @@ class AiBusinessDiagnosis
                 'warehouse_modal' => $warehouseModal,
                 'missing_hpp_count' => count($missingHppProducts),
             ],
+            'by_shop' => $byShop,
             'loss_products' => $lossProducts,
             'best_products' => $bestProducts,
+            'ads_campaigns' => $adsCampaigns,
             'losing_ads' => $losingAds,
             'low_stock_skus' => array_slice($lowStockSkus, 0, 10),
         ];
@@ -230,11 +270,13 @@ Analisis data bisnis nyata berikut (dalam Rupiah/IDR) untuk periode {$snapshot['
 
 Tugas Anda:
 1. Hitung skor kesehatan bisnis (0-100) dan label ("Sehat", "Perlu Perhatian", atau "Kritis").
-2. Identifikasi **kebocoran dana** paling nyata (dari iklan yang rugi / tanpa penjualan, produk yang marginnya negatif/tipis, potongan biaya platform, pesanan batal/retur, atau HPP yang belum terisi).
-3. Berikan saran konkret untuk **produk yang rugi** (mis. naikkan harga berapa %, matikan iklan, cek biaya admin/gratis ongkir ekstra, atau hentikan produk).
-4. Berikan strategi untuk **produk terlaris / paling untung** (cara scale-up, amankan stok, naikkan budget iklan).
-5. Jika ada pertanyaan tambahan dari pemilik bisnis, jawab langsung di `custom_answer` (atau null jika tidak ada pertanyaan).
-6. Susun rencana aksi 7 hari ke depan yang konkret dan terurut prioritasnya.
+2. Audit **masing-masing toko di `by_shop`** secara terpisah! Sebutkan nama toko, omzet, laba bersih, % potongan biaya platform, serta tindakan spesifik yang harus dilakukan di tiap toko tersebut.
+3. Identifikasi **kebocoran dana** paling nyata (sebutkan nama toko, nama iklan yang rugi/tanpa penjualan, produk yang marginnya negatif/tipis, potongan biaya platform, pesanan batal/retur, atau HPP yang belum terisi).
+4. Berikan saran konkret untuk **produk yang rugi** (sebutkan nama toko & produknya: naikkan harga berapa %, matikan iklan, atau cek biaya admin/gratis ongkir ekstra).
+5. Berikan strategi untuk **produk terlaris / paling untung** (sebutkan nama toko & produknya: cara scale-up, amankan stok, naikkan budget iklan).
+6. Audit **kampanye iklan (`ads_campaigns`)** secara spesifik (sebutkan nama toko & nama iklannya, bandingkan `roas_real` vs `break_even`, CTR, CR, dan beri keputusan jelas: *Matikan/Jeda*, *Naikkan Target ROAS ke angka `suggested_target`*, *Perbaiki Foto/Harga*, atau *Scale-Up* jika sehat).
+7. Jika ada pertanyaan tambahan dari pemilik bisnis, jawab langsung di `custom_answer` (atau null jika tidak ada pertanyaan).
+8. Susun rencana aksi 7 hari ke depan yang konkret dan terurut prioritasnya (cantumkan nama toko yang relevan).
 
 Balas HANYA dalam format JSON valid dengan struktur persis berikut:
 {
@@ -242,6 +284,23 @@ Balas HANYA dalam format JSON valid dengan struktur persis berikut:
   "health_label": "Perlu Perhatian",
   "executive_summary": "Ringkasan 2-3 kalimat tentang kondisi laba bersih, omzet, dan masalah utama bisnis.",
   "custom_answer": null,
+  "shops_audit": [
+    {
+      "shop_name": "Nama Toko",
+      "status": "Sehat",
+      "summary": "Omzet Rp..., laba bersih Rp..., potongan platform ...%.",
+      "action": "Tindakan spesifik yang harus dilakukan di toko ini."
+    }
+  ],
+  "ads_audit": [
+    {
+      "shop_name": "Nama Toko",
+      "campaign_name": "Nama Kampanye / Produk Iklan",
+      "verdict": "Matikan / Naikkan Target ROAS / Scale-Up",
+      "metrics": "Biaya Rp..., ROAS riil ...x (impas ...x), Laba/Rugi Rp...",
+      "action": "Keputusan konkret untuk iklan ini."
+    }
+  ],
   "financial_leaks": [
     {
       "title": "Judul kebocoran dana",
