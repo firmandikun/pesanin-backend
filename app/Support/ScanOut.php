@@ -52,9 +52,13 @@ class ScanOut
     public static function findOrder(User $user, string $code): ?Order
     {
         return Order::where('user_id', $user->id)->where('is_abandoned', false)
-            ->where(fn ($w) => $w->whereRaw('UPPER(TRIM(tracking_number)) = ?', [$code])->orWhere('external_order_sn', $code)->orWhere('code', $code))
+            ->where(fn ($w) => $w
+                ->whereRaw("REPLACE(UPPER(TRIM(tracking_number)), ' ', '') = ?", [$code])
+                ->orWhereRaw('UPPER(TRIM(external_order_sn)) = ?', [$code])
+                ->orWhereRaw('UPPER(TRIM(code)) = ?', [$code]))
             ->with('marketplaceShop:id,shop_name', 'product:id,name')
-            ->orderByRaw('CASE WHEN UPPER(TRIM(tracking_number)) = ? THEN 0 ELSE 1 END', [$code])->latest('id')->first();
+            ->orderByRaw("CASE WHEN REPLACE(UPPER(TRIM(tracking_number)), ' ', '') = ? THEN 0 ELSE 1 END", [$code])
+            ->latest('id')->first();
     }
 
     /**
@@ -67,16 +71,27 @@ class ScanOut
         if (preg_match('#^(HTTPS?://|WWW\.)#i', $code) || str_contains($code, '://') || str_contains($code, '/SCAN/')) {
             return ['status' => 'invalid', 'message' => 'Ini QR link / URL, bukan barcode resi paket. Arahkan kamera ke barcode resi di label pengiriman.', 'parcel' => null];
         }
+        $user = $session->user;
+        // Some courier QR codes embed delimiters (e.g. "SPXID123|..."); extract a matching resi token if present.
+        if (! preg_match('/^[A-Z0-9\-_]+$/', $code)) {
+            $matchedToken = collect(preg_split('/[\s|,;]+/', Str::upper(trim($raw))) ?: [])
+                ->map(fn ($t) => preg_replace('/[^A-Z0-9\-_]/', '', (string) $t))
+                ->first(fn ($t) => strlen($t) >= 6 && strlen($t) <= 100 && (self::findOrder($user, $t) || self::findBooking($user, $t)));
+            if ($matchedToken) {
+                $code = $matchedToken;
+            } else {
+                return ['status' => 'invalid', 'message' => 'Format bukan nomor resi yang valid. Scan ulang barcode resi di label pengiriman.', 'parcel' => null];
+            }
+        }
         if (mb_strlen($code) < 6 || mb_strlen($code) > 100) {
             return ['status' => 'invalid', 'message' => 'Kode terlalu pendek/panjang, scan ulang barcode resi.', 'parcel' => null];
         }
-        if (! preg_match('/^[A-Z0-9\-_]+$/', $code)) {
-            return ['status' => 'invalid', 'message' => 'Format bukan nomor resi yang valid. Scan ulang barcode resi di label pengiriman.', 'parcel' => null];
-        }
-        $user = $session->user;
         $order = self::findOrder($user, $code);
-        // The label also carries the order number's barcode: only the resi counts as a parcel.
-        $isResi = $order && Str::upper(trim((string) $order->tracking_number)) === $code;
+        // The label also carries the order number's barcode: only the resi counts as a parcel
+        // (or Pesanin's own order code on non-Shopee labels that have no courier tracking_number yet).
+        $normalizedOrderResi = $order ? self::normalize((string) $order->tracking_number) : '';
+        $isWebOrderLabelCode = $order && $order->channel !== 'shopee' && $normalizedOrderResi === '' && self::normalize((string) $order->code) === $code;
+        $isResi = ($order && $normalizedOrderResi === $code) || $isWebOrderLabelCode;
         if (! $isResi && ($order || (self::looksLikeOrderNumber($code) && ! self::findBooking($user, $code)))) {
             return ['status' => 'not_resi', 'parcel' => null,
                 'message' => 'Ini nomor pesanan, bukan resi. Scan barcode resi di label (tidak dicatat).'];
@@ -126,7 +141,7 @@ class ScanOut
     /** Shopee "Pengiriman Kilat" bookings have their own resi before they are matched to a buyer order. */
     public static function findBooking(User $user, string $code): ?ShopeeBooking
     {
-        return ShopeeBooking::where('user_id', $user->id)->whereRaw('UPPER(TRIM(tracking_number)) = ?', [$code])
+        return ShopeeBooking::where('user_id', $user->id)->whereRaw("REPLACE(UPPER(TRIM(tracking_number)), ' ', '') = ?", [$code])
             ->with('marketplaceShop:id,shop_name')->latest('id')->first();
     }
 
@@ -186,7 +201,7 @@ class ScanOut
         $user = $s->user;
         foreach ($s->parcels()->where('matched', false)->get() as $p) {
             $order = self::findOrder($user, $p->code);
-            if ($order && Str::upper(trim((string) $order->tracking_number)) === $p->code
+            if ($order && self::normalize((string) $order->tracking_number) === $p->code
                 && ! ScanOutParcel::where('user_id', $user->id)->where('order_id', $order->id)->exists()) {
                 $p->update(self::orderFields($user, $order));
             } elseif (! $order && ($b = self::findBooking($user, $p->code))) {
