@@ -32,6 +32,19 @@ class MetaAds
         return $this->get('me', ['fields' => 'id,name']);
     }
 
+    /** Check whether the current access token has a granted permission (e.g. ads_management). */
+    public function hasPermission(string $permission): bool
+    {
+        $rows = $this->get('me/permissions')['data'] ?? [];
+        foreach ($rows as $row) {
+            if (($row['permission'] ?? '') === $permission && ($row['status'] ?? '') === 'granted') {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     /** Ad accounts the token can read, amounts converted to whole currency units. */
     public function adAccounts(): array
     {
@@ -257,8 +270,11 @@ class MetaAds
             $e = $json['error'] ?? [];
             throw new RuntimeException(match ((int) ($e['code'] ?? 0)) {
                 190 => 'Akses Meta kedaluwarsa atau dicabut. Hubungkan ulang akun Meta.',
-                10, 200, 294 => 'Izin ads_read belum diberikan ke Pesanin untuk akun iklan ini.',
+                10, 200, 294 => 'Izin Meta belum cukup (pastikan token punya ads_read & ads_management untuk akun iklan ini).',
                 4, 17, 613, 80004 => 'Batas permintaan Meta tercapai, coba lagi beberapa menit lagi.',
+                100 => str_contains((string) ($e['message'] ?? ''), 'missing permissions')
+                    ? 'Akses ditolak Meta: token belum punya izin ads_management atau akun iklan ini hanya bersifat baca (tidak bisa dibuatkan iklan lewat API).'
+                    : 'Meta: '.($e['error_user_msg'] ?? $e['message'] ?? "HTTP {$res->status()}"),
                 default => 'Meta: '.($e['error_user_msg'] ?? $e['message'] ?? "HTTP {$res->status()}"),
             });
         }

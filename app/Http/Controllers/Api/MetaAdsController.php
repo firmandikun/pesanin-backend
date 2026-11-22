@@ -25,10 +25,12 @@ class MetaAdsController extends Controller
     {
         $i = $this->integration($request);
         $accounts = [];
+        $canManage = false;
         $error = $i?->last_error;
         if ($api = MetaAds::for($i)) {
             try {
                 $accounts = Cache::remember("meta:accounts:{$i->id}", 300, fn () => $api->adAccounts());
+                $canManage = Cache::remember("meta:can_manage:{$i->id}", 300, fn () => rescue(fn () => $api->hasPermission('ads_management'), false, false));
             } catch (Throwable $e) {
                 $error = $e->getMessage();
             }
@@ -37,6 +39,7 @@ class MetaAdsController extends Controller
         return [
             'app_configured' => self::appConfigured(),
             'connected' => (bool) $i,
+            'can_manage' => $canManage,
             'name' => $i?->settings['name'] ?? null,
             'token_expires_at' => $i?->settings['expires_at'] ?? null,
             'synced_at' => $i?->settings['synced_at'] ?? null,
@@ -188,6 +191,7 @@ class MetaAdsController extends Controller
         $i = $this->integration($request);
         $api = MetaAds::for($i);
         abort_unless($api, 422, 'Hubungkan akun Meta dulu.');
+        abort_unless($api->hasPermission('ads_management'), 422, 'Token Meta saat ini hanya punya izin baca (ads_read). Klik Putuskan lalu hubungkan ulang dengan izin ads_read dan ads_management untuk membuat iklan.');
         $d = $request->validate([
             'account_id' => 'required|string|starts_with:act_',
             'name' => 'required|string|min:2|max:150',
@@ -243,6 +247,7 @@ class MetaAdsController extends Controller
         $i = $this->integration($request);
         $api = MetaAds::for($i);
         abort_unless($api, 422, 'Hubungkan akun Meta dulu.');
+        abort_unless($api->hasPermission('ads_management'), 422, 'Token Meta saat ini hanya punya izin baca (ads_read). Klik Putuskan lalu hubungkan ulang dengan izin ads_read dan ads_management untuk mengubah iklan.');
         $d = $request->validate([
             'status' => 'nullable|in:ACTIVE,PAUSED,ARCHIVED',
             'name' => 'nullable|string|min:2|max:150',
@@ -393,6 +398,8 @@ class MetaAdsController extends Controller
             'settings' => array_merge($i->settings ?? [], ['name' => $me['name'] ?? null, 'fb_user_id' => $me['id'] ?? null, 'expires_at' => $expires]),
         ])->save();
         Cache::forget("meta:accounts:{$i->id}");
+        Cache::forget("meta:can_manage:{$i->id}");
+        Cache::forget("meta:pages:{$i->id}");
         ActivityLog::record($user, 'integration.connect', 'Menghubungkan akun Meta Ads '.($me['name'] ?? ''));
 
         // Pull the last 30 days right away so the report isn't empty after connecting.
