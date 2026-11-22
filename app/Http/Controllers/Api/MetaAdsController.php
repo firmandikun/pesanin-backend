@@ -57,7 +57,7 @@ class MetaAdsController extends Controller
             'state' => $state, 'response_type' => 'code',
         ] + (config('services.meta.config_id')
             ? ['config_id' => config('services.meta.config_id'), 'override_default_response_type' => 'true']
-            : ['scope' => 'ads_read']))];
+            : ['scope' => 'ads_read,ads_management']))];
     }
 
     public function callback(Request $request)
@@ -151,6 +151,118 @@ class MetaAdsController extends Controller
         ActivityLog::record($request->user(), 'integration.disconnect', 'Memutuskan akun Meta Ads');
 
         return response()->noContent();
+    }
+
+    /** Live campaigns + Facebook Pages for creating & managing ads directly from Pesanin. */
+    public function campaigns(Request $request)
+    {
+        $i = $this->integration($request);
+        $api = MetaAds::for($i);
+        abort_unless($api, 422, 'Hubungkan akun Meta dulu.');
+        try {
+            $accounts = Cache::remember("meta:accounts:{$i->id}", 300, fn () => $api->adAccounts());
+            $selected = ($i->settings['account_ids'] ?? null) ?: collect($accounts)->where('status', '!=', 101)->pluck('id')->all();
+            $target = $request->query('account') ? [$request->query('account')] : $selected;
+            $byId = collect($accounts)->keyBy('id');
+            $campaigns = [];
+            foreach ($target as $accId) {
+                if (! $byId->has($accId)) {
+                    continue;
+                }
+                $cur = $byId[$accId]['currency'] ?? 'IDR';
+                foreach ($api->listCampaigns($accId, $cur) as $c) {
+                    $campaigns[] = $c + ['account_name' => $byId[$accId]['name'] ?? $accId, 'currency' => $cur];
+                }
+            }
+            $pages = Cache::remember("meta:pages:{$i->id}", 300, fn () => rescue(fn () => $api->pages(), [], false));
+
+            return ['campaigns' => $campaigns, 'pages' => $pages];
+        } catch (Throwable $e) {
+            abort(422, $e->getMessage());
+        }
+    }
+
+    /** Create a new Meta Ads campaign (and optionally an Ad Set + Link Ad). */
+    public function createCampaign(Request $request)
+    {
+        $i = $this->integration($request);
+        $api = MetaAds::for($i);
+        abort_unless($api, 422, 'Hubungkan akun Meta dulu.');
+        $d = $request->validate([
+            'account_id' => 'required|string|starts_with:act_',
+            'name' => 'required|string|min:2|max:150',
+            'objective' => 'required|in:OUTCOME_SALES,OUTCOME_TRAFFIC,OUTCOME_ENGAGEMENT,OUTCOME_LEADS,OUTCOME_AWARENESS',
+            'daily_budget' => 'required|integer|min:10000|max:1000000000',
+            'status' => 'nullable|in:ACTIVE,PAUSED',
+            'page_id' => 'nullable|string|max:60',
+            'link_url' => 'nullable|url|max:1000',
+            'message' => 'nullable|string|max:2000',
+            'headline' => 'nullable|string|max:200',
+        ]);
+        try {
+            $accounts = Cache::remember("meta:accounts:{$i->id}", 300, fn () => $api->adAccounts());
+            $currency = collect($accounts)->firstWhere('id', $d['account_id'])['currency'] ?? 'IDR';
+            $status = $d['status'] ?? 'PAUSED';
+            $res = $api->createCampaign($d['account_id'], trim($d['name']), $d['objective'], (int) $d['daily_budget'], $currency, $status);
+            $campaignId = $res['id'] ?? null;
+            $adSetId = null;
+            $adId = null;
+            if ($campaignId && ! empty($d['page_id']) && ! empty($d['link_url'])) {
+                $goal = match ($d['objective']) {
+                    'OUTCOME_SALES' => 'OFFSITE_CONVERSIONS',
+                    'OUTCOME_LEADS' => 'LEAD_GENERATION',
+                    'OUTCOME_ENGAGEMENT' => 'POST_ENGAGEMENT',
+                    'OUTCOME_AWARENESS' => 'REACH',
+                    default => 'LINK_CLICKS',
+                };
+                // Fall back to LINK_CLICKS if OFFSITE_CONVERSIONS/LEAD_GENERATION requires pixel/form setup.
+                try {
+                    $adSetId = $api->createAdSet($d['account_id'], $campaignId, trim($d['name']).' - Ad Set', $goal, $status)['id'] ?? null;
+                } catch (Throwable) {
+                    $adSetId = $api->createAdSet($d['account_id'], $campaignId, trim($d['name']).' - Ad Set', 'LINK_CLICKS', $status)['id'] ?? null;
+                }
+                if ($adSetId) {
+                    $sep = str_contains($d['link_url'], '?') ? '&' : '?';
+                    $utmUrl = str_contains($d['link_url'], 'utm_campaign=')
+                        ? $d['link_url']
+                        : $d['link_url'].$sep.'utm_source=facebook&utm_campaign='.rawurlencode(trim($d['name']));
+                    $adId = $api->createLinkAd($d['account_id'], $adSetId, trim($d['name']).' - Iklan', $d['page_id'], $utmUrl, trim($d['message'] ?? $d['name']), trim($d['headline'] ?? ''), $status)['id'] ?? null;
+                }
+            }
+            ActivityLog::record($request->user(), 'meta_ads.create', "Membuat kampanye Meta {$d['name']}");
+
+            return ['id' => $campaignId, 'adset_id' => $adSetId, 'ad_id' => $adId];
+        } catch (Throwable $e) {
+            abort(422, $e->getMessage());
+        }
+    }
+
+    /** Pause, resume, archive, rename, or update daily budget of a Meta campaign. */
+    public function updateCampaign(Request $request, string $campaignId)
+    {
+        $i = $this->integration($request);
+        $api = MetaAds::for($i);
+        abort_unless($api, 422, 'Hubungkan akun Meta dulu.');
+        $d = $request->validate([
+            'status' => 'nullable|in:ACTIVE,PAUSED,ARCHIVED',
+            'name' => 'nullable|string|min:2|max:150',
+            'daily_budget' => 'nullable|integer|min:10000|max:1000000000',
+            'currency' => 'nullable|string|size:3',
+        ]);
+        try {
+            $api->updateCampaign($campaignId, $d, $d['currency'] ?? 'IDR');
+            if (isset($d['status'])) {
+                MetaAdInsight::where('user_id', $request->user()->id)->where('campaign_id', $campaignId)->update(['status' => $d['status']]);
+            }
+            if (isset($d['name'])) {
+                MetaAdInsight::where('user_id', $request->user()->id)->where('campaign_id', $campaignId)->update(['campaign_name' => $d['name']]);
+            }
+            ActivityLog::record($request->user(), 'meta_ads.update', "Mengubah kampanye Meta {$campaignId}");
+
+            return ['ok' => true];
+        } catch (Throwable $e) {
+            abort(422, $e->getMessage());
+        }
     }
 
     /** Spend & results per campaign next to the orders Pesanin actually received from it. */

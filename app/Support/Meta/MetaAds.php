@@ -55,6 +55,104 @@ class MetaAds
             ->keyBy('id')->all();
     }
 
+    /** Live campaigns with budget & status for management UI. */
+    public function listCampaigns(string $accountId, string $currency = 'IDR'): array
+    {
+        return collect($this->paged("{$accountId}/campaigns", [
+            'fields' => 'id,name,status,effective_status,objective,daily_budget,lifetime_budget,created_time',
+            'limit' => 100,
+        ]))->map(fn ($c) => [
+            'id' => $c['id'],
+            'account_id' => $accountId,
+            'name' => $c['name'] ?? $c['id'],
+            'status' => $c['status'] ?? null,
+            'effective_status' => $c['effective_status'] ?? ($c['status'] ?? null),
+            'objective' => $c['objective'] ?? null,
+            'daily_budget' => isset($c['daily_budget']) ? self::money($c['daily_budget'], $currency) : null,
+            'lifetime_budget' => isset($c['lifetime_budget']) ? self::money($c['lifetime_budget'], $currency) : null,
+            'created_time' => $c['created_time'] ?? null,
+        ])->values()->all();
+    }
+
+    /** Facebook Pages the token can advertise on behalf of. */
+    public function pages(): array
+    {
+        return collect($this->get('me/accounts', ['fields' => 'id,name', 'limit' => 100])['data'] ?? [])
+            ->map(fn ($p) => ['id' => (string) $p['id'], 'name' => (string) ($p['name'] ?? $p['id'])])
+            ->values()->all();
+    }
+
+    /** Create a campaign (CBO daily budget) on an ad account. */
+    public function createCampaign(string $accountId, string $name, string $objective, int $dailyBudget, string $currency = 'IDR', string $status = 'PAUSED'): array
+    {
+        return $this->post("{$accountId}/campaigns", [
+            'name' => $name,
+            'objective' => $objective,
+            'status' => $status,
+            'special_ad_categories' => json_encode([]),
+            'daily_budget' => self::toMinor($dailyBudget, $currency),
+            'bid_strategy' => 'LOWEST_COST_WITHOUT_CAP',
+        ]);
+    }
+
+    /** Create an Ad Set inside a campaign targeting Indonesia (18-65). */
+    public function createAdSet(string $accountId, string $campaignId, string $name, string $optimizationGoal = 'LINK_CLICKS', string $status = 'PAUSED'): array
+    {
+        return $this->post("{$accountId}/adsets", [
+            'name' => $name,
+            'campaign_id' => $campaignId,
+            'billing_event' => 'IMPRESSIONS',
+            'optimization_goal' => $optimizationGoal,
+            'targeting' => json_encode([
+                'geo_locations' => ['countries' => ['ID']],
+                'age_min' => 18,
+                'age_max' => 65,
+            ]),
+            'status' => $status,
+        ]);
+    }
+
+    /** Create a Link Ad Creative + Ad under an Ad Set. */
+    public function createLinkAd(string $accountId, string $adSetId, string $name, string $pageId, string $linkUrl, string $message, string $headline = '', string $status = 'PAUSED'): array
+    {
+        $creative = $this->post("{$accountId}/adcreatives", [
+            'name' => $name.' Creative',
+            'object_story_spec' => json_encode([
+                'page_id' => $pageId,
+                'link_data' => array_filter([
+                    'link' => $linkUrl,
+                    'message' => $message,
+                    'name' => $headline ?: null,
+                    'call_to_action' => ['type' => 'SHOP_NOW', 'value' => ['link' => $linkUrl]],
+                ]),
+            ]),
+        ]);
+
+        return $this->post("{$accountId}/ads", [
+            'name' => $name,
+            'adset_id' => $adSetId,
+            'creative' => json_encode(['creative_id' => $creative['id']]),
+            'status' => $status,
+        ]);
+    }
+
+    /** Update campaign status (ACTIVE/PAUSED/ARCHIVED), name, or daily_budget. */
+    public function updateCampaign(string $campaignId, array $fields, string $currency = 'IDR'): array
+    {
+        $payload = [];
+        if (isset($fields['status'])) {
+            $payload['status'] = $fields['status'];
+        }
+        if (isset($fields['name'])) {
+            $payload['name'] = $fields['name'];
+        }
+        if (isset($fields['daily_budget'])) {
+            $payload['daily_budget'] = self::toMinor((int) $fields['daily_budget'], $currency);
+        }
+
+        return $this->post($campaignId, $payload);
+    }
+
     /** Daily insights per campaign between two dates (Y-m-d), max ~37 months back. */
     public function dailyCampaignInsights(string $accountId, string $since, string $until): array
     {
@@ -121,6 +219,11 @@ class MetaAds
         return (int) round(in_array(strtoupper($currency), self::NO_DECIMALS, true) ? (float) $minor : (float) $minor / 100);
     }
 
+    public static function toMinor(int $amount, string $currency): int
+    {
+        return in_array(strtoupper($currency), self::NO_DECIMALS, true) ? $amount : $amount * 100;
+    }
+
     private function paged(string $path, array $params): array
     {
         $out = [];
@@ -140,6 +243,11 @@ class MetaAds
     private function get(string $path, array $params = []): array
     {
         return $this->send(Http::timeout(60)->acceptJson()->get(self::graph($path), $params + ['access_token' => $this->token]));
+    }
+
+    private function post(string $path, array $params = []): array
+    {
+        return $this->send(Http::timeout(60)->acceptJson()->asForm()->post(self::graph($path), $params + ['access_token' => $this->token]));
     }
 
     private function send($res): array
