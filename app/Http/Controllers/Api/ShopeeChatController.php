@@ -124,12 +124,18 @@ class ShopeeChatController extends Controller
             // carry text, and dropped when they have nothing readable (Shopee hides those too).
             ->map(function ($m) {
                 $hasOrder = ! empty($m['order_sn']);
+                $hasMedia = ! empty($m['image']) || ! empty($m['video']);
+                $isBot = (bool) preg_match('/(^|_)(ai|assistant|faq|bot|chatbot|auto\w*)(_|$)/i', $m['type']);
+                $isNotice = (bool) preg_match('/(^|_)(notif\w*|system\w*|tips?|hint|guide|handoff)(_|$)/i', $m['type']);
                 $isBubble = in_array($m['type'], self::BUBBLES, true)
                     || $hasOrder
-                    || ($m['buyer'] && ! preg_match('/(^|_)(notif\w*|system\w*|faq|tips?|hint|guide)(_|$)/i', $m['type']));
+                    || $hasMedia
+                    || ($isBot && $m['text'] !== '')
+                    || ($m['buyer'] && ! $isNotice);
 
                 return [
                     'system' => ! $isBubble,
+                    'bot' => $isBot && $m['from_me'],
                     'text' => $hasOrder && $m['text'] === '' ? '[Pesanan]' : $m['text'],
                 ] + $m;
             })
@@ -270,7 +276,7 @@ class ShopeeChatController extends Controller
     /** Readable text inside any content shape (notices keep it under different keys). */
     public static function contentText(array $c): string
     {
-        foreach (['text', 'caption', 'content', 'title', 'message', 'msg', 'body', 'sub_title', 'preview_text', 'notification_text', 'desc', 'description', 'tips', 'content.text', 'content.message'] as $k) {
+        foreach (['text', 'caption', 'answer', 'reply', 'content_text', 'display_text', 'content', 'title', 'message', 'msg', 'body', 'sub_title', 'preview_text', 'notification_text', 'desc', 'description', 'tips', 'content.text', 'content.message'] as $k) {
             $v = data_get($c, $k);
             if (is_string($v) && trim($v) !== '') {
                 return trim($v);
@@ -283,7 +289,7 @@ class ShopeeChatController extends Controller
                 return;
             }
             $t = trim($v);
-            if ($t !== '' && ! preg_match('#^(https?:)?//#i', $t) && ! preg_match('/^[a-f0-9_-]{24,}$/i', $t) && mb_strlen($t) >= 2) {
+            if ($t !== '' && ! preg_match('#^(https?:)?//#i', $t) && ! preg_match('/^\d+$/', $t) && ! preg_match('/^[a-f0-9_-]{24,}$/i', $t) && mb_strlen($t) >= 2) {
                 $found = $t;
             }
         });
