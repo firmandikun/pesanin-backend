@@ -62,7 +62,22 @@ class Gemini
             $lastErr = 'Format jawaban AI tidak sesuai, coba lagi.';
         }
 
-        throw new RuntimeException($lastErr);
+        throw new RuntimeException(self::friendly($lastErr));
+    }
+
+    /** Google's usual errors in plain Indonesian (the original kept in brackets). */
+    public static function friendly(string $err): string
+    {
+        $e = strtolower($err);
+
+        return match (true) {
+            str_contains($e, 'api key not valid') || str_contains($e, 'api_key_invalid') => 'API Key Gemini tidak valid. Periksa / ganti key di Pengaturan → Integrasi.',
+            str_contains($e, 'quota') || str_contains($e, 'exhausted') || str_contains($e, 'rate limit') => 'Kuota API Gemini Anda habis untuk saat ini. Coba lagi beberapa menit lagi, atau aktifkan billing di Google AI Studio.',
+            str_contains($e, 'overloaded') || str_contains($e, 'unavailable') || str_contains($e, 'high demand') => 'Server Gemini sedang sibuk. Coba lagi sebentar lagi.',
+            str_contains($e, 'permission') || str_contains($e, 'not enabled') => 'API Key Gemini tidak punya izin untuk model ini. Buat key baru di Google AI Studio.',
+            str_contains($e, 'location') && str_contains($e, 'not supported') => 'Gemini API belum tersedia untuk lokasi server ini.',
+            default => $err,
+        };
     }
 
     /** generateContent models of this key, newest flash / pro first (cached 6 hours). */
@@ -88,7 +103,7 @@ class Gemini
                         $score -= str_contains($n, 'preview') || str_contains($n, 'exp') ? 5 : 0;
 
                         return $score;
-                    })->values()->take(4)->all();
+                    })->values()->take(3)->all();
 
                 return $list ?: $fallback;
             } catch (Throwable) {
