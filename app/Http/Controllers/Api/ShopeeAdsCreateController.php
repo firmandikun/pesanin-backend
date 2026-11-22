@@ -23,11 +23,11 @@ class ShopeeAdsCreateController extends Controller
     public function options(Request $request)
     {
         $user = $request->user();
-        $shops = MarketplaceShop::where('user_id', $user->id)
+        $shops = $user->marketplaceShops()
             ->where('platform', 'shopee')
             ->where('status', 'active')
             ->where('is_demo', false)
-            ->get(['id', 'shop_name']);
+            ->get();
 
         if ($shops->isEmpty()) {
             return ['shops' => [], 'products' => []];
@@ -48,16 +48,15 @@ class ShopeeAdsCreateController extends Controller
 
         $advertisedIds = ShopeeAdCampaign::where('marketplace_shop_id', $shop->id)
             ->whereIn('status', ['ongoing', 'scheduled'])
-            ->get(['item_ids'])
-            ->flatMap(fn ($c) => $c->item_ids ?? [])
+            ->pluck('item_ids')
+            ->flatten()
             ->map(fn ($id) => (int) $id)
             ->filter()
             ->unique()
             ->flip()
             ->all();
 
-        $listings = MarketplaceListing::where('user_id', $user->id)
-            ->where('marketplace_shop_id', $shop->id)
+        $listings = MarketplaceListing::where('marketplace_shop_id', $shop->id)
             ->where('status', 'NORMAL')
             ->get(['id', 'item_id', 'name', 'sku', 'image', 'price', 'stock']);
 
@@ -78,7 +77,7 @@ class ShopeeAdsCreateController extends Controller
         })->sortByDesc('recommended')->values();
 
         return [
-            'shops' => $shops->values(),
+            'shops' => $shops->map(fn ($s) => ['id' => $s->id, 'shop_name' => $s->shop_name])->values(),
             'shop_id' => $shop->id,
             'products' => $products,
         ];
@@ -91,7 +90,7 @@ class ShopeeAdsCreateController extends Controller
             'item_id' => 'required|integer',
             'bidding_method' => 'nullable|in:auto,manual',
         ]);
-        $shop = MarketplaceShop::where('user_id', $request->user()->id)
+        $shop = $request->user()->marketplaceShops()
             ->where('platform', 'shopee')
             ->where('status', 'active')
             ->where('is_demo', false)
@@ -135,7 +134,7 @@ class ShopeeAdsCreateController extends Controller
             'end_date' => 'nullable|date|after_or_equal:start_date',
         ]);
 
-        $shop = MarketplaceShop::where('user_id', $request->user()->id)
+        $shop = $request->user()->marketplaceShops()
             ->where('platform', 'shopee')
             ->where('status', 'active')
             ->where('is_demo', false)

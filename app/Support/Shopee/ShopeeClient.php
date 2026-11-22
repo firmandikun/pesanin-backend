@@ -612,6 +612,37 @@ class ShopeeClient
         ] + $extra)['response'] ?? [];
     }
 
+    /** Create a manual product ad (individual or ad group) via Shopee Ads API. */
+    public function createManualProductAd(MarketplaceShop $shop, array $payload): array
+    {
+        return $this->post($shop, '/api/v2/ads/create_manual_product_ads', [
+            'reference_id' => 'pesanin-create-'.\Illuminate\Support\Str::random(14),
+        ] + $payload)['response'] ?? [];
+    }
+
+    /** Recommended items for product ads. */
+    public function adsRecommendedItems(MarketplaceShop $shop): array
+    {
+        return $this->get($shop, '/api/v2/ads/get_recommended_item_list')['response']['item_list'] ?? [];
+    }
+
+    /** Recommended daily budget for a product ad. */
+    public function adsBudgetSuggestion(MarketplaceShop $shop, int $itemId, string $biddingMethod = 'auto'): array
+    {
+        return $this->get($shop, '/api/v2/ads/get_product_recommended_budget', [
+            'item_id' => $itemId,
+            'bidding_method' => $biddingMethod,
+        ])['response'] ?? [];
+    }
+
+    /** Recommended ROAS / ROI target for a product ad. */
+    public function adsRoiTargetSuggestion(MarketplaceShop $shop, int $itemId): array
+    {
+        return $this->get($shop, '/api/v2/ads/get_recommended_roi_target', [
+            'item_id' => $itemId,
+        ])['response'] ?? [];
+    }
+
     public function adCampaignIds(MarketplaceShop $shop): array
     {
         return array_column($this->adCampaignList($shop), 'campaign_id');
@@ -778,6 +809,9 @@ class ShopeeClient
         }
         if ($shop->access_expires_at && $shop->access_expires_at->subMinutes(5)->isFuture()) {
             return;
+        }
+        if (! $shop->refresh_token || ! $shop->shop_id) {
+            throw new ShopeeException('Otorisasi toko belum lengkap, hubungkan ulang toko.');
         }
         try {
             $t = $this->refreshToken($shop->refresh_token, $shop->shop_id);
