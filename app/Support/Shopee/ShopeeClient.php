@@ -541,7 +541,7 @@ class ShopeeClient
      */
     public function uploadVideo(string $bytes, string $filename): string
     {
-        $init = $this->partnerPost('/api/v2/media/init_video_upload', [
+        $init = $this->partnerPost('/api/v2/media_space/init_video_upload', [
             'file_md5' => md5($bytes),
             'file_size' => strlen($bytes),
         ]);
@@ -551,22 +551,29 @@ class ShopeeClient
             throw new ShopeeException('Shopee tidak mengembalikan video_upload_id.');
         }
 
-        // Use Shopee's suggested size when present. Five MiB is a safe fallback and keeps
-        // each request comfortably below common proxy limits.
-        $partSize = max(1024 * 1024, (int) ($response['part_size'] ?? 5 * 1024 * 1024));
+        // media_space enforces max 4 MiB per part; cap suggested part_size at 4 MiB.
+        $partSize = min(4 * 1024 * 1024, max(1024 * 1024, (int) ($response['part_size'] ?? 4 * 1024 * 1024)));
         $parts = str_split($bytes, $partSize);
+        $startedAt = microtime(true);
+        $partSeqList = [];
         foreach ($parts as $index => $part) {
             $this->uploadVideoPart($uploadId, $index, $part, $filename);
+            $partSeqList[] = $index;
         }
+        $uploadCost = max(1, (int) round((microtime(true) - $startedAt) * 1000));
 
-        $this->partnerPost('/api/v2/media/complete_video_upload', ['video_upload_id' => $uploadId], 120);
+        $this->partnerPost('/api/v2/media_space/complete_video_upload', [
+            'video_upload_id' => $uploadId,
+            'part_seq_list' => $partSeqList,
+            'report_data' => ['upload_cost' => $uploadCost],
+        ], 120);
 
         return $uploadId;
     }
 
     private function uploadVideoPart(string $uploadId, int $partSeq, string $bytes, string $filename): void
     {
-        $path = '/api/v2/media/upload_video_part';
+        $path = '/api/v2/media_space/upload_video_part';
         $ts = time();
         $url = $this->host.$path.'?'.http_build_query([
             'partner_id' => $this->partnerId,
@@ -574,7 +581,7 @@ class ShopeeClient
             'sign' => $this->sign($path, $ts),
         ]);
         $res = Http::timeout(120)->acceptJson()
-            ->attach('video', $bytes, $filename, ['Content-Type' => 'video/mp4'])
+            ->attach('part_content', $bytes, $filename, ['Content-Type' => 'video/mp4'])
             ->post($url, [
                 'video_upload_id' => $uploadId,
                 'part_seq' => $partSeq,
