@@ -21,6 +21,8 @@ class StockMasterController extends Controller
             ->when($request->query('search'), fn ($w, $s) => $w->where(fn ($x) => $x->where('sku', 'like', "%{$s}%")->orWhere('name', 'like', "%{$s}%")))
             ->when($request->query('filter') === 'empty', fn ($w) => $w->where('stock', '<=', 0))
             ->when($request->query('filter') === 'error', fn ($w) => $w->whereHas('listings', fn ($l) => $l->whereNotNull('stock_push_error')))
+            // Prediksi stok: "Perlu restock" (habis / kritis / segera) and "Stok mati" are computed, so filter by their ids.
+            ->when(in_array($request->query('filter'), ['restock', 'dead'], true), fn ($w) => $w->whereIn('id', $this->forecastIds($user, $request->query('filter') === 'dead' ? ['mati'] : ['habis', 'kritis', 'segera'])))
             ->orderBy('sku');
         $listings = MarketplaceListing::where('user_id', $user->id)->whereHas('shop', fn ($s) => $s->where('status', '!=', 'disconnected'));
         // SKUs used by 2+ listings or unlinked listings with SKU + HPP already filled.
@@ -46,6 +48,9 @@ class StockMasterController extends Controller
 
         $mastersPage = $q->paginate(min(100, max(1, $request->integer('per_page', 20))));
         $mastersPage->through(fn ($m) => $this->appendCostMetrics($m));
+        $cfg = \App\Support\RestockForecast::settings($user);
+        $sold = \App\Support\RestockForecast::sold($mastersPage->getCollection()->pluck('id')->all());
+        $mastersPage->getCollection()->each(fn ($m) => $m->setAttribute('forecast', \App\Support\RestockForecast::forecast($m, $sold[$m->id] ?? 0, $cfg)));
 
         return [
             'masters' => $mastersPage,
@@ -57,6 +62,7 @@ class StockMasterController extends Controller
                 'candidates' => $candidates,
                 'empty' => StockMaster::where('user_id', $user->id)->where('stock', '<=', 0)->count(),
                 'errors' => (clone $listings)->whereNotNull('stock_master_id')->whereNotNull('stock_push_error')->count(),
+                'forecast' => \App\Support\RestockForecast::summary($user),
             ],
         ];
     }
@@ -158,6 +164,23 @@ class StockMasterController extends Controller
         ]);
 
         return $this->appendCostMetrics($master);
+    }
+
+    /** Ids of masters whose forecast status is one of $statuses. @return int[] */
+    private function forecastIds($user, array $statuses): array
+    {
+        $cfg = \App\Support\RestockForecast::settings($user);
+        $ids = [];
+        StockMaster::where('user_id', $user->id)->chunk(500, function ($masters) use ($cfg, $statuses, &$ids) {
+            $sold = \App\Support\RestockForecast::sold($masters->pluck('id')->all());
+            foreach ($masters as $m) {
+                if (in_array(\App\Support\RestockForecast::forecast($m, $sold[$m->id] ?? 0, $cfg)['status'], $statuses, true)) {
+                    $ids[] = $m->id;
+                }
+            }
+        });
+
+        return $ids ?: [0];
     }
 
     private function appendCostMetrics(StockMaster $m): StockMaster

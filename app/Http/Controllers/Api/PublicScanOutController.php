@@ -31,9 +31,10 @@ class PublicScanOutController extends Controller
     public function scan(Request $request, string $token)
     {
         $s = $this->session($token);
-        $data = $request->validate(['code' => 'required|string|max:200']);
+        // Several warehouse staff can scan with the same QR at once: each phone sends its staff name.
+        $data = $request->validate(['code' => 'required|string|max:200', 'by' => 'nullable|string|max:60']);
 
-        return ScanOut::record($s, $data['code']) + ['summary' => ScanOut::summary($s)];
+        return ScanOut::record($s, $data['code'], self::staff($data['by'] ?? null)) + ['summary' => ScanOut::summary($s)];
     }
 
     /** Undo the last scan of this session (a wrong barcode on the label). */
@@ -44,6 +45,25 @@ class PublicScanOutController extends Controller
         $last?->delete();
 
         return ['removed' => $last?->code, 'summary' => ScanOut::summary($s)];
+    }
+
+    /** "Cek isi paket" done on the phone: products checked + photo of the open parcel. */
+    public function pack(Request $request, string $token, int $order)
+    {
+        $s = $this->session($token);
+        $o = \App\Models\Order::where('user_id', $s->user_id)->findOrFail($order);
+        abort_unless($s->parcels()->where('order_id', $o->id)->exists(), 422, 'Scan resi pesanan ini dulu di sesi Scan Out.');
+        $request->validate(\App\Support\Packing::RULES);
+
+        return \App\Support\Packing::save($o, $request->file('photo'), $request->input('check'), self::staff($request->input('by')) ?? ($s->scanned_by ?: 'Scan HP'));
+    }
+
+    /** Staff name typed on the phone (plain text, trimmed). */
+    private static function staff(mixed $by): ?string
+    {
+        $by = is_string($by) ? trim(preg_replace('/\s+/', ' ', strip_tags($by))) : '';
+
+        return $by !== '' ? mb_substr($by, 0, 60) : null;
     }
 
     public function finish(string $token)

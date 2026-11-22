@@ -59,6 +59,7 @@ Route::prefix('public')->middleware('throttle:60,1')->group(function () {
     Route::post('/scan-out/{token}/scan', [\App\Http\Controllers\Api\PublicScanOutController::class, 'scan'])->withoutMiddleware('throttle:60,1')->middleware('throttle:300,1');
     Route::post('/scan-out/{token}/undo', [\App\Http\Controllers\Api\PublicScanOutController::class, 'undo']);
     Route::post('/scan-out/{token}/finish', [\App\Http\Controllers\Api\PublicScanOutController::class, 'finish']);
+    Route::post('/scan-out/{token}/pack/{order}', [\App\Http\Controllers\Api\PublicScanOutController::class, 'pack'])->whereNumber('order')->withoutMiddleware('throttle:60,1')->middleware('throttle:300,1');
 });
 
 // Pesanin platform admin (users.is_admin).
@@ -136,12 +137,14 @@ Route::middleware(['auth:sanctum', 'member', 'subscribed'])->group(function () {
     Route::post('/marketplace/orders/{id}/cancel', [\App\Http\Controllers\Api\ShopeeAfterSalesController::class, 'cancel'])->whereNumber('id')->middleware('throttle:20,1');
     Route::put('/marketplace/orders/{id}/note', [\App\Http\Controllers\Api\ShopeeAfterSalesController::class, 'note'])->whereNumber('id')->middleware('throttle:60,1');
     Route::get('/marketplace/balance', [MarketplaceController::class, 'balance']);
+    Route::get('/marketplace/money-check', fn (\Illuminate\Http\Request $r) => \App\Support\MoneyCheck::scan($r->user(), $r->integer('shop_id') ?: null));
     Route::get('/marketplace/shops/{shop}/transactions', [MarketplaceController::class, 'transactions']);
     Route::get('/marketplace/shops/{shop}/transactions/export', [MarketplaceController::class, 'exportTransactions']);
     Route::get('/marketplace/shops/{shop}/statement', [MarketplaceController::class, 'statement']);
     Route::delete('/marketplace/shops/{shop}', [MarketplaceController::class, 'disconnect']);
     // Chat inbox (all sources). Shopee for now; Meta channels plug in next to it.
     Route::get('/chat', [\App\Http\Controllers\Api\ShopeeChatController::class, 'conversations']);
+    Route::get('/chat/shopee/{shop}/buyer/{toId}', [\App\Http\Controllers\Api\ShopeeChatController::class, 'buyerVars'])->whereNumber('toId');
     Route::get('/chat/shopee/{shop}/{conversation}', [\App\Http\Controllers\Api\ShopeeChatController::class, 'messages']);
     Route::post('/chat/shopee/{shop}', [\App\Http\Controllers\Api\ShopeeChatController::class, 'send'])->middleware('throttle:30,1');
     Route::post('/chat/shopee/{shop}/image', [\App\Http\Controllers\Api\ShopeeChatController::class, 'sendImage'])->middleware('throttle:20,1');
@@ -206,6 +209,7 @@ Route::middleware(['auth:sanctum', 'member', 'subscribed'])->group(function () {
     Route::get('/marketplace/ads', [MarketplaceController::class, 'ads']);
     Route::get('/marketplace/health', [\App\Http\Controllers\Api\ShopeeHealthController::class, 'index'])->middleware('throttle:30,1');
     Route::get('/marketplace/reviews', [\App\Http\Controllers\Api\ShopeeReviewController::class, 'index']);
+    Route::get('/marketplace/reviews/products', [\App\Http\Controllers\Api\ShopeeReviewController::class, 'products']);
     Route::post('/marketplace/reviews/sync', [\App\Http\Controllers\Api\ShopeeReviewController::class, 'sync'])->middleware('throttle:10,1');
     Route::post('/marketplace/reviews/reply', [\App\Http\Controllers\Api\ShopeeReviewController::class, 'reply'])->middleware('throttle:30,1');
     Route::get('/marketplace/ads/guard', [\App\Http\Controllers\Api\AdsGuardController::class, 'index']);
@@ -217,6 +221,7 @@ Route::middleware(['auth:sanctum', 'member', 'subscribed'])->group(function () {
         Route::get('/{session}', 'show')->whereNumber('session');
         Route::post('/{session}/scan', 'scan')->whereNumber('session')->middleware('throttle:300,1');
         Route::post('/{session}/finish', 'finish')->whereNumber('session');
+        Route::post('/{session}/pack/{order}', 'pack')->whereNumber(['session', 'order'])->middleware('throttle:300,1');
         Route::post('/{session}/rematch', 'rematch')->whereNumber('session')->middleware('throttle:6,1');
         Route::delete('/{session}/parcels/{parcel}', 'destroyParcel')->whereNumber(['session', 'parcel']);
     });
@@ -235,6 +240,7 @@ Route::middleware(['auth:sanctum', 'member', 'subscribed'])->group(function () {
         Route::post('/boost/{shop}/run', 'boostRun')->whereNumber('shop')->middleware('throttle:10,1');
         Route::post('/stats/sync', 'statsSync')->middleware('throttle:4,1');
         Route::get('/performance', 'performance');
+        Route::get('/margins', 'margins');
         Route::post('/prices', 'prices')->middleware('throttle:20,1');
         Route::post('/unlist', 'unlist')->middleware('throttle:20,1');
         Route::get('/text/{shop}/{item}', 'itemText')->whereNumber(['shop', 'item']);

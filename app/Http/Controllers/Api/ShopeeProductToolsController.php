@@ -162,6 +162,12 @@ class ShopeeProductToolsController extends Controller
     }
 
     /** Product performance report combining Shopee get_item_extra_info snapshots with period order sales. */
+    /** Cek Margin: profit per unit of every variant (price − Shopee fees − HPP − ads), losing / thin ones first. */
+    public function margins(Request $request)
+    {
+        return \App\Support\MarginCheck::compute($request->user(), $request->integer('shop_id') ?: null);
+    }
+
     public function performance(Request $request)
     {
         $userId = $request->user()->id;

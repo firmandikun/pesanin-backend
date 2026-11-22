@@ -217,6 +217,9 @@ class ShopeeAfterSalesController extends Controller
             // Laba bersih: penghasilan dari Shopee − HPP − biaya iklan per konversi.
             'profit' => ! $cancelled && $o->escrow_amount !== null && $cogs['total'] !== null ? (int) $o->escrow_amount - $cogs['total'] - ($ads['per_conversion'] ?? 0) : null,
             'history' => $history,
+            // Cek isi paket (Scan Out): who packed it, when, and the photo (proof for "barang kurang / salah kirim" disputes).
+            'packing' => $o->packed_at ? ['at' => $o->packed_at->toIso8601String(), 'by' => $o->packed_by, 'photo' => \App\Support\Packing::photoUrl($o->packing_photo),
+                'complete' => collect($o->packing_check ?? [])->every(fn ($c) => ($c['packed'] ?? 0) >= ($c['qty'] ?? 0))] : null,
             'return' => ShopeeReturn::where('marketplace_shop_id', $o->marketplace_shop_id)->where('order_sn', $o->external_order_sn)->latest('id')->first(['id', 'return_sn', 'status', 'refund_amount', 'reason', 'text_reason', 'due_at', 'requested_at', 'tracking_number']),
         ];
     }

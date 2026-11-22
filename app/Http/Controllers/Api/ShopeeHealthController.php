@@ -14,6 +14,8 @@ class ShopeeHealthController extends Controller
         $shops = $request->user()->marketplaceShops()->where('platform', 'shopee')->where('status', 'active')->where('is_demo', false)
             ->when($request->query('shop'), fn ($q, $id) => $q->whereKey($id))->get();
 
-        return ['shops' => $shops->map(fn ($s) => ShopeeHealth::shop($s, $request->boolean('fresh')))->values()];
+        return ['shops' => $shops->map(fn ($s) => ShopeeHealth::shop($s, $request->boolean('fresh')))->values(),
+            // Orders close to (or past) Shopee's ship-by deadline, from Pesanin's own order data.
+            'due' => \App\Support\Shopee\ShipDeadline::due($request->user(), $request->integer('shop') ?: null)];
     }
 }

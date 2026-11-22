@@ -39,6 +39,8 @@ class OrderController extends Controller
             ->orderBy(in_array($request->query('sort'), self::SORTABLE, true) ? $request->query('sort') : 'created_at', $request->query('dir') === 'asc' ? 'asc' : 'desc')
             ->paginate(min(1000, max(1, $request->integer('per_page', 10))));
         // Orders over the monthly plan quota: buyer details stay locked until the seller upgrades.
+        // COD risk before masking (it reads the phone; only the score is added).
+        \App\Support\CodRisk::attach($orders->getCollection(), $request->user()->id);
         $orders->getCollection()->each(fn (Order $o) => \App\Support\OrderQuota::mask($o, $request->user()));
         if ($request->query('channel') === 'shopee') {
             \App\Support\Shopee\ShopeeSync::withListingSkus($orders->getCollection());
@@ -84,6 +86,8 @@ class OrderController extends Controller
     public function show(Request $request, Order $order)
     {
         $this->authorizeOwner($request, $order);
+
+        \App\Support\CodRisk::attach(collect([$order]), $request->user()->id);
 
         return \App\Support\OrderQuota::mask($order->load('product'), $request->user());
     }

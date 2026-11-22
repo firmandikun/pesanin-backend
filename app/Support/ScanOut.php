@@ -103,7 +103,8 @@ class ScanOut
         }
 
         return $parcel->matched
-            ? ['status' => 'ok', 'message' => "{$parcel->shop_name} · {$parcel->courier}", 'parcel' => self::row($parcel)]
+            // The order's products, for "Cek isi paket" (scan each product + photo before the parcel is closed).
+            ? ['status' => 'ok', 'message' => "{$parcel->shop_name} · {$parcel->courier}", 'parcel' => self::row($parcel), 'order' => $order ? Packing::row($order) : null]
             : ['status' => 'unknown', 'message' => 'Resi tidak ditemukan di pesanan Pesanin, tetap dicatat. Hapus kalau salah scan.', 'parcel' => self::row($parcel)];
     }
 
@@ -253,7 +254,7 @@ class ScanOut
     public static function summary(ScanOutSession $s): array
     {
         self::rematch($s);
-        $rows = $s->parcels()->get(['code', 'shop_name', 'courier', 'matched'])->each(fn ($r) => $r->expedition = self::expedition($r->courier, $r->code));
+        $rows = $s->parcels()->get(['code', 'shop_name', 'courier', 'matched', 'scanned_by'])->each(fn ($r) => $r->expedition = self::expedition($r->courier, $r->code));
         $group = fn (string $key, string $empty) => $rows->groupBy(fn ($r) => $r->{$key} ?: $empty)
             ->map(fn ($g, $k) => ['name' => $k, 'count' => $g->count()])->sortByDesc('count')->values();
 
@@ -262,6 +263,8 @@ class ScanOut
             'unknown' => $rows->where('matched', false)->count(),
             'by_shop' => $group('shop_name', 'Tidak dikenal'),
             'by_expedition' => $group('expedition', 'Ekspedisi lain'),
+            // Several staff scanning with the same QR: parcels per person.
+            'by_staff' => $group('scanned_by', 'Tanpa nama'),
         ];
     }
 

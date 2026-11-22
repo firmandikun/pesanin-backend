@@ -89,6 +89,7 @@ class SidebarConfig
                 ['label' => 'Daftar Toko', 'href' => '/marketplace/shops'],
                 ['label' => 'Semua Produk', 'href' => '/marketplace/products'],
                 ['label' => 'Performa Produk', 'href' => '/marketplace/product-performance'],
+                ['label' => 'Cek Margin', 'href' => '/marketplace/margins'],
                 ['label' => 'Stok Master', 'href' => '/marketplace/stock'],
                 ['label' => 'Pesanan & Pengiriman', 'href' => '/marketplace/orders'],
                 ['label' => 'Scan Out', 'href' => '/marketplace/scan-out'],
@@ -96,6 +97,7 @@ class SidebarConfig
                 ['label' => 'Ulasan', 'href' => '/marketplace/reviews'],
                 ['label' => 'Kesehatan Akun', 'href' => '/marketplace/health'],
                 ['label' => 'Saldo', 'href' => '/marketplace/balance'],
+                ['label' => 'Cek Dana', 'href' => '/marketplace/money-check'],
             ],
         ],
         [

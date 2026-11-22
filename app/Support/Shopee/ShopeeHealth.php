@@ -96,24 +96,25 @@ class ShopeeHealth
                         'Pelayanan Pembeli' => (int) ($perf['overall_performance']['custom_service_failed'] ?? 0),
                     ],
                 ] : null,
-                'metrics' => $metrics->groupBy('type')->map(fn ($g, $t) => ['type' => self::METRIC_TYPE[$t] ?? 'Lainnya', 'metrics' => $g->values()])->values(),
+                // Plain arrays only: this is cached, and the cache does not restore objects (Collections).
+                'metrics' => $metrics->groupBy('type')->map(fn ($g, $t) => ['type' => self::METRIC_TYPE[$t] ?? 'Lainnya', 'metrics' => $g->values()->all()])->values()->all(),
                 'penalty' => [
                     'total' => (int) collect($points ?? [])->sum('latest_point_num'),
                     'records' => collect($points ?? [])->sortByDesc('issue_time')->map(fn ($p) => [
                         'id' => (string) ($p['reference_id'] ?? ''), 'at' => isset($p['issue_time']) ? date('c', (int) $p['issue_time']) : null,
                         'points' => (int) ($p['latest_point_num'] ?? 0), 'original' => (int) ($p['original_point_num'] ?? 0),
                         'reason' => self::VIOLATION[(int) ($p['violation_type'] ?? 0)] ?? 'Pelanggaran #'.($p['violation_type'] ?? '?'),
-                    ])->values(),
+                    ])->values()->all(),
                 ],
                 'late_orders' => collect($late ?? [])->map(fn ($o) => [
                     'order_sn' => $o['order_sn'], 'deadline' => isset($o['shipping_deadline']) ? date('c', (int) $o['shipping_deadline']) : null,
                     'late_days' => (int) ($o['late_by_days'] ?? 0), 'order_id' => $orders[$o['order_sn']]->id ?? null,
                     'buyer' => $orders[$o['order_sn']]->customer_name ?? null, 'status' => $orders[$o['order_sn']]->external_status ?? null,
-                ])->sortByDesc('late_days')->values(),
+                ])->sortByDesc('late_days')->values()->all(),
                 'listings' => collect($issues ?? [])->map(fn ($l) => [
                     'item_id' => (int) $l['item_id'], 'reason' => self::LISTING_REASON[(int) ($l['reason'] ?? 0)] ?? 'Bermasalah',
                     'name' => $names[$l['item_id']]->name ?? "Produk {$l['item_id']}", 'image' => $names[$l['item_id']]->image ?? null,
-                ])->values(),
+                ])->values()->all(),
             ];
         });
     }

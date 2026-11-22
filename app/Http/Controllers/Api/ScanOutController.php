@@ -55,6 +55,17 @@ class ScanOutController extends Controller
         return ScanOut::record($session, $data['code'], Member::actorName($request)) + ['summary' => ScanOut::summary($session)];
     }
 
+    /** "Cek isi paket" done on the dashboard: products checked + photo of the open parcel. */
+    public function pack(Request $request, ScanOutSession $session, int $order)
+    {
+        abort_unless($session->user_id === $request->user()->id, 404);
+        $o = \App\Models\Order::where('user_id', $session->user_id)->findOrFail($order);
+        abort_unless($session->parcels()->where('order_id', $o->id)->exists(), 422, 'Scan resi pesanan ini dulu di sesi Scan Out.');
+        $request->validate(\App\Support\Packing::RULES);
+
+        return \App\Support\Packing::save($o, $request->file('photo'), $request->input('check'), Member::actorName($request));
+    }
+
     public function finish(Request $request, ScanOutSession $session)
     {
         abort_unless($session->user_id === $request->user()->id, 404);

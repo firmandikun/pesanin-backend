@@ -169,6 +169,15 @@ class ShopeeChatController extends Controller
             ->when($request->query('channel') && $request->query('channel') !== 'shopee', fn ($q) => $q->whereRaw('1 = 0'))->get();
     }
 
+    /** Template variables for quick replies: the buyer's latest order in this shop ({order_sn}, {resi}, {kurir}, {status}). */
+    public function buyerVars(Request $request, MarketplaceShop $shop, int $toId)
+    {
+        $this->own($request, $shop);
+        $o = \App\Support\Shopee\ChatAutomation::latestOrder($shop, $toId);
+
+        return ['vars' => \App\Support\Shopee\ChatAutomation::orderVars($o, $request->query('name'), $shop), 'order_id' => $o?->id];
+    }
+
     private function own(Request $request, MarketplaceShop $shop): void
     {
         abort_unless($shop->user_id === $request->user()->id, 404);

@@ -40,6 +40,8 @@ class Order extends Model
             'digital_sent_at' => 'datetime',
             'dropship_paid_at' => 'datetime',
             'over_quota' => 'boolean',
+            'packed_at' => 'datetime',
+            'packing_check' => 'array',
         ];
     }
 

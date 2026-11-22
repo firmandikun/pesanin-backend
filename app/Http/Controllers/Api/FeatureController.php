@@ -326,7 +326,8 @@ class FeatureController extends Controller
 
     public function updateUserSettings(Request $request)
     {
-        $data = $request->validate(['key' => 'required|in:rotator,confirm_page,affiliate,whatsapp_devices,notify,followup,automation,print_settings,ads_guard,reviews', 'value' => 'present|array']);
+        $data = $request->validate(['key' => 'required|in:rotator,confirm_page,affiliate,whatsapp_devices,notify,followup,automation,print_settings,ads_guard,reviews,margin_alert,restock,'.\App\Support\Shopee\ChatAutomation::KEY, 'value' => 'present|array']
+            + ($request->input('key') === \App\Support\Shopee\ChatAutomation::KEY ? \App\Support\Shopee\ChatAutomation::rules() : []));
         $user = $request->user();
         $user->update(['settings' => array_merge($user->settings ?? [], [$data['key'] => $data['value']])]);
 

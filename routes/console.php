@@ -246,6 +246,78 @@ Artisan::command('shopee:reviews', function () {
 })->purpose('Sync Shopee reviews, auto-reply, alert low ratings');
 \Illuminate\Support\Facades\Schedule::command('shopee:reviews')->hourly()->withoutOverlapping();
 
+// Chat Shopee otomatis: hanya MEMBALAS chat pembeli (kata kunci & pesan di luar jam kerja), tidak pernah chat duluan.
+Artisan::command('shopee:chat-auto', function () {
+    $users = \App\Models\User::whereHas('marketplaceShops', fn ($q) => $q->where('platform', 'shopee')->where('status', 'active')->where('is_demo', false))
+        ->get()->filter(fn ($u) => ! empty($u->settings[\App\Support\Shopee\ChatAutomation::KEY]));
+    $t = 0;
+    foreach ($users as $user) {
+        try {
+            $t += \App\Support\Shopee\ChatAutomation::run($user)['replies'];
+        } catch (\Throwable $e) {
+            $this->warn("Chat otomatis user {$user->id}: {$e->getMessage()}");
+        }
+    }
+    $this->info("Chat otomatis: {$t} balasan");
+})->purpose('Shopee chat automation: auto-replies to buyer messages');
+\Illuminate\Support\Facades\Schedule::command('shopee:chat-auto')->everyMinute()->withoutOverlapping(10);
+
+// Cek Margin: every morning, tell sellers about products that newly sell at a loss or below their minimum margin.
+Artisan::command('shopee:margins', function () {
+    $n = 0;
+    foreach (\App\Models\User::whereHas('marketplaceShops', fn ($q) => $q->where('platform', 'shopee')->where('status', 'active')->where('is_demo', false))->get() as $user) {
+        try {
+            $n += \App\Support\MarginCheck::notify($user);
+        } catch (\Throwable $e) {
+            $this->warn("Margin user {$user->id}: {$e->getMessage()}");
+        }
+    }
+    $this->info("Produk margin tipis/rugi baru: {$n}");
+})->purpose('Alert sellers about Shopee products with thin or negative margin');
+\Illuminate\Support\Facades\Schedule::command('shopee:margins')->dailyAt('09:00')->timezone('Asia/Jakarta')->withoutOverlapping();
+
+// Cek Dana: every morning, tell sellers about money to check / claim (shipping charged, lost parcels, returns…).
+Artisan::command('shopee:money-check', function () {
+    $n = 0;
+    foreach (\App\Models\User::whereHas('marketplaceShops', fn ($q) => $q->where('platform', 'shopee')->where('status', 'active')->where('is_demo', false))->get() as $user) {
+        try {
+            $n += \App\Support\MoneyCheck::notify($user);
+        } catch (\Throwable $e) {
+            $this->warn("Cek dana user {$user->id}: {$e->getMessage()}");
+        }
+    }
+    $this->info("Temuan dana baru: {$n}");
+})->purpose('Alert sellers about Shopee money to check or claim');
+\Illuminate\Support\Facades\Schedule::command('shopee:money-check')->dailyAt('08:30')->timezone('Asia/Jakarta')->withoutOverlapping();
+
+// Batas kirim: every 30 minutes, warn before orders become late (penalty points) and when they are late.
+Artisan::command('shopee:ship-deadline', function () {
+    $n = 0;
+    foreach (\App\Models\User::whereHas('marketplaceShops', fn ($q) => $q->where('platform', 'shopee')->where('status', 'active')->where('is_demo', false))->get() as $user) {
+        try {
+            $n += \App\Support\Shopee\ShipDeadline::notify($user);
+        } catch (\Throwable $e) {
+            $this->warn("Batas kirim user {$user->id}: {$e->getMessage()}");
+        }
+    }
+    $this->info("Peringatan batas kirim: {$n}");
+})->purpose('Warn sellers before Shopee orders pass the ship-by deadline');
+\Illuminate\Support\Facades\Schedule::command('shopee:ship-deadline')->everyThirtyMinutes()->withoutOverlapping();
+
+// Prediksi stok: every morning, list SKUs that ran out or will run out before new stock can arrive.
+Artisan::command('stock:restock-alert', function () {
+    $n = 0;
+    foreach (\App\Models\User::whereIn('id', \App\Models\StockMaster::distinct()->pluck('user_id'))->get() as $user) {
+        try {
+            $n += \App\Support\RestockForecast::notify($user);
+        } catch (\Throwable $e) {
+            $this->warn("Restock user {$user->id}: {$e->getMessage()}");
+        }
+    }
+    $this->info("SKU perlu restock (baru): {$n}");
+})->purpose('Alert sellers about SKUs that need restocking');
+\Illuminate\Support\Facades\Schedule::command('stock:restock-alert')->dailyAt('07:30')->timezone('Asia/Jakarta')->withoutOverlapping();
+
 // Kesehatan akun Shopee: every morning, alert on new penalty points, late orders or a performance drop.
 Artisan::command('shopee:health', function () {
     $users = \App\Models\User::whereHas('marketplaceShops', fn ($q) => $q->where('platform', 'shopee')->where('status', 'active')->where('is_demo', false))->get();
