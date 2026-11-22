@@ -77,22 +77,54 @@ class MasterStock
         return $sku === '' ? null : StockMaster::where('user_id', is_int($user) ? $user : $user->id)->whereRaw('LOWER(TRIM(sku)) = ?', [$sku])->first();
     }
 
-    /** A synced/new listing whose SKU already has a master joins it (and gets the master stock on the next push). */
-    public static function autoAttach(MarketplaceListing $listing): void
+    /** A synced/new listing whose SKU already has a master joins it, inherits HPP, and queues/pushes master stock. */
+    public static function autoAttach(MarketplaceListing $listing, bool $pushNow = false): ?StockMaster
     {
-        if ($listing->stock_master_id || self::norm($listing->sku) === '') {
-            return;
+        if (self::norm($listing->sku) === '') {
+            return null;
         }
-        if ($master = self::find($listing->user_id, $listing->sku)) {
-            $listing->update(['stock_master_id' => $master->id]);
+        $master = self::find($listing->user_id, $listing->sku);
+        if (! $master) {
+            return null;
+        }
+        if ($listing->stock_master_id !== $master->id) {
+            $listing->update(['stock_master_id' => $master->id, 'stock_push_error' => null]);
             $master->update(['push_pending' => true]);
         }
+        self::syncHpp($master);
+        if ($pushNow) {
+            try {
+                self::push($master->refresh());
+            } catch (Throwable) {
+                // stays push_pending; scheduler retries
+            }
+        }
+
+        return $master;
     }
 
     public static function attach(StockMaster $master, MarketplaceListing $listing): void
     {
         $listing->update(['stock_master_id' => $master->id, 'stock_push_error' => null]);
         $master->update(['push_pending' => true]);
+        self::syncHpp($master);
+    }
+
+    /** Copy known HPP (> 0) from any listing in this master to linked listings that still have no HPP. */
+    public static function syncHpp(StockMaster $master): void
+    {
+        $hpp = $master->listings()
+            ->with('product:id,cost_price')
+            ->get(['id', 'cost_price', 'product_id'])
+            ->map(fn ($l) => (int) ($l->cost_price ?: $l->product?->cost_price))
+            ->filter()
+            ->max();
+        if (! $hpp) {
+            return;
+        }
+        $master->listings()
+            ->where(fn ($w) => $w->whereNull('cost_price')->orWhere('cost_price', '<=', 0))
+            ->update(['cost_price' => $hpp]);
     }
 
     /** Set the stock by hand (stock opname / restock / return); recorded in the history and pushed to every shop. */

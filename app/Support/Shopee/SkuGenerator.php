@@ -167,10 +167,19 @@ class SkuGenerator
                 }
             }
         }
-        // New SKUs may now match an existing Stok Master.
+        // New SKUs may now match an existing Stok Master: attach, sync HPP, and push master stock once per master.
+        $attachedMasters = [];
         foreach ($listings->whereNotIn('id', array_keys($failed)) as $l) {
             try {
-                \App\Support\MasterStock::autoAttach($l->fresh());
+                if ($m = \App\Support\MasterStock::autoAttach($l->fresh())) {
+                    $attachedMasters[$m->id] = $m;
+                }
+            } catch (Throwable) {
+            }
+        }
+        foreach ($attachedMasters as $m) {
+            try {
+                \App\Support\MasterStock::push($m->refresh());
             } catch (Throwable) {
             }
         }
@@ -206,6 +215,7 @@ class SkuGenerator
                     \App\Support\MasterStock::attach($master, $l);
                 }
             }
+            \App\Support\MasterStock::syncHpp($master);
             \App\Support\MasterStock::setStock($master, max(0, (int) $stock), 'Stok diatur saat Buat SKU');
             try {
                 \App\Support\MasterStock::push($master->refresh());
