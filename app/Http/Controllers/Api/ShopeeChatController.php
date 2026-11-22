@@ -122,9 +122,18 @@ class ShopeeChatController extends Controller
             // A message is a chat bubble when it is a known kind or the buyer wrote it (e.g. an order card + question).
             // Shopee's own notices ("Asisten AI Toko telah dijeda", AI/bot hints) are a small centred note when they
             // carry text, and dropped when they have nothing readable (Shopee hides those too).
-            ->map(fn ($m) => $m + ['system' => ! in_array($m['type'], self::BUBBLES, true)
-                && ! ($m['buyer'] && ! preg_match('/(^|_)(notif\w*|system\w*|ai|assistant|faq|bot|auto\w*|tips?|hint|guide)(_|$)/i', $m['type']))])
-            ->reject(fn ($m) => $m['system'] && $m['text'] === '' && ! $m['image'] && ! $m['video'])
+            ->map(function ($m) {
+                $hasOrder = ! empty($m['order_sn']);
+                $isBubble = in_array($m['type'], self::BUBBLES, true)
+                    || $hasOrder
+                    || ($m['buyer'] && ! preg_match('/(^|_)(notif\w*|system\w*|faq|tips?|hint|guide)(_|$)/i', $m['type']));
+
+                return [
+                    'system' => ! $isBubble,
+                    'text' => $hasOrder && $m['text'] === '' ? '[Pesanan]' : $m['text'],
+                ] + $m;
+            })
+            ->reject(fn ($m) => $m['system'] && $m['text'] === '' && ! $m['image'] && ! $m['video'] && ! $m['order_sn'])
             ->sortBy('at')->values();
         // Order cards: the Pesanin order behind each order number, so the bubble can show and open it.
         $sns = $messages->pluck('order_sn')->filter()->unique()->values()->all();
@@ -257,7 +266,7 @@ class ShopeeChatController extends Controller
     /** Readable text inside any content shape (notices keep it under different keys). */
     public static function contentText(array $c): string
     {
-        foreach (['text', 'content', 'title', 'message', 'preview_text', 'notification_text', 'desc', 'description'] as $k) {
+        foreach (['text', 'content', 'title', 'message', 'body', 'sub_title', 'preview_text', 'notification_text', 'desc', 'description', 'tips', 'content.text', 'content.message'] as $k) {
             $v = data_get($c, $k);
             if (is_string($v) && trim($v) !== '') {
                 return trim($v);
