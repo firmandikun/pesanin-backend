@@ -102,12 +102,24 @@ class ShopeePublishTest extends TestCase
     {
         $this->fakeShopee();
         $this->postJson("/api/marketplace/publish/{$this->shop->id}", $this->body([
-            'tiers' => [['name' => 'Ukuran', 'options' => ['20ml', '30ml']]],
-            'models' => [['index' => [0], 'price' => 129000, 'stock' => 5, 'sku' => 'S20'], ['index' => [1], 'price' => 169000, 'stock' => 3, 'sku' => 'S30']],
+            'tiers' => [['name' => 'Ukuran', 'options' => ['20ml', '30ml'], 'option_images' => ['opt-img-1', null]]],
+            'models' => [
+                ['index' => [0], 'price' => 129000, 'stock' => 5, 'cost_price' => 75000, 'sku' => 'S20'],
+                ['index' => [1], 'price' => 169000, 'stock' => 3, 'cost_price' => 95000, 'sku' => 'S30'],
+            ],
         ]))->assertOk()->assertJson(['listings' => 2]);
-        Http::assertSent(fn ($r) => str_contains($r->url(), 'add_item') && $r['original_price'] == 129000 && $r['seller_stock'] === [['stock' => 8]]);
-        Http::assertSent(fn ($r) => str_contains($r->url(), 'init_tier_variation') && $r['tier_variation'][0]['option_list'][1] === ['option' => '30ml'] && $r['model'][1]['model_sku'] === 'S30');
+        Http::assertSent(fn ($r) => str_contains($r->url(), 'add_item')
+            && $r['original_price'] == 129000
+            && $r['seller_stock'] === [['stock' => 8]]
+            && ! isset($r['cost_price']));
+        Http::assertSent(fn ($r) => str_contains($r->url(), 'init_tier_variation')
+            && $r['tier_variation'][0]['option_list'][0] === ['option' => '20ml', 'image' => ['image_id' => 'opt-img-1']]
+            && $r['tier_variation'][0]['option_list'][1] === ['option' => '30ml']
+            && $r['model'][1]['model_sku'] === 'S30'
+            && ! isset($r['model'][0]['cost_price']));
         $this->assertSame(['20ml', '30ml'], MarketplaceListing::orderBy('model_id')->pluck('model_name')->all());
+        $this->assertSame([75000, 95000], MarketplaceListing::orderBy('model_id')->pluck('cost_price')->all());
+        $this->assertSame('https://cf.shopee.co.id/file/opt-img-1', MarketplaceListing::orderBy('model_id')->first()->image);
     }
 
     public function test_shop_without_courier_is_refused(): void

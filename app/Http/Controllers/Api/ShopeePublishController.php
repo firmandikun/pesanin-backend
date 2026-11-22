@@ -184,6 +184,7 @@ class ShopeePublishController extends Controller
             // With variations the price/stock live on each model; the item-level ones are then optional.
             'price' => 'exclude_with:models|required|integer|min:100',
             'stock' => 'exclude_with:models|required|integer|min:0|max:999999',
+            'cost_price' => 'nullable|integer|min:0|max:1000000000',
             'sku' => 'nullable|string|max:100',
             'weight' => 'required|integer|min:1|max:1000000', // grams
             'length' => 'nullable|integer|min:1|max:1000', 'width' => 'nullable|integer|min:1|max:1000', 'height' => 'nullable|integer|min:1|max:1000',
@@ -197,10 +198,12 @@ class ShopeePublishController extends Controller
             'tiers' => 'nullable|array|max:2',
             'tiers.*.name' => 'required|string|max:14',
             'tiers.*.options' => 'required|array|min:1|max:50', 'tiers.*.options.*' => 'string|max:20',
+            'tiers.*.option_images' => 'nullable|array|max:50', 'tiers.*.option_images.*' => 'nullable|string|max:150',
             'models' => 'nullable|array|max:50',
             'models.*.index' => 'required|array', 'models.*.index.*' => 'integer',
             'models.*.price' => 'required|integer|min:100',
             'models.*.stock' => 'required|integer|min:0',
+            'models.*.cost_price' => 'nullable|integer|min:0|max:1000000000',
             'models.*.sku' => 'nullable|string|max:100',
             'gtin' => ['nullable', 'string', 'regex:/^(00|\d{8,14})$/'],
             'condition' => 'nullable|in:NEW,USED',
@@ -296,7 +299,19 @@ class ShopeePublishController extends Controller
             $listings = [];
             $imageUrl = $this->imageUrl($d['image_ids'][0]);
             if ($models && ! empty($d['tiers'])) {
-                $tierPayload = collect($d['tiers'])->map(fn ($t) => ['name' => $t['name'], 'option_list' => collect($t['options'])->map(fn ($o) => ['option' => $o])->all()])->all();
+                $tierPayload = collect($d['tiers'])->map(function ($t, $ti) {
+                    $opts = collect($t['options'])->map(function ($o, $oi) use ($t, $ti) {
+                        $row = ['option' => $o];
+                        $imgId = $ti === 0 ? ($t['option_images'][$oi] ?? null) : null;
+                        if ($imgId) {
+                            $row['image'] = ['image_id' => $imgId];
+                        }
+
+                        return $row;
+                    })->all();
+
+                    return ['name' => $t['name'], 'option_list' => $opts];
+                })->all();
                 $modelPayload = collect($models)->map(fn ($m) => array_filter(['tier_index' => $m['index'], 'original_price' => $m['price'], 'seller_stock' => [['stock' => $m['stock']]], 'model_sku' => $m['sku'] ?? null, 'gtin_code' => $gtin], fn ($v) => $v !== null))->all();
                 $tierRes = null;
                 // Shopee often needs ~5s after add_item before init_tier_variation can attach variations to the new item.
@@ -316,11 +331,14 @@ class ShopeePublishController extends Controller
                 }
                 foreach ($tierRes['model'] ?? [] as $i => $m) {
                     $src = collect($models)->first(fn ($x) => $x['index'] === ($m['tier_index'] ?? null)) ?? $models[$i] ?? [];
+                    $t0 = $m['tier_index'][0] ?? null;
+                    $optImgId = $t0 !== null ? ($d['tiers'][0]['option_images'][$t0] ?? null) : null;
+                    $modelImage = $optImgId ? $this->imageUrl($optImgId) : $imageUrl;
                     $listings[] = $this->listing($shop, $product, $itemId, (int) $m['model_id'], $d['name'],
-                        collect($m['tier_index'] ?? [])->map(fn ($ti, $k) => $d['tiers'][$k]['options'][$ti] ?? '')->implode(', '), $src['sku'] ?? null, $src['price'] ?? $d['price'], $src['stock'] ?? 0, $imageUrl, $itemStatus);
+                        collect($m['tier_index'] ?? [])->map(fn ($ti, $k) => $d['tiers'][$k]['options'][$ti] ?? '')->implode(', '), $src['sku'] ?? null, $src['price'] ?? $d['price'], $src['stock'] ?? 0, $modelImage, $itemStatus, $src['cost_price'] ?? null);
                 }
             } else {
-                $listings[] = $this->listing($shop, $product, $itemId, 0, $d['name'], null, $d['sku'] ?? null, $d['price'], $d['stock'], $imageUrl, $itemStatus);
+                $listings[] = $this->listing($shop, $product, $itemId, 0, $d['name'], null, $d['sku'] ?? null, $d['price'], $d['stock'], $imageUrl, $itemStatus, $d['cost_price'] ?? null);
             }
         } catch (ShopeeException $e) {
             return response()->json([
@@ -461,12 +479,12 @@ class ShopeePublishController extends Controller
         })->filter()->values()->all();
     }
 
-    private function listing(MarketplaceShop $shop, ?Product $product, int $itemId, int $modelId, string $name, ?string $modelName, ?string $sku, int $price, int $stock, string $image, string $status = 'NORMAL'): MarketplaceListing
+    private function listing(MarketplaceShop $shop, ?Product $product, int $itemId, int $modelId, string $name, ?string $modelName, ?string $sku, int $price, int $stock, string $image, string $status = 'NORMAL', ?int $costPrice = null): MarketplaceListing
     {
         $l = MarketplaceListing::firstOrNew(['marketplace_shop_id' => $shop->id, 'item_id' => $itemId, 'model_id' => $modelId]);
         $l->user_id = $shop->user_id;
         $l->fill(['product_id' => $product?->id, 'name' => $name, 'model_name' => $modelName, 'sku' => $sku, 'price' => $price, 'stock' => $stock, 'status' => $status, 'image' => $image,
-            'cost_price' => $l->cost_price ?? $product?->cost_price])->save();
+            'cost_price' => $costPrice !== null ? $costPrice : ($l->cost_price ?? $product?->cost_price)])->save();
         \App\Support\MasterStock::autoAttach($l);
 
         return $l;
