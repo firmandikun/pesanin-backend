@@ -30,14 +30,15 @@ class Gemini
         $errors = []; // model => message
         $started = microtime(true);
         foreach (self::models($apiKey) as $model) {
-            // Stay inside the background job's time (each model may take up to 90 s).
-            if (microtime(true) - $started > 200) {
+            // Stay inside the background job's time: Pro thinks longer (up to 150 s), Flash up to 90 s.
+            $name = str_replace('models/', '', $model);
+            $timeout = str_contains($name, 'pro') ? 150 : 90;
+            if (microtime(true) - $started + $timeout > 300) {
                 break;
             }
-            $name = str_replace('models/', '', $model);
             for ($attempt = 0; $attempt < 2; $attempt++) {
                 try {
-                    $res = Http::timeout(90)->post(
+                    $res = Http::timeout($timeout)->post(
                         "https://generativelanguage.googleapis.com/v1beta/{$model}:generateContent?key=".urlencode($apiKey),
                         ['contents' => [['parts' => [['text' => $prompt]]]],
                             'generationConfig' => ['temperature' => $temperature, 'responseMimeType' => 'application/json', 'maxOutputTokens' => 16384]],
@@ -51,7 +52,7 @@ class Gemini
                     // Per-minute limit: Google says how long to wait; wait once if it is short, else try the next model.
                     $wait = self::retryDelay($res->json('error.details', []));
                     $errors[$name] = (string) ($res->json('error.message') ?? 'HTTP 429');
-                    if ($attempt === 0 && $wait !== null && $wait <= 25 && microtime(true) - $started + $wait < 200) {
+                    if ($attempt === 0 && $wait !== null && $wait <= 25 && microtime(true) - $started + $wait + $timeout < 300) {
                         sleep($wait + 1);
 
                         continue;
@@ -144,9 +145,9 @@ class Gemini
     /** generateContent models of this key in the order to try (cached 6 hours). */
     public static function models(string $apiKey): array
     {
-        $fallback = ['models/gemini-2.5-flash', 'models/gemini-2.5-flash-lite', 'models/gemini-2.0-flash'];
+        $fallback = ['models/gemini-2.5-pro', 'models/gemini-2.5-flash', 'models/gemini-2.5-flash-lite'];
 
-        return Cache::remember('gemini_models:v2:'.md5($apiKey), now()->addHours(6), function () use ($apiKey, $fallback) {
+        return Cache::remember('gemini_models:v3:'.md5($apiKey), now()->addHours(6), function () use ($apiKey, $fallback) {
             try {
                 $res = Http::timeout(10)->get('https://generativelanguage.googleapis.com/v1beta/models', ['key' => $apiKey]);
                 if (! $res->successful()) {
@@ -156,12 +157,12 @@ class Gemini
                     ->filter(fn ($m) => in_array('generateContent', $m['supportedGenerationMethods'] ?? [], true))
                     ->pluck('name')
                     ->filter(fn ($n) => str_contains($n, 'gemini-') && ! preg_match('/embedding|tts|image|audio|live|thinking-exp|learnlm|gemma/', $n))
-                    // Stable Flash first (largest free quota), then Flash-Lite, Pro; preview / experimental models last
-                    // (on the free tier they often have tiny or zero quota). Newer version first within a group.
+                    // Stable Pro first (best analysis), then Flash as the fallback when Pro is out of quota (Pro's free
+                    // quota is small, sometimes 0), then Flash-Lite; preview / experimental models last. Newer first.
                     ->sortByDesc(function ($n) {
                         preg_match('/gemini-(\d+(?:\.\d+)?)/', $n, $m);
                         $preview = (bool) preg_match('/preview|exp|latest/', $n);
-                        $group = str_contains($n, 'flash-lite') ? 2 : (str_contains($n, 'flash') ? 3 : (str_contains($n, 'pro') ? 1 : 0));
+                        $group = str_contains($n, 'flash-lite') ? 2 : (str_contains($n, 'flash') ? 3 : (str_contains($n, 'pro') ? 4 : 0));
 
                         return ($preview ? 0 : 10000) + $group * 1000 + (float) ($m[1] ?? 0) * 10;
                     })->values()->take(4)->all();

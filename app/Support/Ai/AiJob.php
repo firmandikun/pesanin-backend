@@ -12,7 +12,7 @@ use Throwable;
 class AiJob
 {
     /** A job still "running" after this long died with its PHP process. */
-    public const STALE_SECONDS = 360;
+    public const STALE_SECONDS = 400;
 
     /** Start $work() after the response; its return value is cached under $key. $after receives the result. */
     public static function start(string $key, callable $work, ?callable $after = null): array
@@ -20,7 +20,7 @@ class AiJob
         $state = ['status' => 'running', 'started_at' => now()->toIso8601String()];
         Cache::put("{$key}:job", $state, now()->addHour());
         dispatch(function () use ($key, $work, $after) {
-            @set_time_limit(330);
+            @set_time_limit(360);
             ignore_user_abort(true);
             try {
                 $result = $work();
