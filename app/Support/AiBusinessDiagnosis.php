@@ -11,6 +11,7 @@ use App\Models\ShopeeReturn;
 use App\Models\StockMaster;
 use App\Models\User;
 use Illuminate\Support\Carbon;
+use App\Support\Ai\Gemini;
 use Illuminate\Support\Facades\Http;
 use RuntimeException;
 
@@ -38,8 +39,9 @@ class AiBusinessDiagnosis
     {
         $profit = Analytics::profit($user, $from, $to);
         $feeRates = Analytics::shopFeeRates($user);
-        $fromStr = $from->toDateString();
-        $toStr = $to->toDateString();
+        // $from / $to are UTC instants (Dates::range); dates and day filters are WIB.
+        $fromStr = $from->copy()->setTimezone(Dates::TZ)->toDateString();
+        $toStr = $to->copy()->setTimezone(Dates::TZ)->toDateString();
 
         // Map ad spend per shop:item for the period
         $shopNames = MarketplaceShop::where('user_id', $user->id)->pluck('shop_name', 'id');
@@ -81,11 +83,11 @@ class AiBusinessDiagnosis
             'id', 'channel', 'marketplace_shop_id', 'product_id', 'items', 'quantity', 'total', 'shipping_cost', 'cod_fee', 'status',
         ]);
         $cancelledCount = Order::where('user_id', $user->id)
-            ->whereBetween('created_at', [$from->copy()->startOfDay()->utc(), $to->copy()->endOfDay()->utc()])
+            ->whereBetween('created_at', [$from->copy()->utc(), $to->copy()->utc()])
             ->where(fn ($w) => $w->whereIn('status', ['cancelled', 'refunded'])->orWhere('external_status', 'CANCELLED'))
             ->count();
         $returnsCount = ShopeeReturn::where('user_id', $user->id)
-            ->whereBetween('created_at', [$from->copy()->startOfDay()->utc(), $to->copy()->endOfDay()->utc()])
+            ->whereBetween('created_at', [$from->copy()->utc(), $to->copy()->utc()])
             ->count();
 
         $byProduct = [];
@@ -182,13 +184,13 @@ class AiBusinessDiagnosis
 
         // Per-shop breakdown (revenue, fees %, COGS, net profit, cancellations, returns)
         $cancelledByShop = Order::where('user_id', $user->id)
-            ->whereBetween('created_at', [$from->copy()->startOfDay()->utc(), $to->copy()->endOfDay()->utc()])
+            ->whereBetween('created_at', [$from->copy()->utc(), $to->copy()->utc()])
             ->where(fn ($w) => $w->whereIn('status', ['cancelled', 'refunded'])->orWhere('external_status', 'CANCELLED'))
             ->selectRaw('marketplace_shop_id, COUNT(*) as cnt')
             ->groupBy('marketplace_shop_id')
             ->pluck('cnt', 'marketplace_shop_id');
         $returnsByShop = ShopeeReturn::where('user_id', $user->id)
-            ->whereBetween('created_at', [$from->copy()->startOfDay()->utc(), $to->copy()->endOfDay()->utc()])
+            ->whereBetween('created_at', [$from->copy()->utc(), $to->copy()->utc()])
             ->selectRaw('marketplace_shop_id, COUNT(*) as cnt')
             ->groupBy('marketplace_shop_id')
             ->pluck('cnt', 'marketplace_shop_id');
@@ -229,6 +231,7 @@ class AiBusinessDiagnosis
         }
 
         $t = $profit['summary'];
+        $extra = self::extras($user, $from, $to, $profit);
 
         return [
             'period' => ['from' => $fromStr, 'to' => $toStr],
@@ -253,148 +256,224 @@ class AiBusinessDiagnosis
             'ads_campaigns' => $adsCampaigns,
             'losing_ads' => $losingAds,
             'low_stock_skus' => array_slice($lowStockSkus, 0, 10),
-        ];
+        ] + $extra;
     }
 
-    /** Send the snapshot to Gemini and return structured diagnosis JSON. */
+    /**
+     * Context that makes the diagnosis concrete: the previous period (trend), weekly revenue/profit, and what
+     * Pesanin's own checks found (Cek Dana, Cek Margin, batas kirim, prediksi stok, ulasan, COD/RTS, Meta Ads).
+     * Each block is optional: a failing check never stops the diagnosis.
+     */
+    private static function extras(User $user, Carbon $from, Carbon $to, array $profit): array
+    {
+        $out = ['store' => ['track' => Plans::track($user), 'shopee_shops' => MarketplaceShop::where('user_id', $user->id)->where('platform', 'shopee')->where('status', 'active')->where('is_demo', false)->count()]];
+        $safe = function (string $key, callable $fn) use (&$out) {
+            try {
+                $v = $fn();
+                if ($v !== null && $v !== []) {
+                    $out[$key] = $v;
+                }
+            } catch (\Throwable $e) {
+                report($e);
+            }
+        };
+
+        // Same-length period right before, to see the direction.
+        $safe('previous_period', function () use ($user, $from, $to) {
+            $days = (int) round($from->diffInHours($to) / 24);
+            $pFrom = $from->copy()->subDays($days);
+            $pTo = $from->copy()->subSecond();
+            $p = Analytics::profit($user, $pFrom, $pTo)['summary'];
+
+            return ['from' => $pFrom->copy()->setTimezone(Dates::TZ)->toDateString(), 'to' => $pTo->copy()->setTimezone(Dates::TZ)->toDateString(), 'revenue' => (int) ($p['revenue'] ?? 0), 'net_profit' => (int) ($p['net_profit'] ?? 0),
+                'net_margin_pct' => (float) ($p['margin'] ?? 0), 'orders_count' => (int) ($p['orders'] ?? 0), 'ad_spend' => (int) ($p['ads'] ?? 0)];
+        });
+
+        // Weekly revenue / net (daily is too long for the prompt).
+        $safe('weekly', fn () => collect($profit['daily'] ?? [])->groupBy(fn ($d) => Carbon::parse($d['date'])->startOfWeek()->toDateString())
+            ->map(fn ($g, $w) => ['week_of' => $w, 'revenue' => (int) $g->sum('revenue'), 'net' => (int) $g->sum('net'), 'ads' => (int) $g->sum('ads')])->values()->all());
+
+        // Cek Dana: money to claim / check (90 days).
+        $safe('money_check', function () use ($user) {
+            $m = MoneyCheck::scan($user);
+
+            return ['total_at_stake' => $m['total'], 'kinds' => collect($m['kinds'])->where('count', '>', 0)
+                ->map(fn ($k) => ['kind' => $k['title'], 'orders' => $k['count'], 'amount' => $k['amount'], 'examples' => collect($k['items'])->take(3)->pluck('order_sn')->filter()->values()])->values()->all()] ;
+        });
+
+        // Cek Margin: variants sold at a loss / thin margin at today's real price.
+        $safe('margin_check', function () use ($user) {
+            $m = MarginCheck::compute($user);
+            if (! $m['summary']['checked']) {
+                return null;
+            }
+
+            return $m['summary'] + ['worst' => collect($m['rows'])->whereIn('status', ['rugi', 'tipis'])->take(8)->map(fn ($r) => [
+                'shop' => $r['shop_name'], 'product' => $r['name'].($r['variant'] ? " ({$r['variant']})" : ''), 'price' => $r['price'], 'hpp' => $r['hpp'],
+                'fee' => $r['fee'], 'ads_per_unit' => $r['ad_per_unit'], 'margin' => $r['margin'], 'margin_pct' => $r['margin_pct'], 'min_safe_price' => $r['min_price'],
+            ])->values()->all()];
+        });
+
+        // Batas kirim: orders about to be late (penalty points).
+        $safe('ship_deadline', function () use ($user) {
+            $d = collect(\App\Support\Shopee\ShipDeadline::due($user));
+
+            return $d->isEmpty() ? null : ['late_now' => $d->where('late', true)->count(), 'due_within_6h' => $d->where('late', false)->where('hours_left', '<=', 6)->count(), 'due_within_24h' => $d->count()];
+        });
+
+        // Prediksi stok: SKUs running out / dead stock.
+        $safe('stock_forecast', function () use ($user) {
+            if (! StockMaster::where('user_id', $user->id)->exists()) {
+                return null;
+            }
+            $sum = RestockForecast::summary($user);
+            $cfg = RestockForecast::settings($user);
+            $masters = StockMaster::where('user_id', $user->id)->get();
+            $sold = RestockForecast::sold($masters->pluck('id')->all());
+            $urgent = $masters->map(fn ($m) => ['sku' => $m->sku, 'name' => $m->name, 'stock' => $m->stock] + RestockForecast::forecast($m, $sold[$m->id] ?? 0, $cfg))
+                ->whereIn('status', ['habis', 'kritis', 'segera'])->sortBy('days_left')->take(8)
+                ->map(fn ($x) => array_intersect_key($x, array_flip(['sku', 'name', 'stock', 'per_day', 'days_left', 'restock_qty', 'status'])))->values()->all();
+
+            return $sum + ['urgent' => $urgent];
+        });
+
+        // Ulasan: rating and the products collecting bad reviews.
+        $safe('reviews', function () use ($user, $from, $to) {
+            $q = \App\Models\ShopeeReview::where('user_id', $user->id)->whereBetween('reviewed_at', [$from->copy()->utc(), $to->copy()->utc()])->where('rating', '>', 0);
+            $total = (clone $q)->count();
+            if (! $total) {
+                return null;
+            }
+            $worst = (clone $q)->where('rating', '<=', 3)->selectRaw('item_id, COUNT(*) as n, AVG(rating) as avg')->groupBy('item_id')->orderByDesc('n')->limit(5)->get();
+            $names = MarketplaceListing::whereIn('item_id', $worst->pluck('item_id'))->pluck('name', 'item_id');
+
+            return ['total' => $total, 'average' => round((float) (clone $q)->avg('rating'), 2), 'low_1_3' => (clone $q)->where('rating', '<=', 3)->count(),
+                'unreplied_low' => (clone $q)->where('rating', '<=', 3)->whereNull('replied_at')->count(),
+                'worst_products' => $worst->map(fn ($w) => ['product' => $names[$w->item_id] ?? "Produk {$w->item_id}", 'bad_reviews' => (int) $w->n,
+                    'latest_complaints' => (clone $q)->where('item_id', $w->item_id)->where('rating', '<=', 3)->whereNotNull('comment')->latest('reviewed_at')->limit(2)->pluck('comment')->map(fn ($c) => mb_strimwidth($c, 0, 120, '…'))])->all()];
+        });
+
+        // Social & Web: COD returned to sender (RTS) and Meta Ads results.
+        $safe('cod', function () use ($user, $from, $to) {
+            $q = Order::where('user_id', $user->id)->where('channel', '!=', 'shopee')->where('payment_method', 'cod')->where('is_abandoned', false)
+                ->whereBetween('created_at', [$from->copy()->utc(), $to->copy()->utc()]);
+            $n = (clone $q)->count();
+            if (! $n) {
+                return null;
+            }
+            $rts = (clone $q)->where('shipping_status', 'returned')->count();
+            $shipped = (clone $q)->whereIn('shipping_status', ['picked_up', 'in_transit', 'delivered', 'returned'])->count();
+
+            return ['cod_orders' => $n, 'shipped' => $shipped, 'returned_rts' => $rts, 'rts_rate_pct' => $shipped ? round($rts / $shipped * 100, 1) : 0,
+                'cancelled' => (clone $q)->where('status', 'cancelled')->count()];
+        });
+        $safe('meta_ads', function () use ($user, $from, $to) {
+            $rows = \App\Models\MetaAdInsight::where('user_id', $user->id)->whereBetween('date', [$from->copy()->setTimezone(Dates::TZ)->toDateString(), $to->copy()->setTimezone(Dates::TZ)->toDateString()])
+                ->selectRaw('campaign_name, SUM(spend) spend, SUM(clicks) clicks, SUM(impressions) impressions, SUM(purchases) purchases, SUM(purchase_value) value, SUM(messages) messages')
+                ->groupBy('campaign_name')->orderByDesc('spend')->limit(10)->get();
+            if ($rows->isEmpty()) {
+                return null;
+            }
+
+            return ['total_spend' => (int) $rows->sum('spend'), 'campaigns' => $rows->map(fn ($r) => ['campaign' => $r->campaign_name, 'spend' => (int) $r->spend,
+                'purchases' => (int) $r->purchases, 'purchase_value' => (int) $r->value, 'messages' => (int) $r->messages,
+                'roas' => $r->spend > 0 ? round($r->value / $r->spend, 2) : null, 'ctr_pct' => $r->impressions > 0 ? round($r->clicks / $r->impressions * 100, 2) : null])->all()];
+        });
+
+        return $out;
+    }
+
+    /** Pesanin pages an action may point to (the AI may only use these links). */
+    public const LINKS = [
+        '/marketplace/money-check' => 'Cek Dana (klaim ongkir, paket hilang, retur)',
+        '/marketplace/margins' => 'Cek Margin (harga minimal per varian)',
+        '/marketplace/ads' => 'Iklan Shopee (jeda iklan, ubah target ROAS, Analisa AI Iklan)',
+        '/marketplace/products' => 'Semua Produk (isi HPP massal, ubah harga)',
+        '/marketplace/stock' => 'Stok Master (prediksi & saran restock)',
+        '/marketplace/promotions' => 'Promosi Shopee (diskon, voucher, paket)',
+        '/marketplace/reviews' => 'Ulasan (balas ulasan buruk, rating per produk)',
+        '/marketplace/health' => 'Kesehatan Akun (penalti, batas kirim)',
+        '/marketplace/orders' => 'Pesanan Shopee',
+        '/marketplace/product-performance' => 'Performa Produk',
+        '/reports/profit' => 'Laporan Laba Rugi',
+        '/reports/expenses' => 'Pengeluaran',
+        '/orders' => 'Pesanan Media Sosial (risiko COD)',
+        '/reports/meta-ads' => 'Laporan Meta Ads',
+        '/landing-pages' => 'Landing Page',
+        '/chat/quick-replies' => 'Balasan cepat & chat otomatis',
+    ];
+
+    /** Send the snapshot to Gemini and return the structured diagnosis. */
     public static function diagnose(string $apiKey, array $snapshot, ?string $question = null): array
     {
-        $jsonPayload = json_encode($snapshot, JSON_UNESCAPED_UNICODE);
-        $extraQ = $question ? "\nPertanyaan tambahan dari pemilik bisnis: \"{$question}\"" : '';
+        $json = json_encode($snapshot, JSON_UNESCAPED_UNICODE);
+        $links = collect(self::LINKS)->map(fn ($l, $u) => "- {$u} = {$l}")->implode("\n");
+        $q = $question ? "\nPERTANYAAN PEMILIK TOKO (jawab di `custom_answer`): \"".str_replace('"', "'", $question).'"' : '';
 
         $prompt = <<<PROMPT
-Anda adalah konsultan keuangan & strategi e-commerce senior untuk seller Indonesia (Shopee & Media Sosial).
-Analisis data bisnis nyata berikut (dalam Rupiah/IDR) untuk periode {$snapshot['period']['from']} s/d {$snapshot['period']['to']}:
-{$jsonPayload}
-{$extraQ}
+Anda konsultan keuangan & e-commerce senior untuk seller Indonesia (Shopee dan jualan lewat media sosial/website).
+Periode analisis: {$snapshot['period']['from']} s/d {$snapshot['period']['to']}. Semua angka dalam Rupiah.
 
-Tugas Anda:
-1. Hitung skor kesehatan bisnis (0-100) dan label ("Sehat", "Perlu Perhatian", atau "Kritis").
-2. Audit **masing-masing toko di `by_shop`** secara terpisah! Sebutkan nama toko, omzet, laba bersih, % potongan biaya platform, serta tindakan spesifik yang harus dilakukan di tiap toko tersebut.
-3. Identifikasi **kebocoran dana** paling nyata (sebutkan nama toko, nama iklan yang rugi/tanpa penjualan, produk yang marginnya negatif/tipis, potongan biaya platform, pesanan batal/retur, atau HPP yang belum terisi).
-4. Berikan saran konkret untuk **produk yang rugi** (sebutkan nama toko & produknya: naikkan harga berapa %, matikan iklan, atau cek biaya admin/gratis ongkir ekstra).
-5. Berikan strategi untuk **produk terlaris / paling untung** (sebutkan nama toko & produknya: cara scale-up, amankan stok, naikkan budget iklan).
-6. Audit **kampanye iklan (`ads_campaigns`)** secara spesifik (sebutkan nama toko & nama iklannya, bandingkan `roas_real` vs `break_even`, CTR, CR, dan beri keputusan jelas: *Matikan/Jeda*, *Naikkan Target ROAS ke angka `suggested_target`*, *Perbaiki Foto/Harga*, atau *Scale-Up* jika sehat).
-7. Jika ada pertanyaan tambahan dari pemilik bisnis, jawab langsung di `custom_answer` (atau null jika tidak ada pertanyaan).
-8. Susun rencana aksi 7 hari ke depan yang konkret dan terurut prioritasnya (cantumkan nama toko yang relevan).
+DATA BISNIS (JSON, nyata dari Pesanin):
+{$json}
+{$q}
 
-Balas HANYA dalam format JSON valid dengan struktur persis berikut:
+Arti blok data:
+- financials: laba rugi periode ini. previous_period: periode sebelumnya dengan panjang sama (untuk tren naik/turun). weekly: omzet & laba per minggu.
+- by_shop: per toko. best_products / loss_products: laba per produk (setelah HPP, potongan Shopee, iklan).
+- ads_campaigns / losing_ads: iklan Shopee (roas_real sudah termasuk PPN 11%, break_even = ROAS minimal agar tidak rugi).
+- money_check: dana yang bisa diklaim/dicek (ongkir dibebankan ke penjual, ongkir retur, paket hilang, retur menunggu).
+- margin_check: varian yang dijual rugi/tipis pada harga riil hari ini, beserta min_safe_price.
+- ship_deadline: pesanan yang hampir/sudah lewat batas kirim (berisiko poin penalti).
+- stock_forecast: SKU yang habis/kritis (restock_qty = saran jumlah) dan stok mati (dead_value = modal mengendap).
+- reviews: rating & produk dengan ulasan buruk. cod: COD dan RTS (paket kembali) jalur media sosial. meta_ads: iklan Meta.
+- financials.missing_hpp_count: produk tanpa HPP (laba belum akurat).
+
+ATURAN WAJIB:
+1. Gunakan HANYA angka yang ada di data. Jangan mengarang angka, nama toko, nama produk, atau nama iklan. Kalau data suatu blok tidak ada, jangan dibahas.
+2. Setiap temuan & saran harus menyebut angkanya (Rp, %, ROAS, jumlah) dan nama toko/produk/iklan yang tepat.
+3. Urutkan dari dampak Rupiah terbesar. Fokus pada hal yang bisa dikerjakan seller, bukan teori.
+4. Kolom `link` HANYA boleh salah satu dari daftar ini (atau null):
+{$links}
+5. Bahasa Indonesia yang lugas, sapaan "Anda", tanpa basa-basi. Kalimat pendek.
+6. Kalau financials.missing_hpp_count > 0, ingatkan bahwa laba belum akurat sampai HPP diisi.
+
+Balas HANYA JSON valid dengan struktur ini:
 {
-  "health_score": 75,
-  "health_label": "Perlu Perhatian",
-  "executive_summary": "Ringkasan 2-3 kalimat tentang kondisi laba bersih, omzet, dan masalah utama bisnis.",
-  "custom_answer": null,
-  "shops_audit": [
-    {
-      "shop_name": "Nama Toko",
-      "status": "Sehat",
-      "summary": "Omzet Rp..., laba bersih Rp..., potongan platform ...%.",
-      "action": "Tindakan spesifik yang harus dilakukan di toko ini."
-    }
-  ],
-  "ads_audit": [
-    {
-      "shop_name": "Nama Toko",
-      "campaign_name": "Nama Kampanye / Produk Iklan",
-      "verdict": "Matikan / Naikkan Target ROAS / Scale-Up",
-      "metrics": "Biaya Rp..., ROAS riil ...x (impas ...x), Laba/Rugi Rp...",
-      "action": "Keputusan konkret untuk iklan ini."
-    }
-  ],
-  "financial_leaks": [
-    {
-      "title": "Judul kebocoran dana",
-      "severity": "high",
-      "estimated_impact": "Rp...",
-      "detail": "Penjelasan singkat berbasis angka dari data.",
-      "action": "Langkah konkret untuk menutup kebocoran."
-    }
-  ],
-  "loss_products_advice": [
-    {
-      "product_name": "Nama produk",
-      "issue": "Rugi Rp... / margin tipis ...% karena ...",
-      "action": "Tindakan spesifik (naikkan harga / stop iklan / perbaiki HPP)."
-    }
-  ],
-  "best_products_advice": [
-    {
-      "product_name": "Nama produk",
-      "insight": "Kontribusi laba Rp... dengan margin ...%",
-      "action": "Strategi scale-up & jaga stok."
-    }
-  ],
-  "action_plan_7_days": [
-    "Hari 1-2: ...",
-    "Hari 3-4: ...",
-    "Hari 5-7: ..."
-  ]
+  "health_score": 0-100,
+  "health_label": "Sehat" | "Perlu Perhatian" | "Kritis",
+  "executive_summary": "2-3 kalimat: kondisi laba, tren vs periode lalu, masalah terbesar.",
+  "trend": {"direction": "naik" | "turun" | "stabil" | "tidak ada data", "summary": "Bandingkan omzet, laba, margin, iklan vs previous_period dengan angka."},
+  "custom_answer": null atau "jawaban pertanyaan pemilik toko berbasis data",
+  "quick_wins": [{"title": "Hal yang bisa dikerjakan HARI INI", "impact": "Rp... / alasan", "action": "langkah konkret", "link": "/..."}],
+  "financial_leaks": [{"title": "...", "severity": "high" | "medium" | "low", "estimated_impact": "Rp...", "detail": "berbasis angka", "action": "...", "link": "/..."}],
+  "shops_audit": [{"shop_name": "...", "status": "Sehat" | "Perlu Perhatian" | "Kritis", "summary": "omzet, laba, % potongan, batal/retur", "action": "...", "link": "/..."}],
+  "ads_audit": [{"shop_name": "...", "campaign_name": "...", "verdict": "Matikan" | "Naikkan Target ROAS" | "Scale-Up" | "Perbaiki Iklan" | "Pantau", "metrics": "Biaya Rp..., ROAS riil ...x vs impas ...x, laba/rugi Rp...", "action": "..."}],
+  "loss_products_advice": [{"product_name": "...", "issue": "rugi Rp... / margin ...% karena ...", "action": "naikkan harga ke Rp... (min_safe_price) / stop iklan / cek HPP", "link": "/..."}],
+  "best_products_advice": [{"product_name": "...", "insight": "laba Rp..., margin ...%", "action": "scale-up & amankan stok", "link": "/..."}],
+  "operations": [{"area": "Stok" | "Ulasan" | "Pengiriman" | "COD" | "Klaim Dana", "finding": "berbasis angka", "action": "...", "link": "/..."}],
+  "action_plan_7_days": [{"day": "Hari 1", "task": "tugas konkret", "link": "/..." }]
 }
+Maksimal: quick_wins 4, financial_leaks 6, ads_audit 10, loss_products_advice 6, best_products_advice 5, operations 6, action_plan_7_days 7.
 PROMPT;
 
-        $models = self::availableModels($apiKey);
-        $lastErr = 'Gagal menghubungi Gemini AI.';
-        foreach ($models as $model) {
-            $res = Http::timeout(45)->post(
-                "https://generativelanguage.googleapis.com/v1beta/{$model}:generateContent?key=".urlencode($apiKey),
-                [
-                    'contents' => [['parts' => [['text' => $prompt]]]],
-                    'generationConfig' => [
-                        'temperature' => 0.3,
-                        'responseMimeType' => 'application/json',
-                    ],
-                ]
-            );
-            if (! $res->successful()) {
-                $lastErr = $res->json('error.message') ?? "HTTP {$res->status()}";
-                continue;
-            }
-            $text = $res->json('candidates.0.content.parts.0.text');
-            if (! $text) {
-                $lastErr = 'Respons Gemini kosong.';
-                continue;
-            }
-            $clean = preg_replace('/^```json\s*|\s*```$/', '', trim($text));
-            $decoded = json_decode((string) $clean, true);
-            if (is_array($decoded) && isset($decoded['executive_summary'])) {
-                return $decoded + ['model' => str_replace('models/', '', $model), 'generated_at' => now()->toIso8601String()];
-            }
-            $lastErr = 'Format jawaban AI tidak sesuai.';
+        $d = Gemini::json($apiKey, $prompt, ['health_score', 'executive_summary']);
+
+        // Only known Pesanin pages as links; normalize lists so the page never breaks on a missing key.
+        $clean = function ($rows) {
+            return collect(is_array($rows) ? $rows : [])->filter(fn ($r) => is_array($r) || is_string($r))->map(function ($r) {
+                if (is_array($r) && array_key_exists('link', $r) && ! array_key_exists((string) $r['link'], self::LINKS)) {
+                    $r['link'] = null;
+                }
+
+                return $r;
+            })->values()->all();
+        };
+        foreach (['quick_wins', 'financial_leaks', 'shops_audit', 'ads_audit', 'loss_products_advice', 'best_products_advice', 'operations', 'action_plan_7_days'] as $k) {
+            $d[$k] = $clean($d[$k] ?? []);
         }
+        $d['health_score'] = max(0, min(100, (int) $d['health_score']));
 
-        throw new RuntimeException($lastErr);
-    }
-
-    /** Discover generateContent-capable models available for this API key, preferring newest flash/pro. */
-    private static function availableModels(string $apiKey): array
-    {
-        $fallback = ['models/gemini-3.1-pro-preview', 'models/gemini-3.8-flash', 'models/gemini-2.5-flash'];
-        try {
-            $res = Http::timeout(10)->get('https://generativelanguage.googleapis.com/v1beta/models', ['key' => $apiKey]);
-            if (! $res->successful()) {
-                return $fallback;
-            }
-            $list = collect($res->json('models', []))
-                ->filter(fn ($m) => in_array('generateContent', $m['supportedGenerationMethods'] ?? [], true))
-                ->pluck('name')
-                ->filter(fn ($n) => str_contains($n, 'gemini-') && ! str_contains($n, 'embedding') && ! str_contains($n, 'tts') && ! str_contains($n, 'image'))
-                ->sortByDesc(function ($n) {
-                    $score = 0;
-                    if (str_contains($n, 'gemini-3')) $score += 100;
-                    elseif (str_contains($n, 'gemini-2.5')) $score += 50;
-                    if (str_contains($n, 'flash')) $score += 20;
-                    if (str_contains($n, 'pro')) $score += 10;
-                    if (str_contains($n, 'lite')) $score -= 5;
-
-                    return $score;
-                })
-                ->values()
-                ->take(5)
-                ->all();
-
-            return $list ?: $fallback;
-        } catch (\Throwable) {
-            return $fallback;
-        }
+        return $d;
     }
 }

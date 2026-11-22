@@ -39,7 +39,7 @@ class Member
         ],
         'advertiser' => [
             '#^\w+ (reports|research|landing-pages|landing-reports|product-reports|rotator-stats|affiliate-stats)(/|$)#',
-            '#^(GET meta-ads(/report)?|PUT meta-ads/accounts|POST meta-ads/sync)$#', '#^GET marketplace/(ads|shops)$#', '#^\w+ marketplace/promotions(/|$)#', '#^GET marketplace/listings$#',
+            '#^(GET meta-ads(/report)?|PUT meta-ads/accounts|POST meta-ads/sync)$#', '#^GET marketplace/(ads|shops)$#', '#^\w+ marketplace/ads/ai$#', '#^\w+ marketplace/promotions(/|$)#', '#^GET marketplace/listings$#',
             '#^\w+ r/(pixels|ad-spends|rotators|affiliates|coupons)(/|$)#', '#^GET (products|orders)(/|$)#',
             '#^\w+ (broadcasts|whatsapp/templates)(/|$)#', '#^GET (customers|chat-labels)(/|$)#',
         ],

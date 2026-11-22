@@ -137,6 +137,7 @@ Route::middleware(['auth:sanctum', 'member', 'subscribed'])->group(function () {
     Route::post('/marketplace/orders/{id}/cancel', [\App\Http\Controllers\Api\ShopeeAfterSalesController::class, 'cancel'])->whereNumber('id')->middleware('throttle:20,1');
     Route::put('/marketplace/orders/{id}/note', [\App\Http\Controllers\Api\ShopeeAfterSalesController::class, 'note'])->whereNumber('id')->middleware('throttle:60,1');
     Route::get('/marketplace/balance', [MarketplaceController::class, 'balance']);
+    Route::get('/marketplace/balance/pending', fn (\Illuminate\Http\Request $r) => \App\Support\PendingFunds::breakdown($r->user(), $r->integer('shop_id') ?: null));
     Route::get('/marketplace/money-check', fn (\Illuminate\Http\Request $r) => \App\Support\MoneyCheck::scan($r->user(), $r->integer('shop_id') ?: null));
     Route::get('/marketplace/shops/{shop}/transactions', [MarketplaceController::class, 'transactions']);
     Route::get('/marketplace/shops/{shop}/transactions/export', [MarketplaceController::class, 'exportTransactions']);
@@ -213,6 +214,8 @@ Route::middleware(['auth:sanctum', 'member', 'subscribed'])->group(function () {
     Route::post('/marketplace/reviews/sync', [\App\Http\Controllers\Api\ShopeeReviewController::class, 'sync'])->middleware('throttle:10,1');
     Route::post('/marketplace/reviews/reply', [\App\Http\Controllers\Api\ShopeeReviewController::class, 'reply'])->middleware('throttle:30,1');
     Route::get('/marketplace/ads/guard', [\App\Http\Controllers\Api\AdsGuardController::class, 'index']);
+    Route::get('/marketplace/ads/ai', [\App\Http\Controllers\Api\AdsAiController::class, 'index']);
+    Route::post('/marketplace/ads/ai', [\App\Http\Controllers\Api\AdsAiController::class, 'analyze'])->middleware('throttle:10,1');
     Route::post('/marketplace/ads/guard/{campaign}', [\App\Http\Controllers\Api\AdsGuardController::class, 'action'])->whereNumber('campaign')->middleware('throttle:30,1');
     // Scan Out: bukti serah terima paket ke ekspedisi
     Route::controller(\App\Http\Controllers\Api\ScanOutController::class)->prefix('scan-out/sessions')->group(function () {
