@@ -196,7 +196,10 @@ class ShopeeChatController extends Controller
     public static function media(string $type, array $c): array
     {
         $first = fn (array $keys) => collect($keys)->map(fn ($k) => data_get($c, $k))->first(fn ($v) => is_string($v) && $v !== '');
-        $video = $type === 'video' ? $first(['video_url', 'url', 'video.url', 'video_info.video_url']) : null;
+        $video = $type === 'video' ? $first(['video_url', 'url', 'media_url', 'video.url', 'video_info.video_url', 'video_info.video_url_list.0.url', 'video_list.0.url']) : null;
+        if ($video && str_starts_with($video, '//')) {
+            $video = 'https:'.$video;
+        }
         $images = match ($type) {
             'video' => array_filter([$first(['thumb_url', 'thumb_image_url', 'cover_url', 'cover_image_url', 'image_url'])]),
             // Product / order cards are not photos the buyer sent.
