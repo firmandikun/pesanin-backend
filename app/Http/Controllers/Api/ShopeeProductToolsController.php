@@ -236,18 +236,18 @@ class ShopeeProductToolsController extends Controller
             ->whereBetween('created_at', [$fromUtc, $toUtc])
             ->whereNotIn('status', ['cancelled', 'refunded'])
             ->where(fn ($w) => $w->whereNull('external_status')->orWhereNotIn('external_status', ['CANCELLED', 'IN_CANCEL']))
-            ->get(['id', 'marketplace_shop_id', 'items', 'subtotal', 'marketplace_fee', 'fee_breakdown']);
+            ->get(['id', 'marketplace_shop_id', 'items', 'subtotal', 'marketplace_fee', 'escrow_amount', 'fee_breakdown']);
 
-        // Fallback Shopee fee rate per shop for orders whose escrow/fee_breakdown hasn't settled yet.
+        // Real Shopee fee rate per shop (fallback to MarginCheck::DEFAULT_FEE_RATE when no settled orders yet).
         $feeRates = \App\Models\Order::where('user_id', $userId)
             ->whereIn('marketplace_shop_id', $shops->pluck('id'))
             ->where('channel', 'shopee')
-            ->whereNotNull('fee_breakdown')->where('subtotal', '>', 0)
-            ->where('created_at', '>=', now()->subDays(60))
+            ->where('marketplace_fee', '>', 0)->where('subtotal', '>', 0)
+            ->where('created_at', '>=', now()->subDays(90))
             ->where(fn ($w) => $w->whereNull('external_status')->orWhereNotIn('external_status', ['CANCELLED', 'IN_CANCEL']))
             ->selectRaw('marketplace_shop_id, SUM(marketplace_fee) as fee, SUM(subtotal) as sub, COUNT(*) as n')
             ->groupBy('marketplace_shop_id')->get()
-            ->mapWithKeys(fn ($r) => [$r->marketplace_shop_id => $r->n >= 5 && $r->sub > 0 ? min(0.5, max(0, $r->fee / $r->sub)) : 0.0]);
+            ->mapWithKeys(fn ($r) => [$r->marketplace_shop_id => $r->n >= 1 && $r->sub > 0 ? min(0.5, max(0, $r->fee / $r->sub)) : \App\Support\MarginCheck::DEFAULT_FEE_RATE]);
 
         $periodSales = [];
         $variantSales = [];
@@ -264,10 +264,14 @@ class ShopeeProductToolsController extends Controller
                 $orderItemRevs[$idx] = $rev;
                 $orderTotalRev += $rev;
             }
+            $orderSub = (int) ($o->subtotal ?: $orderTotalRev);
             $orderFee = (int) ($o->marketplace_fee ?? 0);
-            if ($orderFee <= 0 && ! $o->fee_breakdown) {
-                $rate = (float) ($feeRates[$o->marketplace_shop_id] ?? 0);
-                $orderFee = (int) round(($o->subtotal ?: $orderTotalRev) * $rate);
+            if ($orderFee <= 0 && $o->escrow_amount !== null && $orderSub > (int) $o->escrow_amount) {
+                $orderFee = $orderSub - (int) $o->escrow_amount;
+            }
+            if ($orderFee <= 0) {
+                $rate = (float) ($feeRates[$o->marketplace_shop_id] ?? \App\Support\MarginCheck::DEFAULT_FEE_RATE);
+                $orderFee = (int) round($orderSub * $rate);
             }
             foreach ($orderItems as $idx => $it) {
                 $iid = (int) ($it['item_id'] ?? 0);
@@ -343,7 +347,7 @@ class ShopeeProductToolsController extends Controller
             $adGmv = $ad ? (int) round($ad['gmv']) : 0;
             $adRoas = $adExpense > 0 ? round($adGmv / $adExpense, 2) : 0;
 
-            $variantRows = $variants->map(function ($v) use ($key, $variantSales) {
+            $variantRows = $variants->map(function ($v) use ($key, $variantSales, $ps, $adExpense) {
                 $mid = (int) ($v->model_id ?? 0);
                 $vName = mb_strtolower(trim((string) ($v->model_name ?? '')));
                 $vs = ($mid > 0 ? ($variantSales["{$key}:m:{$mid}"] ?? null) : null)
@@ -351,6 +355,10 @@ class ShopeeProductToolsController extends Controller
                     ?? ($variantSales["{$key}:m:0"] ?? ['units' => 0, 'orders' => 0, 'revenue' => 0, 'fee' => 0]);
 
                 $hpp = (int) ($v->cost_price ?: $v->product?->cost_price ?: 0);
+                $varFee = (int) ($vs['fee'] ?? 0);
+                $varAd = ($adExpense > 0 && ($ps['revenue'] ?? 0) > 0)
+                    ? (int) round($adExpense * ($vs['revenue'] / $ps['revenue']))
+                    : 0;
 
                 return [
                     'id' => $v->id,
@@ -365,8 +373,9 @@ class ShopeeProductToolsController extends Controller
                     'period_units' => $vs['units'],
                     'period_orders' => $vs['orders'],
                     'period_revenue' => $vs['revenue'],
-                    'period_fee' => $vs['fee'] ?? 0,
-                    'period_net' => max(0, $vs['revenue'] - ($vs['fee'] ?? 0)),
+                    'period_fee' => $varFee,
+                    'period_ad' => $varAd,
+                    'period_net' => $vs['revenue'] - $varFee - $varAd,
                 ];
             })->sortByDesc('period_units')->values()->all();
 
@@ -404,7 +413,7 @@ class ShopeeProductToolsController extends Controller
                 'period_orders' => $ps['orders'],
                 'period_revenue' => $ps['revenue'],
                 'period_fee' => $ps['fee'] ?? 0,
-                'period_net' => max(0, $ps['revenue'] - ($ps['fee'] ?? 0)),
+                'period_net' => $ps['revenue'] - ($ps['fee'] ?? 0) - $adExpense,
                 'conversion_rate' => $views > 0 ? round(($sales / $views) * 100, 2) : 0,
                 'needs_attention' => $needsAttention,
                 'is_advertised' => $isAdvertised,
