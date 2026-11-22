@@ -125,5 +125,9 @@ class ShopeeAdsCreateTest extends TestCase
             'ok' => true,
             'campaign_ids' => [8801],
         ]);
+
+        Http::assertSent(fn ($req) => str_contains($req->url(), 'create_manual_product_ads')
+            && isset($req['start_date'])
+            && preg_match('/^\d{2}-\d{2}-\d{4}$/', $req['start_date']) === 1);
     }
 }

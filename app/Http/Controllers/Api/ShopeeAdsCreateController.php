@@ -140,9 +140,11 @@ class ShopeeAdsCreateController extends Controller
             ->where('is_demo', false)
             ->findOrFail($d['shop_id']);
 
-        $start = ! empty($d['start_date'])
-            ? Carbon::parse($d['start_date'], 'Asia/Jakarta')->startOfDay()->timestamp
-            : now('Asia/Jakarta')->timestamp;
+        $today = now('Asia/Jakarta')->startOfDay();
+        $startParsed = ! empty($d['start_date'])
+            ? Carbon::parse($d['start_date'], 'Asia/Jakarta')->startOfDay()
+            : $today;
+        $startDate = ($startParsed->lt($today) ? $today : $startParsed)->format('d-m-Y');
 
         $adMode = $d['ad_mode'] ?? 'individual';
         $bidding = $d['bidding_method'] === 'manual' ? 'manual' : 'auto';
@@ -153,12 +155,12 @@ class ShopeeAdsCreateController extends Controller
 
         $basePayload = [
             'budget' => $budgetMode === 'unlimited' ? 0 : (int) $d['budget'],
-            'start_time' => $start,
+            'start_date' => $startDate,
             'bidding_method' => $bidding,
             'enhanced_cpc' => $bidding === 'manual',
         ];
         if (! empty($d['end_date'])) {
-            $basePayload['end_time'] = Carbon::parse($d['end_date'], 'Asia/Jakarta')->endOfDay()->timestamp;
+            $basePayload['end_date'] = Carbon::parse($d['end_date'], 'Asia/Jakarta')->format('d-m-Y');
         }
 
         $created = [];
