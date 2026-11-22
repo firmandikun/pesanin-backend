@@ -212,6 +212,9 @@ Route::middleware(['auth:sanctum', 'member', 'subscribed'])->group(function () {
     Route::patch('/meta-ads/campaigns/{campaignId}', [\App\Http\Controllers\Api\MetaAdsController::class, 'updateCampaign'])->whereNumber('campaignId')->middleware('throttle:30,1');
     Route::delete('/meta-ads', [\App\Http\Controllers\Api\MetaAdsController::class, 'disconnect']);
     Route::get('/marketplace/ads', [MarketplaceController::class, 'ads']);
+    Route::get('/marketplace/ads/create/options', [\App\Http\Controllers\Api\ShopeeAdsCreateController::class, 'options']);
+    Route::get('/marketplace/ads/create/suggest', [\App\Http\Controllers\Api\ShopeeAdsCreateController::class, 'suggest']);
+    Route::post('/marketplace/ads/create', [\App\Http\Controllers\Api\ShopeeAdsCreateController::class, 'store'])->middleware('throttle:20,1');
     Route::get('/marketplace/health', [\App\Http\Controllers\Api\ShopeeHealthController::class, 'index'])->middleware('throttle:30,1');
     Route::get('/marketplace/reviews', [\App\Http\Controllers\Api\ShopeeReviewController::class, 'index']);
     Route::get('/marketplace/reviews/products', [\App\Http\Controllers\Api\ShopeeReviewController::class, 'products']);

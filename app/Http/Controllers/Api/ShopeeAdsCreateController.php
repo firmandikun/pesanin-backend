@@ -122,11 +122,15 @@ class ShopeeAdsCreateController extends Controller
     {
         $d = $request->validate([
             'shop_id' => 'required|integer',
-            'item_ids' => 'required|array|min:1|max:20',
+            'ad_mode' => 'nullable|in:individual,group',
+            'item_ids' => 'required|array|min:1|max:30',
             'item_ids.*' => 'integer|min:1',
-            'bidding_method' => 'required|in:auto,manual',
-            'budget' => 'required|integer|min:25000|max:1000000000',
+            'bidding_method' => 'required|in:auto,roas,manual',
+            'budget_mode' => 'nullable|in:unlimited,daily',
+            'budget' => 'nullable|integer|min:25000|max:1000000000',
             'roas_target' => 'nullable|numeric|min:0.5|max:100',
+            'targets' => 'nullable|array',
+            'targets.*' => 'nullable|numeric|min:0.5|max:100',
             'start_date' => 'nullable|date',
             'end_date' => 'nullable|date|after_or_equal:start_date',
         ]);
@@ -141,22 +145,48 @@ class ShopeeAdsCreateController extends Controller
             ? Carbon::parse($d['start_date'], 'Asia/Jakarta')->startOfDay()->timestamp
             : now('Asia/Jakarta')->timestamp;
 
-        $payload = [
-            'budget' => (int) $d['budget'],
-            'start_time' => $start,
-            'bidding_method' => $d['bidding_method'],
-            'item_id_list' => array_values(array_map('intval', $d['item_ids'])),
-            'enhanced_cpc' => $d['bidding_method'] === 'manual',
-        ];
-        if (! empty($d['end_date'])) {
-            $payload['end_time'] = Carbon::parse($d['end_date'], 'Asia/Jakarta')->endOfDay()->timestamp;
-        }
-        if ($d['bidding_method'] === 'auto' && ! empty($d['roas_target'])) {
-            $payload['roas_target'] = (float) $d['roas_target'];
+        $adMode = $d['ad_mode'] ?? 'individual';
+        $bidding = $d['bidding_method'] === 'manual' ? 'manual' : 'auto';
+        $budgetMode = $d['budget_mode'] ?? 'daily';
+        if ($budgetMode === 'daily' && empty($d['budget'])) {
+            abort(422, 'Isi modal harian minimal Rp25.000.');
         }
 
+        $basePayload = [
+            'budget' => $budgetMode === 'unlimited' ? 0 : (int) $d['budget'],
+            'start_time' => $start,
+            'bidding_method' => $bidding,
+            'enhanced_cpc' => $bidding === 'manual',
+        ];
+        if (! empty($d['end_date'])) {
+            $basePayload['end_time'] = Carbon::parse($d['end_date'], 'Asia/Jakarta')->endOfDay()->timestamp;
+        }
+
+        $created = [];
         try {
-            $res = (new ShopeeClient)->createManualProductAd($shop, $payload);
+            $api = new ShopeeClient;
+            if ($adMode === 'group') {
+                $payload = $basePayload + ['item_id_list' => array_values(array_map('intval', $d['item_ids']))];
+                if ($d['bidding_method'] === 'roas' && ! empty($d['roas_target'])) {
+                    $payload['roas_target'] = (float) $d['roas_target'];
+                }
+                $res = $api->createManualProductAd($shop, $payload);
+                if (! empty($res['campaign_id'])) {
+                    $created[] = $res['campaign_id'];
+                }
+            } else {
+                foreach (array_values(array_map('intval', $d['item_ids'])) as $iid) {
+                    $payload = $basePayload + ['item_id_list' => [$iid]];
+                    $t = $d['targets'][(string) $iid] ?? $d['roas_target'] ?? null;
+                    if ($d['bidding_method'] === 'roas' && $t) {
+                        $payload['roas_target'] = (float) $t;
+                    }
+                    $res = $api->createManualProductAd($shop, $payload);
+                    if (! empty($res['campaign_id'])) {
+                        $created[] = $res['campaign_id'];
+                    }
+                }
+            }
         } catch (ShopeeException $e) {
             abort(422, 'Shopee menolak pembuatan iklan: '.$e->getMessage());
         }
@@ -170,7 +200,7 @@ class ShopeeAdsCreateController extends Controller
 
         return [
             'ok' => true,
-            'campaign_id' => $res['campaign_id'] ?? null,
+            'campaign_ids' => $created,
         ];
     }
 }
