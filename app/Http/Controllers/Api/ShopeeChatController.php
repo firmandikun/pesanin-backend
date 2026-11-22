@@ -133,7 +133,7 @@ class ShopeeChatController extends Controller
                     'text' => $hasOrder && $m['text'] === '' ? '[Pesanan]' : $m['text'],
                 ] + $m;
             })
-            ->reject(fn ($m) => $m['system'] && $m['text'] === '' && ! $m['image'] && ! $m['video'] && ! $m['order_sn'])
+            ->reject(fn ($m) => $m['text'] === '' && ! $m['image'] && ! $m['video'] && ! $m['order_sn'])
             ->sortBy('at')->values();
         // Order cards: the Pesanin order behind each order number, so the bubble can show and open it.
         $sns = $messages->pluck('order_sn')->filter()->unique()->values()->all();
@@ -256,7 +256,7 @@ class ShopeeChatController extends Controller
     }
 
     /** Message kinds Pesanin shows as a chat bubble; anything else is a Shopee notice (AI assistant, system, …). */
-    public const BUBBLES = ['text', 'image', 'sticker', 'video', 'item', 'product', 'order', 'item_list'];
+    public const BUBBLES = ['text', 'image', 'image_text', 'text_image', 'rich_text', 'multi_image', 'sticker', 'video', 'item', 'product', 'order', 'item_list'];
 
     /** Order number a message refers to (order card, order tracking card, …). */
     public static function orderSn(array $c): ?string
@@ -270,14 +270,25 @@ class ShopeeChatController extends Controller
     /** Readable text inside any content shape (notices keep it under different keys). */
     public static function contentText(array $c): string
     {
-        foreach (['text', 'content', 'title', 'message', 'body', 'sub_title', 'preview_text', 'notification_text', 'desc', 'description', 'tips', 'content.text', 'content.message'] as $k) {
+        foreach (['text', 'caption', 'content', 'title', 'message', 'msg', 'body', 'sub_title', 'preview_text', 'notification_text', 'desc', 'description', 'tips', 'content.text', 'content.message'] as $k) {
             $v = data_get($c, $k);
             if (is_string($v) && trim($v) !== '') {
                 return trim($v);
             }
         }
+        // Fallback: recursively find the first human-readable non-URL string in nested Shopee payloads.
+        $found = '';
+        array_walk_recursive($c, function ($v) use (&$found) {
+            if ($found !== '' || ! is_string($v)) {
+                return;
+            }
+            $t = trim($v);
+            if ($t !== '' && ! preg_match('#^(https?:)?//#i', $t) && ! preg_match('/^[a-f0-9_-]{24,}$/i', $t) && mb_strlen($t) >= 2) {
+                $found = $t;
+            }
+        });
 
-        return '';
+        return $found;
     }
 
     /** Text for a message bubble or list preview; non-text messages get a label. */
