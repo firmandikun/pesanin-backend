@@ -620,6 +620,12 @@ class ShopeeClient
         ] + $payload)['response'] ?? [];
     }
 
+    /** Check whether the shop is eligible for Shop GMV Max (GMS) campaigns. */
+    public function checkGmsEligibility(MarketplaceShop $shop): array
+    {
+        return $this->get($shop, '/api/v2/ads/check_create_gms_product_campaign_eligibility')['response'] ?? [];
+    }
+
     /** Create a Shop GMV Max (GMS / Ad Group) campaign via Shopee Ads API. */
     public function createGmsProductCampaign(MarketplaceShop $shop, array $payload): array
     {

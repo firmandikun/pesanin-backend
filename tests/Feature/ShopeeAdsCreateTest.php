@@ -97,6 +97,7 @@ class ShopeeAdsCreateTest extends TestCase
 
         Http::fake([
             '*create_manual_product_ads*' => Http::response(['response' => ['campaign_id' => 8801]]),
+            '*check_create_gms_product_campaign_eligibility*' => Http::response(['response' => ['is_eligible' => true]]),
             '*create_gms_product_campaign*' => Http::response(['response' => ['campaign_id' => 9901]]),
             '*edit_gms_item_product_campaign*' => Http::response(['response' => ['campaign_id' => 9901]]),
             '*get_total_balance*' => Http::response(['response' => ['total_balance' => 100000]]),
@@ -122,7 +123,8 @@ class ShopeeAdsCreateTest extends TestCase
             'ad_mode' => 'group',
             'item_ids' => [111, 222],
             'bidding_method' => 'auto',
-            'budget_mode' => 'unlimited',
+            'budget_mode' => 'daily',
+            'budget' => 50000,
         ])->assertOk()->assertJson([
             'ok' => true,
             'campaign_ids' => [9901],

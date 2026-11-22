@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Models\ActivityLog;
 use App\Models\MarketplaceListing;
 use App\Models\MarketplaceShop;
+use App\Models\Order;
 use App\Models\ShopeeAdCampaign;
 use App\Support\Shopee\ShopeeClient;
 use App\Support\Shopee\ShopeeException;
@@ -58,11 +59,25 @@ class ShopeeAdsCreateController extends Controller
 
         $listings = MarketplaceListing::where('marketplace_shop_id', $shop->id)
             ->where('status', 'NORMAL')
-            ->get(['id', 'item_id', 'name', 'sku', 'image', 'price', 'stock']);
+            ->with('product:id,cost_price')
+            ->get(['id', 'product_id', 'item_id', 'name', 'sku', 'image', 'price', 'cost_price', 'stock']);
+
+        $feeOrders = Order::where('marketplace_shop_id', $shop->id)
+            ->where('marketplace_fee', '>', 0)
+            ->where('subtotal', '>', 0)
+            ->latest('id')
+            ->limit(30)
+            ->get(['subtotal', 'marketplace_fee']);
+        $avgFeePct = $feeOrders->isNotEmpty()
+            ? round(($feeOrders->sum('marketplace_fee') / max(1, $feeOrders->sum('subtotal'))) * 100, 1)
+            : 0.0;
 
         $products = $listings->groupBy('item_id')->map(function ($group, $itemId) use ($recSet, $advertisedIds) {
             $first = $group->first();
             $iid = (int) $itemId;
+            $cost = (int) ($group->pluck('cost_price')->filter(fn ($v) => $v > 0)->min()
+                ?: $first->product?->cost_price
+                ?: 0);
 
             return [
                 'item_id' => $iid,
@@ -70,6 +85,7 @@ class ShopeeAdsCreateController extends Controller
                 'sku' => $group->pluck('sku')->filter()->first(),
                 'image' => $first->image,
                 'price' => (int) $group->min('price'),
+                'cost_price' => $cost,
                 'stock' => (int) $group->sum('stock'),
                 'recommended' => isset($recSet[$iid]),
                 'already_advertised' => isset($advertisedIds[$iid]),
@@ -79,6 +95,7 @@ class ShopeeAdsCreateController extends Controller
         return [
             'shops' => $shops->map(fn ($s) => ['id' => $s->id, 'shop_name' => $s->shop_name])->values(),
             'shop_id' => $shop->id,
+            'shop_fee_pct' => $avgFeePct,
             'products' => $products,
         ];
     }
@@ -99,6 +116,7 @@ class ShopeeAdsCreateController extends Controller
         $api = new ShopeeClient;
         $budget = null;
         $roi = null;
+        $categoryName = null;
         try {
             $b = $api->adsBudgetSuggestion($shop, (int) $d['item_id'], $d['bidding_method'] ?? 'auto');
             $budget = (int) round((float) ($b['suggested_budget'] ?? $b['budget'] ?? $b['min_budget'] ?? 0)) ?: null;
@@ -110,10 +128,20 @@ class ShopeeAdsCreateController extends Controller
             $roi = $val > 0 ? round($val, 1) : null;
         } catch (Throwable) {
         }
+        try {
+            $item = $api->itemBaseInfo($shop, [(int) $d['item_id']])[0] ?? null;
+            $catId = (int) ($item['category_id'] ?? 0);
+            if ($catId > 0) {
+                $cat = collect($api->categories($shop))->firstWhere('id', $catId);
+                $categoryName = $cat['name'] ?? null;
+            }
+        } catch (Throwable) {
+        }
 
         return [
             'budget_suggested' => $budget,
             'roi_suggested' => $roi,
+            'category_name' => $categoryName,
         ];
     }
 
@@ -163,6 +191,14 @@ class ShopeeAdsCreateController extends Controller
         try {
             $api = new ShopeeClient;
             if ($adMode === 'group') {
+                if ($budgetMode === 'unlimited' || $budgetValue < 25000) {
+                    abort(422, 'Grup Iklan (Shop GMV Max) Shopee mewajibkan Modal Harian minimal Rp25.000 (tidak bisa Tak Terbatas).');
+                }
+                $elig = $api->checkGmsEligibility($shop);
+                if (isset($elig['is_eligible']) && ! $elig['is_eligible']) {
+                    $reason = $elig['reason'] ?? $elig['ineligible_reason'] ?? '';
+                    abort(422, 'Toko ini belum memenuhi syarat Shopee untuk Grup Iklan (Shop GMV Max) via API'.($reason ? ": {$reason}" : '.').' Silakan gunakan mode Iklan Individual.');
+                }
                 // Grup Iklan uses Shop GMV Max (GMS): create campaign then attach items via edit_gms_item_product_campaign.
                 $gmsPayload = [
                     'start_date' => $startDate,
@@ -174,7 +210,11 @@ class ShopeeAdsCreateController extends Controller
                 if ($endDate) {
                     $gmsPayload['end_date'] = $endDate;
                 }
-                $res = $api->createGmsProductCampaign($shop, $gmsPayload);
+                try {
+                    $res = $api->createGmsProductCampaign($shop, $gmsPayload);
+                } catch (ShopeeException $e) {
+                    abort(422, 'Shopee menolak pembuatan Grup Iklan (Shop GMV Max): '.$e->getMessage().'. Jika fitur Grup Iklan belum aktif di API toko ini, silakan gunakan mode Iklan Individual.');
+                }
                 $cid = (int) ($res['campaign_id'] ?? 0);
                 if ($cid > 0) {
                     $api->editGmsItemProductCampaign($shop, $cid, 'add', $itemIds);
