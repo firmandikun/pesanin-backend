@@ -206,6 +206,7 @@ Route::middleware(['auth:sanctum', 'member', 'subscribed'])->group(function () {
     Route::put('/meta-ads/accounts', [\App\Http\Controllers\Api\MetaAdsController::class, 'accounts']);
     Route::post('/meta-ads/sync', [\App\Http\Controllers\Api\MetaAdsController::class, 'sync'])->middleware('throttle:10,1');
     Route::get('/meta-ads/report', [\App\Http\Controllers\Api\MetaAdsController::class, 'report']);
+    Route::get('/meta-ads/destinations', [\App\Http\Controllers\Api\MetaAdsController::class, 'destinations']);
     Route::get('/meta-ads/campaigns', [\App\Http\Controllers\Api\MetaAdsController::class, 'campaigns']);
     Route::post('/meta-ads/campaigns', [\App\Http\Controllers\Api\MetaAdsController::class, 'createCampaign'])->middleware('throttle:20,1');
     Route::patch('/meta-ads/campaigns/{campaignId}', [\App\Http\Controllers\Api\MetaAdsController::class, 'updateCampaign'])->whereNumber('campaignId')->middleware('throttle:30,1');

@@ -108,36 +108,74 @@ class MetaAds
         ]);
     }
 
-    /** Create an Ad Set inside a campaign targeting Indonesia (18-65). */
-    public function createAdSet(string $accountId, string $campaignId, string $name, string $optimizationGoal = 'LINK_CLICKS', string $status = 'PAUSED'): array
+    /** Create an Ad Set inside a campaign with targeting, schedule, and placements. */
+    public function createAdSet(string $accountId, string $campaignId, string $name, string $optimizationGoal = 'LINK_CLICKS', string $status = 'PAUSED', array $opts = []): array
     {
-        return $this->post("{$accountId}/adsets", [
+        $targeting = [
+            'geo_locations' => ['countries' => ['ID']],
+            'age_min' => max(18, min(65, (int) ($opts['age_min'] ?? 18))),
+            'age_max' => max(18, min(65, (int) ($opts['age_max'] ?? 65))),
+        ];
+        if (! empty($opts['gender']) && in_array((int) $opts['gender'], [1, 2], true)) {
+            $targeting['genders'] = [(int) $opts['gender']];
+        }
+        if (($opts['placement'] ?? 'auto') === 'facebook') {
+            $targeting['publisher_platforms'] = ['facebook'];
+        } elseif (($opts['placement'] ?? 'auto') === 'instagram') {
+            $targeting['publisher_platforms'] = ['instagram'];
+        }
+
+        $payload = [
             'name' => $name,
             'campaign_id' => $campaignId,
             'billing_event' => 'IMPRESSIONS',
             'optimization_goal' => $optimizationGoal,
-            'targeting' => json_encode([
-                'geo_locations' => ['countries' => ['ID']],
-                'age_min' => 18,
-                'age_max' => 65,
-            ]),
+            'targeting' => json_encode($targeting),
             'status' => $status,
-        ]);
+        ];
+        if (! empty($opts['start_time'])) {
+            $payload['start_time'] = $opts['start_time'];
+        }
+        if (! empty($opts['end_time'])) {
+            $payload['end_time'] = $opts['end_time'];
+        }
+
+        return $this->post("{$accountId}/adsets", $payload);
+    }
+
+    /** Upload an image file to the ad account and return its Meta image_hash. */
+    public function uploadAdImage(string $accountId, string $filePath, string $filename): string
+    {
+        $res = $this->send(
+            Http::timeout(60)->acceptJson()
+                ->attach('filename', file_get_contents($filePath), $filename)
+                ->post(self::graph("{$accountId}/adimages"), ['access_token' => $this->token])
+        );
+        $images = $res['images'] ?? [];
+        $first = reset($images);
+        if (! is_array($first) || empty($first['hash'])) {
+            throw new RuntimeException('Meta: gagal mengunggah gambar iklan.');
+        }
+
+        return (string) $first['hash'];
     }
 
     /** Create a Link Ad Creative + Ad under an Ad Set. */
-    public function createLinkAd(string $accountId, string $adSetId, string $name, string $pageId, string $linkUrl, string $message, string $headline = '', string $status = 'PAUSED'): array
+    public function createLinkAd(string $accountId, string $adSetId, string $name, string $pageId, string $linkUrl, string $message, string $headline = '', string $status = 'PAUSED', array $opts = []): array
     {
+        $linkData = array_filter([
+            'link' => $linkUrl,
+            'message' => $message,
+            'name' => $headline ?: null,
+            'description' => ! empty($opts['description']) ? $opts['description'] : null,
+            'image_hash' => ! empty($opts['image_hash']) ? $opts['image_hash'] : null,
+            'call_to_action' => ['type' => $opts['cta'] ?? 'SHOP_NOW', 'value' => ['link' => $linkUrl]],
+        ]);
         $creative = $this->post("{$accountId}/adcreatives", [
             'name' => $name.' Creative',
             'object_story_spec' => json_encode([
                 'page_id' => $pageId,
-                'link_data' => array_filter([
-                    'link' => $linkUrl,
-                    'message' => $message,
-                    'name' => $headline ?: null,
-                    'call_to_action' => ['type' => 'SHOP_NOW', 'value' => ['link' => $linkUrl]],
-                ]),
+                'link_data' => $linkData,
             ]),
         ]);
 

@@ -4,9 +4,13 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Models\ActivityLog;
+use App\Models\LandingPage;
 use App\Models\MetaAdInsight;
+use App\Models\Product;
+use App\Models\TrackingPixel;
 use App\Models\User;
 use App\Models\UserIntegration;
+use App\Models\WaRotator;
 use App\Support\Meta\MetaAds;
 use App\Support\Meta\MetaAdsSync;
 use App\Support\Traffic;
@@ -185,6 +189,36 @@ class MetaAdsController extends Controller
         }
     }
 
+    /** Pesanin Landing Pages, Medsos Products (/c/slug), and WA Rotators (/wa/slug) ready to advertise. */
+    public function destinations(Request $request)
+    {
+        $uid = $request->user()->id;
+        $front = rtrim(config('services.frontend_url'), '/');
+        $hasGlobalPixel = TrackingPixel::where('user_id', $uid)->where('platform', 'facebook')->where('all_pages', true)->exists();
+
+        return [
+            'has_global_fb_pixel' => $hasGlobalPixel,
+            'landing_pages' => LandingPage::where('user_id', $uid)->where('status', '!=', 'archived')->latest('id')
+                ->get(['id', 'title', 'slug', 'status', 'product_id'])
+                ->map(fn ($lp) => [
+                    'id' => $lp->id, 'title' => $lp->title, 'slug' => $lp->slug, 'status' => $lp->status,
+                    'product_id' => $lp->product_id, 'url' => "{$front}/p/{$lp->slug}",
+                ])->values(),
+            'products' => Product::where('user_id', $uid)->where('status', 'active')->latest('id')
+                ->get(['id', 'name', 'slug', 'price', 'sale_price', 'images', 'pixels'])
+                ->map(fn ($p) => [
+                    'id' => $p->id, 'name' => $p->name, 'slug' => $p->slug, 'price' => (int) ($p->sale_price ?: $p->price),
+                    'image' => is_array($p->images) ? ($p->images[0] ?? null) : null,
+                    'has_pixel' => $hasGlobalPixel || ! empty($p->pixels['facebook']),
+                    'url' => "{$front}/c/{$p->slug}",
+                ])->values(),
+            'wa_rotators' => WaRotator::where('user_id', $uid)->where('is_active', true)->latest('id')
+                ->get(['id', 'name', 'slug'])
+                ->map(fn ($w) => ['id' => $w->id, 'name' => $w->name, 'slug' => $w->slug, 'url' => "{$front}/wa/{$w->slug}"])
+                ->values(),
+        ];
+    }
+
     /** Create a new Meta Ads campaign (and optionally an Ad Set + Link Ad). */
     public function createCampaign(Request $request)
     {
@@ -202,6 +236,15 @@ class MetaAdsController extends Controller
             'link_url' => 'nullable|url|max:1000',
             'message' => 'nullable|string|max:2000',
             'headline' => 'nullable|string|max:200',
+            'description' => 'nullable|string|max:300',
+            'cta' => 'nullable|in:SHOP_NOW,ORDER_NOW,LEARN_MORE,SEND_MESSAGE,SIGN_UP',
+            'age_min' => 'nullable|integer|min:18|max:65',
+            'age_max' => 'nullable|integer|min:18|max:65',
+            'gender' => 'nullable|integer|in:0,1,2',
+            'placement' => 'nullable|in:auto,facebook,instagram',
+            'start_time' => 'nullable|date',
+            'end_time' => 'nullable|date|after:start_time',
+            'image' => 'nullable|image|max:8192',
         ]);
         try {
             $accounts = Cache::remember("meta:accounts:{$i->id}", 300, fn () => $api->adAccounts());
@@ -219,18 +262,34 @@ class MetaAdsController extends Controller
                     'OUTCOME_AWARENESS' => 'REACH',
                     default => 'LINK_CLICKS',
                 };
+                $adSetOpts = [
+                    'age_min' => $d['age_min'] ?? 18,
+                    'age_max' => max((int) ($d['age_min'] ?? 18), (int) ($d['age_max'] ?? 65)),
+                    'gender' => $d['gender'] ?? 0,
+                    'placement' => $d['placement'] ?? 'auto',
+                    'start_time' => ! empty($d['start_time']) ? Carbon::parse($d['start_time'])->toIso8601String() : null,
+                    'end_time' => ! empty($d['end_time']) ? Carbon::parse($d['end_time'])->toIso8601String() : null,
+                ];
                 // Fall back to LINK_CLICKS if OFFSITE_CONVERSIONS/LEAD_GENERATION requires pixel/form setup.
                 try {
-                    $adSetId = $api->createAdSet($d['account_id'], $campaignId, trim($d['name']).' - Ad Set', $goal, $status)['id'] ?? null;
+                    $adSetId = $api->createAdSet($d['account_id'], $campaignId, trim($d['name']).' - Ad Set', $goal, $status, $adSetOpts)['id'] ?? null;
                 } catch (Throwable) {
-                    $adSetId = $api->createAdSet($d['account_id'], $campaignId, trim($d['name']).' - Ad Set', 'LINK_CLICKS', $status)['id'] ?? null;
+                    $adSetId = $api->createAdSet($d['account_id'], $campaignId, trim($d['name']).' - Ad Set', 'LINK_CLICKS', $status, $adSetOpts)['id'] ?? null;
                 }
                 if ($adSetId) {
+                    $imageHash = null;
+                    if ($file = $request->file('image')) {
+                        $imageHash = $api->uploadAdImage($d['account_id'], $file->getRealPath(), $file->getClientOriginalName());
+                    }
                     $sep = str_contains($d['link_url'], '?') ? '&' : '?';
                     $utmUrl = str_contains($d['link_url'], 'utm_campaign=')
                         ? $d['link_url']
                         : $d['link_url'].$sep.'utm_source=facebook&utm_campaign='.rawurlencode(trim($d['name']));
-                    $adId = $api->createLinkAd($d['account_id'], $adSetId, trim($d['name']).' - Iklan', $d['page_id'], $utmUrl, trim($d['message'] ?? $d['name']), trim($d['headline'] ?? ''), $status)['id'] ?? null;
+                    $adId = $api->createLinkAd($d['account_id'], $adSetId, trim($d['name']).' - Iklan', $d['page_id'], $utmUrl, trim($d['message'] ?? $d['name']), trim($d['headline'] ?? ''), $status, [
+                        'description' => trim($d['description'] ?? ''),
+                        'cta' => $d['cta'] ?? 'SHOP_NOW',
+                        'image_hash' => $imageHash,
+                    ])['id'] ?? null;
                 }
             }
             ActivityLog::record($request->user(), 'meta_ads.create', "Membuat kampanye Meta {$d['name']}");
