@@ -153,34 +153,51 @@ class ShopeeAdsCreateController extends Controller
             abort(422, 'Isi modal harian minimal Rp25.000.');
         }
 
-        $basePayload = [
-            'budget' => $budgetMode === 'unlimited' ? 0 : (int) $d['budget'],
-            'start_date' => $startDate,
-            'bidding_method' => $bidding,
-            'enhanced_cpc' => $bidding === 'manual',
-        ];
-        if (! empty($d['end_date'])) {
-            $basePayload['end_date'] = Carbon::parse($d['end_date'], 'Asia/Jakarta')->format('d-m-Y');
-        }
+        $budgetValue = $budgetMode === 'unlimited' ? 0 : (int) $d['budget'];
+        $endDate = ! empty($d['end_date'])
+            ? Carbon::parse($d['end_date'], 'Asia/Jakarta')->format('d-m-Y')
+            : null;
+        $itemIds = array_values(array_map('intval', $d['item_ids']));
 
         $created = [];
         try {
             $api = new ShopeeClient;
             if ($adMode === 'group') {
-                $payload = $basePayload + ['item_id_list' => array_values(array_map('intval', $d['item_ids']))];
-                if ($d['bidding_method'] === 'roas' && ! empty($d['roas_target'])) {
-                    $payload['roas_target'] = (float) $d['roas_target'];
+                // Grup Iklan uses Shop GMV Max (GMS): create campaign then attach items via edit_gms_item_product_campaign.
+                $gmsPayload = [
+                    'start_date' => $startDate,
+                    'daily_budget' => $budgetValue,
+                    'roas_target' => $d['bidding_method'] === 'roas' && ! empty($d['roas_target'])
+                        ? round((float) $d['roas_target'], 1)
+                        : 0,
+                ];
+                if ($endDate) {
+                    $gmsPayload['end_date'] = $endDate;
                 }
-                $res = $api->createManualProductAd($shop, $payload);
-                if (! empty($res['campaign_id'])) {
-                    $created[] = $res['campaign_id'];
+                $res = $api->createGmsProductCampaign($shop, $gmsPayload);
+                $cid = (int) ($res['campaign_id'] ?? 0);
+                if ($cid > 0) {
+                    $api->editGmsItemProductCampaign($shop, $cid, 'add', $itemIds);
+                    $created[] = $cid;
                 }
             } else {
-                foreach (array_values(array_map('intval', $d['item_ids'])) as $iid) {
-                    $payload = $basePayload + ['item_id_list' => [$iid]];
+                // Iklan Individual uses v2.ads.create_manual_product_ads with singular `item_id`.
+                $basePayload = [
+                    'budget' => $budgetValue,
+                    'start_date' => $startDate,
+                    'bidding_method' => $bidding,
+                ];
+                if ($bidding === 'manual') {
+                    $basePayload['enhanced_cpc'] = true;
+                }
+                if ($endDate) {
+                    $basePayload['end_date'] = $endDate;
+                }
+                foreach ($itemIds as $iid) {
+                    $payload = $basePayload + ['item_id' => $iid];
                     $t = $d['targets'][(string) $iid] ?? $d['roas_target'] ?? null;
                     if ($d['bidding_method'] === 'roas' && $t) {
-                        $payload['roas_target'] = (float) $t;
+                        $payload['roas_target'] = round((float) $t, 1);
                     }
                     $res = $api->createManualProductAd($shop, $payload);
                     if (! empty($res['campaign_id'])) {

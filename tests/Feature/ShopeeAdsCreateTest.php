@@ -97,6 +97,8 @@ class ShopeeAdsCreateTest extends TestCase
 
         Http::fake([
             '*create_manual_product_ads*' => Http::response(['response' => ['campaign_id' => 8801]]),
+            '*create_gms_product_campaign*' => Http::response(['response' => ['campaign_id' => 9901]]),
+            '*edit_gms_item_product_campaign*' => Http::response(['response' => ['campaign_id' => 9901]]),
             '*get_total_balance*' => Http::response(['response' => ['total_balance' => 100000]]),
             '*get_all_cpc_ads_daily_performance*' => Http::response(['response' => []]),
             '*get_product_level_campaign_id_list*' => Http::response(['response' => ['has_next_page' => false, 'campaign_list' => []]]),
@@ -123,11 +125,22 @@ class ShopeeAdsCreateTest extends TestCase
             'budget_mode' => 'unlimited',
         ])->assertOk()->assertJson([
             'ok' => true,
-            'campaign_ids' => [8801],
+            'campaign_ids' => [9901],
         ]);
 
         Http::assertSent(fn ($req) => str_contains($req->url(), 'create_manual_product_ads')
+            && isset($req['item_id'])
+            && ! isset($req['item_id_list'])
             && isset($req['start_date'])
             && preg_match('/^\d{2}-\d{2}-\d{4}$/', $req['start_date']) === 1);
+
+        Http::assertSent(fn ($req) => str_contains($req->url(), 'create_gms_product_campaign')
+            && isset($req['daily_budget'])
+            && isset($req['start_date']));
+
+        Http::assertSent(fn ($req) => str_contains($req->url(), 'edit_gms_item_product_campaign')
+            && ($req['campaign_id'] ?? null) === 9901
+            && ($req['edit_action'] ?? null) === 'add'
+            && ($req['item_id_list'] ?? null) === [111, 222]);
     }
 }

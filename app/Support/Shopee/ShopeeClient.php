@@ -612,12 +612,30 @@ class ShopeeClient
         ] + $extra)['response'] ?? [];
     }
 
-    /** Create a manual product ad (individual or ad group) via Shopee Ads API. */
+    /** Create a manual product ad (individual item) via Shopee Ads API. */
     public function createManualProductAd(MarketplaceShop $shop, array $payload): array
     {
         return $this->post($shop, '/api/v2/ads/create_manual_product_ads', [
             'reference_id' => 'pesanin-create-'.\Illuminate\Support\Str::random(14),
         ] + $payload)['response'] ?? [];
+    }
+
+    /** Create a Shop GMV Max (GMS / Ad Group) campaign via Shopee Ads API. */
+    public function createGmsProductCampaign(MarketplaceShop $shop, array $payload): array
+    {
+        return $this->post($shop, '/api/v2/ads/create_gms_product_campaign', [
+            'reference_id' => 'pesanin-gms-'.\Illuminate\Support\Str::random(14),
+        ] + $payload)['response'] ?? [];
+    }
+
+    /** Add or remove items from a Shop GMV Max (GMS / Ad Group) campaign. */
+    public function editGmsItemProductCampaign(MarketplaceShop $shop, int $campaignId, string $action, array $itemIds): array
+    {
+        return $this->post($shop, '/api/v2/ads/edit_gms_item_product_campaign', [
+            'campaign_id' => $campaignId,
+            'edit_action' => $action,
+            'item_id_list' => array_values(array_map('intval', $itemIds)),
+        ])['response'] ?? [];
     }
 
     /** Recommended items for product ads. */
