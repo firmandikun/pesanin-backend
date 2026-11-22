@@ -200,8 +200,8 @@ class ShopeeChatController extends Controller
         $images = match ($type) {
             'video' => array_filter([$first(['thumb_url', 'thumb_image_url', 'cover_url', 'cover_image_url', 'image_url'])]),
             // Product / order cards are not photos the buyer sent.
-            'text', 'item', 'product', 'item_list', 'order' => [],
-            // Photos, stickers and any other kind (e.g. "image + text" in one message): every image link inside.
+            'item', 'product', 'item_list', 'order' => [],
+            // Photos, stickers, text+image and any other kind: every image link inside.
             default => self::imageUrls($c),
         };
 
@@ -222,11 +222,12 @@ class ShopeeChatController extends Controller
                 foreach ($v as $k => $x) {
                     $walk($x, is_string($k) ? $k : $key);
                 }
-            } elseif (is_string($v) && preg_match('#^https?://#i', $v) && ! preg_match('/\.(mp4|mov|m3u8)(\?|$)/i', $v)
+            } elseif (is_string($v) && preg_match('#^(https?:)?//#i', $v) && ! preg_match('/\.(mp4|mov|m3u8)(\?|$)/i', $v)
                 && ! preg_match('/video/i', (string) $key)
                 // Prefer the full image over its thumbnail when both are there.
                 && (preg_match('#/file/|\.(jpe?g|png|gif|webp)(\?|$)|susercontent|img#i', $v) || preg_match('/url|image|img|pic|photo/i', (string) $key))) {
-                $out[] = ['url' => $v, 'thumb' => (bool) preg_match('/thumb/i', (string) $key)];
+                $url = str_starts_with($v, '//') ? 'https:'.$v : $v;
+                $out[] = ['url' => $url, 'thumb' => (bool) preg_match('/thumb/i', (string) $key)];
             }
         };
         $walk($c);
@@ -280,8 +281,8 @@ class ShopeeChatController extends Controller
     public static function preview(string $type, array $content): string
     {
         return match ($type) {
-            'text' => (string) ($content['text'] ?? ''),
-            'image' => '[Gambar]', 'sticker' => '[Stiker]', 'video' => '[Video]',
+            'text' => (string) ($content['text'] ?? '') ?: self::contentText($content),
+            'image' => self::contentText($content) ?: '[Gambar]', 'sticker' => '[Stiker]', 'video' => '[Video]',
             'item', 'product' => '[Produk]', 'order' => self::contentText($content) ?: '[Pesanan]', 'item_list' => '[Produk]',
             default => self::contentText($content),
         };
