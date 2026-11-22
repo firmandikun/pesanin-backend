@@ -64,8 +64,14 @@ class ScanOut
     public static function record(ScanOutSession $session, string $raw, ?string $by = null): array
     {
         $code = self::normalize($raw);
+        if (preg_match('#^(HTTPS?://|WWW\.)#i', $code) || str_contains($code, '://') || str_contains($code, '/SCAN/')) {
+            return ['status' => 'invalid', 'message' => 'Ini QR link / URL, bukan barcode resi paket. Arahkan kamera ke barcode resi di label pengiriman.', 'parcel' => null];
+        }
         if (mb_strlen($code) < 6 || mb_strlen($code) > 100) {
             return ['status' => 'invalid', 'message' => 'Kode terlalu pendek/panjang, scan ulang barcode resi.', 'parcel' => null];
+        }
+        if (! preg_match('/^[A-Z0-9\-_]+$/', $code)) {
+            return ['status' => 'invalid', 'message' => 'Format bukan nomor resi yang valid. Scan ulang barcode resi di label pengiriman.', 'parcel' => null];
         }
         $user = $session->user;
         $order = self::findOrder($user, $code);
