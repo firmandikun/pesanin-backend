@@ -13,7 +13,9 @@ return Application::configure(basePath: dirname(__DIR__))
         health: '/up',
     )
     ->withMiddleware(function (Middleware $middleware): void {
-        $middleware->alias(['member' => \App\Http\Middleware\MemberAccess::class, 'admin' => \App\Http\Middleware\PlatformAdmin::class, 'subscribed' => \App\Http\Middleware\EnsureSubscribed::class]);
+        $middleware->alias(['member' => \App\Http\Middleware\MemberAccess::class, 'admin' => \App\Http\Middleware\PlatformAdmin::class, 'subscribed' => \App\Http\Middleware\EnsureSubscribed::class,
+            // Rate limits counted per route (Laravel's default shares one counter across all throttled routes).
+            'throttle' => \App\Http\Middleware\ThrottlePerRoute::class]);
     })
     ->withExceptions(function (Exceptions $exceptions): void {
         $exceptions->shouldRenderJsonWhen(
