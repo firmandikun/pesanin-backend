@@ -70,8 +70,8 @@ class ShopeeAdsCreateTest extends TestCase
 
         Http::fake([
             '*get_recommended_item_list*' => Http::response(['response' => ['item_list' => [['item_id' => 111]]]]),
-            '*get_product_recommended_budget*' => Http::response(['response' => ['suggested_budget' => 50000]]),
-            '*get_recommended_roi_target*' => Http::response(['response' => ['recommended_roi_target' => 6.4]]),
+            '*get_create_product_ad_budget_suggestion*' => Http::response(['response' => ['suggested_budget' => 50000]]),
+            '*get_product_recommended_roi_target*' => Http::response(['response' => ['recommended_roi_target' => 6.4]]),
         ]);
 
         $this->getJson('/api/marketplace/ads/create/options?shop_id='.$shop->id)

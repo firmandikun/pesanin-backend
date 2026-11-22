@@ -653,7 +653,7 @@ class ShopeeClient
     /** Recommended daily budget for a product ad. */
     public function adsBudgetSuggestion(MarketplaceShop $shop, int $itemId, string $biddingMethod = 'auto'): array
     {
-        return $this->get($shop, '/api/v2/ads/get_product_recommended_budget', [
+        return $this->get($shop, '/api/v2/ads/get_create_product_ad_budget_suggestion', [
             'item_id' => $itemId,
             'bidding_method' => $biddingMethod,
         ])['response'] ?? [];
@@ -662,7 +662,7 @@ class ShopeeClient
     /** Recommended ROAS / ROI target for a product ad. */
     public function adsRoiTargetSuggestion(MarketplaceShop $shop, int $itemId): array
     {
-        return $this->get($shop, '/api/v2/ads/get_recommended_roi_target', [
+        return $this->get($shop, '/api/v2/ads/get_product_recommended_roi_target', [
             'item_id' => $itemId,
         ])['response'] ?? [];
     }
