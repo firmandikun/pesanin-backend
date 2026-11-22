@@ -80,7 +80,7 @@ class ShopeePublishTest extends TestCase
             'video_upload_id' => 'sg-video-upload-1',
         ]))->assertOk();
 
-        Http::assertSent(fn ($r) => str_contains($r->url(), 'add_item') && $r['video_upload_id'] === 'sg-video-upload-1');
+        Http::assertSent(fn ($r) => str_contains($r->url(), 'add_item') && $r['video_upload_id'] === ['sg-video-upload-1']);
     }
 
     public function test_video_upload_runs_init_parts_and_complete_flow(): void

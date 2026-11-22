@@ -281,7 +281,7 @@ class ShopeePublishController extends Controller
                 'wholesale' => ! empty($d['wholesale'])
                     ? collect($d['wholesale'])->map(fn ($w) => ['min_count' => $w['min'], 'max_count' => $w['max'], 'unit_price' => $w['price']])->all() : null,
                 'image' => ['image_id_list' => array_values($d['image_ids'])],
-                'video_upload_id' => $d['video_upload_id'] ?? null,
+                'video_upload_id' => ! empty($d['video_upload_id']) ? [$d['video_upload_id']] : null,
                 'brand' => ['brand_id' => (int) ($d['brand_id'] ?? 0), 'original_brand_name' => $d['brand_name'] ?? 'NoBrand'],
                 'logistic_info' => collect($channels)->map(fn ($c) => ['logistic_id' => $c['id'], 'enabled' => true])->all(),
                 'attribute_list' => $this->attributeList($d['attributes'] ?? []) ?: null,
