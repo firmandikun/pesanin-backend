@@ -539,12 +539,15 @@ class ShopeeClient
      * The returned upload id is the value accepted by v2.product.add_item. Completing the
      * upload starts Shopee's transcoding; it is not the same thing as merely uploading a file.
      */
-    public function uploadVideo(string $bytes, string $filename): string
+    public function uploadVideo(string $bytes, string $filename, ?MarketplaceShop $shop = null): string
     {
-        $init = $this->partnerPost('/api/v2/media_space/init_video_upload', [
+        $initPayload = [
             'file_md5' => md5($bytes),
             'file_size' => strlen($bytes),
-        ]);
+        ];
+        $init = $shop
+            ? $this->post($shop, '/api/v2/media_space/init_video_upload', $initPayload)
+            : $this->partnerPost('/api/v2/media_space/init_video_upload', $initPayload);
         $response = $init['response'] ?? [];
         $uploadId = (string) ($response['video_upload_id'] ?? '');
         if ($uploadId === '') {
@@ -557,29 +560,41 @@ class ShopeeClient
         $startedAt = microtime(true);
         $partSeqList = [];
         foreach ($parts as $index => $part) {
-            $this->uploadVideoPart($uploadId, $index, $part, $filename);
+            $this->uploadVideoPart($uploadId, $index, $part, $filename, $shop);
             $partSeqList[] = $index;
         }
         $uploadCost = max(1, (int) round((microtime(true) - $startedAt) * 1000));
 
-        $this->partnerPost('/api/v2/media_space/complete_video_upload', [
+        $completePayload = [
             'video_upload_id' => $uploadId,
             'part_seq_list' => $partSeqList,
             'report_data' => ['upload_cost' => $uploadCost],
-        ], 120);
+        ];
+        if ($shop) {
+            $this->post($shop, '/api/v2/media_space/complete_video_upload', $completePayload);
+        } else {
+            $this->partnerPost('/api/v2/media_space/complete_video_upload', $completePayload, 120);
+        }
 
         return $uploadId;
     }
 
-    private function uploadVideoPart(string $uploadId, int $partSeq, string $bytes, string $filename): void
+    private function uploadVideoPart(string $uploadId, int $partSeq, string $bytes, string $filename, ?MarketplaceShop $shop = null): void
     {
         $path = '/api/v2/media_space/upload_video_part';
         $ts = time();
-        $url = $this->host.$path.'?'.http_build_query([
-            'partner_id' => $this->partnerId,
-            'timestamp' => $ts,
-            'sign' => $this->sign($path, $ts),
-        ]);
+        $common = ['partner_id' => $this->partnerId, 'timestamp' => $ts];
+        if ($shop) {
+            $this->ensureFreshToken($shop);
+            $common += [
+                'access_token' => $shop->access_token,
+                'shop_id' => $shop->shop_id,
+                'sign' => $this->sign($path, $ts, $shop->access_token, $shop->shop_id),
+            ];
+        } else {
+            $common['sign'] = $this->sign($path, $ts);
+        }
+        $url = $this->host.$path.'?'.http_build_query($common);
         $res = Http::timeout(120)->acceptJson()
             ->attach('part_content', $bytes, $filename, ['Content-Type' => 'video/mp4'])
             ->post($url, [

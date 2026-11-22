@@ -140,9 +140,16 @@ class ShopeePublishController extends Controller
         ]);
         $file = $request->file('file');
         abort_unless(in_array(strtolower($file->getClientOriginalExtension()), ['mp4', 'mov', 'm4v'], true), 422, 'Video harus berformat MP4, MOV, atau M4V.');
+        $shop = $request->user()->marketplaceShops()
+            ->where('platform', 'shopee')
+            ->where('status', 'active')
+            ->where('is_demo', false)
+            ->when($request->integer('shop_id'), fn ($q, $id) => $q->whereKey($id))
+            ->first();
+        abort_unless($shop, 422, 'Hubungkan toko Shopee aktif terlebih dahulu untuk upload video.');
         try {
             return [
-                'video_upload_id' => (new ShopeeClient)->uploadVideo($file->get(), $file->getClientOriginalName()),
+                'video_upload_id' => (new ShopeeClient)->uploadVideo($file->get(), $file->getClientOriginalName(), $shop),
                 'name' => $file->getClientOriginalName(),
                 'size' => $file->getSize(),
             ];

@@ -91,9 +91,10 @@ class ShopeePublishTest extends TestCase
             '*complete_video_upload*' => Http::response(['error' => '', 'message' => '']),
         ]);
 
-        $this->assertSame('sg-upload-1', (new \App\Support\Shopee\ShopeeClient)->uploadVideo(str_repeat('x', 1024), 'demo.mp4'));
+        $this->assertSame('sg-upload-1', (new \App\Support\Shopee\ShopeeClient)->uploadVideo(str_repeat('x', 1024), 'demo.mp4', $this->shop));
 
         Http::assertSentCount(3);
+        Http::assertSent(fn ($r) => str_contains($r->url(), 'init_video_upload') && str_contains($r->url(), 'shop_id='.$this->shop->shop_id));
         Http::assertSent(fn ($r) => str_contains($r->url(), 'complete_video_upload') && $r['video_upload_id'] === 'sg-upload-1');
     }
 
