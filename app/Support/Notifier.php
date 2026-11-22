@@ -37,7 +37,10 @@ class Notifier
             $shopee ? $order->marketplaceShop?->shop_name : $order->customer_name,
             'Rp'.number_format((float) $order->total, 0, ',', '.'),
         ])));
-        self::send($order->user_id, 'order', $title, $body, $shopee ? '/marketplace/orders' : '/orders', $order->id);
+        $targetUrl = $shopee
+            ? "/marketplace/orders/{$order->id}"
+            : '/orders?search='.urlencode((string) $order->code);
+        self::send($order->user_id, 'order', $title, $body, $targetUrl, $order->id);
     }
 
     public static function send(int $userId, string $type, string $title, ?string $body, ?string $url, ?int $orderId = null): AppNotification
