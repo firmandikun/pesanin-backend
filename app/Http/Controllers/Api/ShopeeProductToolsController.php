@@ -186,8 +186,8 @@ class ShopeeProductToolsController extends Controller
             ->when($shopId, fn ($q) => $q->where('marketplace_shop_id', $shopId))
             ->whereIn('marketplace_shop_id', $shops->pluck('id'))
             ->where('status', 'NORMAL')
-            ->with('stockMaster:id,stock')
-            ->get(['id', 'marketplace_shop_id', 'item_id', 'model_id', 'model_name', 'stock_master_id', 'name', 'sku', 'image', 'price', 'stock', 'status']);
+            ->with(['stockMaster:id,stock', 'product:id,cost_price'])
+            ->get(['id', 'marketplace_shop_id', 'product_id', 'item_id', 'model_id', 'model_name', 'stock_master_id', 'name', 'sku', 'image', 'price', 'cost_price', 'stock', 'status']);
 
         $grouped = $listings->groupBy(fn ($l) => "{$l->marketplace_shop_id}:{$l->item_id}");
         $keys = $grouped->map(fn ($g) => [(int) $g->first()->marketplace_shop_id, (int) $g->first()->item_id])->values();
@@ -322,12 +322,15 @@ class ShopeeProductToolsController extends Controller
                     ?? ($vName !== '' ? ($variantSales["{$key}:n:{$vName}"] ?? null) : null)
                     ?? ($variantSales["{$key}:m:0"] ?? ['units' => 0, 'orders' => 0, 'revenue' => 0]);
 
+                $hpp = (int) ($v->cost_price ?: $v->product?->cost_price ?: 0);
+
                 return [
                     'id' => $v->id,
                     'model_id' => $mid,
                     'name' => $v->model_name ?: ($v->sku ?: 'Standar'),
                     'sku' => $v->sku,
                     'price' => (int) $v->price,
+                    'cost_price' => $hpp > 0 ? $hpp : null,
                     'stock' => ($v->stock_master_id && $v->stockMaster) ? (int) $v->stockMaster->stock : (int) $v->stock,
                     'shopee_stock' => (int) $v->stock,
                     'has_master_stock' => (bool) ($v->stock_master_id && $v->stockMaster),
@@ -353,6 +356,8 @@ class ShopeeProductToolsController extends Controller
                 'image' => $first->image,
                 'price_min' => (int) $variants->min('price'),
                 'price_max' => (int) $variants->max('price'),
+                'hpp_min' => collect($variantRows)->pluck('cost_price')->filter()->min(),
+                'hpp_max' => collect($variantRows)->pluck('cost_price')->filter()->max(),
                 'stock' => $hasMasterStock ? $masterStock : $shopeeStock,
                 'shopee_stock' => $shopeeStock,
                 'has_master_stock' => $hasMasterStock,
