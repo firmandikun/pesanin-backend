@@ -4,6 +4,7 @@ namespace App\Support\Shopee;
 
 use App\Models\Order;
 use App\Models\ShopeeBooking;
+use Illuminate\Support\Facades\Cache;
 
 /**
  * Arranges shipment for a single READY_TO_SHIP Shopee order or Pengiriman Kilat reservation (booking).
@@ -41,7 +42,9 @@ class ShopeeShipper
                     // If Shopee allows shipping directly or already cleared IN_CANCEL, proceed to ship_order.
                 }
             }
-            $param = $this->api->shippingParameter($shop, $order->external_order_sn);
+            $param = Cache::get("shopee:ship_param:{$shop->id}:{$order->external_order_sn}")
+                ?? ($order->courier ? Cache::get("shopee:ship_param_courier:{$shop->id}:{$order->courier}") : null)
+                ?? $this->api->shippingParameter($shop, $order->external_order_sn);
             $needed = $param['info_needed'] ?? [];
             $use = $this->pickMethod($opts['method'] ?? 'auto', $needed);
             if (! array_key_exists($use, $needed)) {
@@ -54,11 +57,12 @@ class ShopeeShipper
             $this->api->shipOrder($shop, $order->external_order_sn, [$use => $this->methodBody($use, (array) $needed[$use], $param, $opts)]);
             ShopeeSync::markArranged($order);
             try {
-                $order->update(['tracking_number' => $this->api->trackingNumber($shop, $order->external_order_sn)]);
+                if ($tn = $this->api->trackingNumber($shop, $order->external_order_sn)) {
+                    $order->update(['tracking_number' => $tn]);
+                }
             } catch (ShopeeException) {
-                // issued asynchronously; the next sync picks it up
+                // issued asynchronously; refreshAwb / next sync picks it up
             }
-            (new ShopeeSync)->order($shop, $order->external_order_sn);
 
             return ['ok' => true, 'error' => null];
         } catch (ShopeeException $e) {
@@ -89,7 +93,9 @@ class ShopeeShipper
             return ['ok' => true, 'error' => null];
         }
         try {
-            $param = $this->api->bookingShippingParameter($shop, $booking->booking_sn);
+            $param = Cache::get("shopee:bk_ship_param:{$shop->id}:{$booking->booking_sn}")
+                ?? ($booking->shipping_carrier ? Cache::get("shopee:bk_ship_param_courier:{$shop->id}:{$booking->shipping_carrier}") : null)
+                ?? $this->api->bookingShippingParameter($shop, $booking->booking_sn);
             $needed = $param['info_needed'] ?? [];
             $use = $this->pickMethod($opts['method'] ?? 'auto', $needed);
             if (! array_key_exists($use, $needed)) {
@@ -106,9 +112,8 @@ class ShopeeShipper
                     $booking->update(['tracking_number' => $tn]);
                 }
             } catch (ShopeeException) {
-                // issued asynchronously; the next sync picks it up
+                // issued asynchronously; refreshAwb / next sync picks it up
             }
-            (new ShopeeSync)->booking($shop, $booking->booking_sn);
 
             return ['ok' => true, 'error' => null];
         } catch (ShopeeException $e) {

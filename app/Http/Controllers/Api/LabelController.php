@@ -10,6 +10,7 @@ use App\Support\Shopee\ShopeeException;
 use App\Support\Shopee\ShopeeShipper;
 use App\Support\Shopee\ShopeeSync;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Cache;
 
 /** Shipping labels: Shopee air waybills (PDF from Shopee) and Pesanin labels for website/manual orders. */
 class LabelController extends Controller
@@ -43,6 +44,7 @@ class LabelController extends Controller
         $bookingIds = array_filter(array_map('intval', explode(',', (string) $request->query('booking_ids'))));
         $api = new ShopeeClient;
         $out = [];
+        $paramByGroup = [];
         foreach ($this->shopeeOrders($request, $ids) as $order) {
             $row = [
                 'kind' => 'order', 'id' => $order->id, 'order_id' => $order->id, 'booking_id' => null,
@@ -56,14 +58,24 @@ class LabelController extends Controller
                 $row['methods'] = ['pickup', 'dropoff'];
                 $row['needs'] = ['pickup' => [], 'dropoff' => []];
             } else {
+                $groupKey = $order->marketplace_shop_id.'|'.($order->courier ?: $order->external_order_sn);
                 try {
-                    $this->fillShippingParam($row, $api->shippingParameter($order->marketplaceShop, $order->external_order_sn));
+                    if (! array_key_exists($groupKey, $paramByGroup)) {
+                        $paramByGroup[$groupKey] = $api->shippingParameter($order->marketplaceShop, $order->external_order_sn);
+                    }
+                    $param = $paramByGroup[$groupKey];
+                    Cache::put("shopee:ship_param:{$order->marketplace_shop_id}:{$order->external_order_sn}", $param, 180);
+                    if ($order->courier) {
+                        Cache::put("shopee:ship_param_courier:{$order->marketplace_shop_id}:{$order->courier}", $param, 180);
+                    }
+                    $this->fillShippingParam($row, $param);
                 } catch (ShopeeException $e) {
                     $row['error'] = $e->getMessage();
                 }
             }
             $out[] = $row;
         }
+        $bookingParamByGroup = [];
         foreach ($this->shopeeBookings($request, $bookingIds) as $booking) {
             $row = [
                 'kind' => 'booking', 'id' => $booking->id, 'order_id' => null, 'booking_id' => $booking->id,
@@ -77,8 +89,17 @@ class LabelController extends Controller
                 $row['methods'] = ['pickup', 'dropoff'];
                 $row['needs'] = ['pickup' => [], 'dropoff' => []];
             } else {
+                $groupKey = $booking->marketplace_shop_id.'|'.($booking->shipping_carrier ?: $booking->booking_sn);
                 try {
-                    $this->fillShippingParam($row, $api->bookingShippingParameter($booking->marketplaceShop, $booking->booking_sn));
+                    if (! array_key_exists($groupKey, $bookingParamByGroup)) {
+                        $bookingParamByGroup[$groupKey] = $api->bookingShippingParameter($booking->marketplaceShop, $booking->booking_sn);
+                    }
+                    $param = $bookingParamByGroup[$groupKey];
+                    Cache::put("shopee:bk_ship_param:{$booking->marketplace_shop_id}:{$booking->booking_sn}", $param, 180);
+                    if ($booking->shipping_carrier) {
+                        Cache::put("shopee:bk_ship_param_courier:{$booking->marketplace_shop_id}:{$booking->shipping_carrier}", $param, 180);
+                    }
+                    $this->fillShippingParam($row, $param);
                 } catch (ShopeeException $e) {
                     $row['error'] = $e->getMessage();
                 }
@@ -219,9 +240,7 @@ class LabelController extends Controller
         foreach ($this->shopeeOrders($request, $orderIds) as $order) {
             if (! $order->tracking_number && ! $order->marketplaceShop->is_demo) {
                 try {
-                    (new ShopeeSync)->order($order->marketplaceShop, $order->external_order_sn);
-                    $order->refresh();
-                    if (! $order->tracking_number && $tn = $api->trackingNumber($order->marketplaceShop, $order->external_order_sn)) {
+                    if ($tn = $api->trackingNumber($order->marketplaceShop, $order->external_order_sn)) {
                         $order->update(['tracking_number' => $tn]);
                     }
                 } catch (ShopeeException) {
@@ -233,9 +252,7 @@ class LabelController extends Controller
         foreach ($this->shopeeBookings($request, $bookingIds) as $booking) {
             if (! $booking->tracking_number && ! $booking->marketplaceShop->is_demo) {
                 try {
-                    (new ShopeeSync)->booking($booking->marketplaceShop, $booking->booking_sn);
-                    $booking->refresh();
-                    if (! $booking->tracking_number && $tn = $api->bookingTrackingNumber($booking->marketplaceShop, $booking->booking_sn)) {
+                    if ($tn = $api->bookingTrackingNumber($booking->marketplaceShop, $booking->booking_sn)) {
                         $booking->update(['tracking_number' => $tn]);
                     }
                 } catch (ShopeeException) {
