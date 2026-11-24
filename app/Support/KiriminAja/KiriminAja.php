@@ -255,6 +255,33 @@ class KiriminAja
             $at = ($at->hour >= 17 ? $at->addDay() : $at)->setTime(9, 0);
         }
 
+        $originId = $this->districtId($pickup->region);
+        $destId = $this->districtId($dest);
+        $itemValue = max(1000, $items);
+
+        // KiriminAja rejects request_pickup ("Ongkir tidak sesuai") if shipping_cost differs from their tariff
+        // (e.g. when the seller applied a shipping discount or extra fee at checkout). Match their exact cost.
+        $kaShippingCost = (int) $order->shipping_cost;
+        try {
+            $priceRes = $this->call('post', '/api/mitra/v6.1/shipping_price', [
+                'origin' => $originId,
+                'destination' => $destId,
+                'weight' => $weight,
+                'item_value' => $itemValue,
+                'insurance' => 0,
+                'courier' => [$service],
+            ]);
+            $priceRows = $priceRes['results'] ?? $priceRes['data']['results'] ?? $priceRes['data'] ?? [];
+            if (is_array($priceRows)) {
+                $matched = collect($priceRows)->first(fn ($r) => strtoupper((string) ($r['service_type'] ?? $r['service'] ?? '')) === strtoupper((string) $order->courier_service));
+                if ($matched && (int) ($matched['cost'] ?? 0) > 0) {
+                    $kaShippingCost = (int) $matched['cost'];
+                }
+            }
+        } catch (\Throwable) {
+            // Fall back to order's stored shipping_cost if tariff lookup fails.
+        }
+
         $prefix = trim((string) config('services.kiriminaja.prefix', ''));
         $kaOrderId = $prefix !== '' && ! str_starts_with((string) $order->code, $prefix)
             ? "{$prefix}-{$order->code}"
@@ -264,20 +291,20 @@ class KiriminAja
             'address' => (string) $pickup->address,
             'phone' => $phone($pickup->phone ?: $order->user->whatsapp),
             'name' => (string) ($pickup->name ?: $order->user->store_name ?: 'Pesanin'),
-            'kecamatan_id' => $this->districtId($pickup->region),
+            'kecamatan_id' => $originId,
             'schedule' => $at->format('Y-m-d H:i:s'),
             'packages' => [[
                 'order_id' => $kaOrderId,
                 'destination_name' => (string) $order->customer_name,
                 'destination_phone' => $phone($order->phone),
                 'destination_address' => trim(implode(', ', array_filter([$order->address, $order->village]))),
-                'destination_kecamatan_id' => $this->districtId($dest),
+                'destination_kecamatan_id' => $destId,
                 'weight' => $weight,
                 'width' => 10,
                 'length' => 10,
                 'height' => 10,
-                'item_value' => max(1000, $items),
-                'shipping_cost' => (int) $order->shipping_cost,
+                'item_value' => $itemValue,
+                'shipping_cost' => $kaShippingCost,
                 'service' => $service,
                 'service_type' => (string) $order->courier_service,
                 'cod' => $cod ? $grand : 0,
