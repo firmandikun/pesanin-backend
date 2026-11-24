@@ -244,10 +244,13 @@ class KiriminAja
         }
 
         $phone = fn (?string $p) => preg_replace('/^\+?62/', '0', preg_replace('/[^\d+]/', '', (string) $p));
+        $qty = max(1, (int) $order->quantity);
         $items = max(0, (int) $order->subtotal);
         $cod = $order->payment_method === 'cod';
         $grand = $items + (int) $order->shipping_cost;
-        $weight = max(1, (int) ($order->weight ?: ($order->product?->weight ?? 1000) * max(1, (int) $order->quantity)));
+        $rawTotalWeight = max(1, (int) ($order->weight ?: ($order->product?->weight ?? 1000) * $qty));
+        $unitWeight = max(1, (int) round($rawTotalWeight / $qty));
+        $weight = $unitWeight * $qty;
 
         $at = now('Asia/Jakarta')->addMinutes(100)->second(0);
         $at->addMinutes((15 - $at->minute % 15) % 15);
@@ -313,8 +316,8 @@ class KiriminAja
                 'items' => [[
                     'name' => (string) ($order->product?->name ?? 'Produk'),
                     'price' => (int) $order->unit_price,
-                    'qty' => max(1, (int) $order->quantity),
-                    'weight' => $weight,
+                    'qty' => $qty,
+                    'weight' => $unitWeight,
                     'width' => 10,
                     'length' => 10,
                     'height' => 10,
@@ -328,11 +331,15 @@ class KiriminAja
 
         $res = $this->call('post', '/api/mitra/v6.2/request_pickup', $payload);
         $data = $res['data'] ?? $res;
-        $pkg = is_array($data) && array_is_list($data) ? ($data[0] ?? []) : ($data['packages'][0] ?? $data);
-        $orderId = (string) ($pkg['order_id'] ?? $data['order_id'] ?? $order->code);
-        $awb = $pkg['receipt'] ?? $pkg['awb'] ?? $data['receipt'] ?? $data['awb'] ?? null;
+        $pkg = $res['details'][0] ?? (is_array($data) && array_is_list($data) ? ($data[0] ?? []) : ($data['packages'][0] ?? $data));
+        $orderId = (string) ($pkg['kj_order_id'] ?? $pkg['order_id'] ?? $data['order_id'] ?? $kaOrderId);
+        $awb = $pkg['awb'] ?? $pkg['receipt'] ?? $data['receipt'] ?? $data['awb'] ?? null;
 
-        return ['order_id' => $orderId, 'awb' => $awb ? (string) $awb : null];
+        return [
+            'order_id' => $orderId,
+            'awb' => $awb ? (string) $awb : null,
+            'pickup_number' => ! empty($res['pickup_number']) ? (string) $res['pickup_number'] : null,
+        ];
     }
 
     /** Track a shipment by order_id or AWB (resi). */

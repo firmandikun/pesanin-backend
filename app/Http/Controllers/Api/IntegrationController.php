@@ -171,7 +171,7 @@ class IntegrationController extends Controller
             $order->auto_ship_tries = 0;
             ($error = \App\Support\KiriminAja\CourierBooking::book($order, $api))
                 ? $failed[] = ['code' => $order->code, 'error' => $error]
-                : $done[] = ['code' => $order->code, 'waybill' => $order->tracking_number];
+                : $done[] = ['code' => $order->code, 'waybill' => $order->tracking_number ?: $order->shipping_ref];
         }
 
         return ['shipped' => $done, 'failed' => $failed];

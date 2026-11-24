@@ -24,6 +24,7 @@ class CourierBooking
             $order->channel === 'shopee' => 'pesanan Shopee diatur dari menu Pesanan Shopee',
             (bool) $order->dropship_product_id => 'pesanan dropship dikirim oleh gudang Pesanin',
             (bool) $order->tracking_number => 'sudah punya resi',
+            (bool) $order->shipping_ref => 'pickup sudah dijadwalkan',
             $order->shipping_status !== 'not_shipped' || in_array($order->status, ['cancelled', 'refunded'], true) => 'sudah dikirim atau dibatalkan',
             $order->payment_method !== 'cod' && $order->payment_status !== 'paid' => 'belum dibayar',
             ! $order->courier => 'kurir belum dipilih',
@@ -37,17 +38,10 @@ class CourierBooking
     {
         try {
             $res = $api->requestPickup($order);
-            if (empty($res['awb'])) {
-                $order->forceFill([
-                    'shipping_ref' => $res['order_id'],
-                    'shipping_provider' => 'kiriminaja',
-                ])->save();
-                throw new \RuntimeException('Pickup terjadwal, nomor resi belum terbit — dicoba lagi otomatis.');
-            }
             $order->forceFill([
                 'shipping_ref' => $res['order_id'],
                 'shipping_provider' => 'kiriminaja',
-                'tracking_number' => $res['awb'],
+                'tracking_number' => $res['awb'] ?: $order->tracking_number,
                 'auto_ship_error' => null,
                 'status' => $order->status === 'pending' ? 'processing' : $order->status,
             ])->save();
