@@ -346,7 +346,7 @@ class KiriminAja
     /** Track a shipment by order_id or AWB (resi). */
     public function track(string $waybillOrOrderId): array
     {
-        $res = $this->call('post', '/api/mitra/v6.1/tracking', ['order_id' => $waybillOrOrderId]);
+        $res = $this->call('post', '/api/mitra/tracking', ['order_id' => $waybillOrOrderId]);
 
         return is_array($res) ? ($res['data'] ?? $res) : [];
     }

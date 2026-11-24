@@ -57,7 +57,7 @@ class KiriminAjaIntegrationTest extends TestCase
                 'code' => 200,
                 'data' => ['order_id' => 'KA-001', 'receipt' => 'JNE123456'],
             ]),
-            'tdev.kiriminaja.com/api/mitra/v6.1/tracking' => Http::response([
+            'tdev.kiriminaja.com/api/mitra/tracking' => Http::response([
                 'status' => true,
                 'code' => 200,
                 'data' => [
