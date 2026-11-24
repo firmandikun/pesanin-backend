@@ -58,9 +58,9 @@ class ContentDefaults
             'Salin link checkout atau buat landing page di menu Landing Page.',
             'Pasang pixel Meta/TikTok/Google di pengaturan produk untuk tracking iklan.',
         ]],
-        ['Cara mengatur ongkir & resi', 'lanjutan', 'Ongkir asli dari RajaOngkir dan resi yang bisa dilacak.', [
-            'Isi alamat pickup di Pengaturan → Alamat, ongkir di checkout langsung asli dari RajaOngkir.',
-            'Setelah paket diserahkan ke kurir, isi nomor resi di Pesanan; status pengiriman dilacak otomatis lewat RajaOngkir.',
+        ['Cara mengatur ongkir & resi', 'lanjutan', 'Ongkir asli dari KiriminAja dan resi yang bisa dilacak.', [
+            'Isi alamat pickup di Pengaturan → Alamat, ongkir di checkout langsung asli dari KiriminAja.',
+            'Setelah paket diserahkan ke kurir, isi nomor resi di Pesanan; status pengiriman dilacak otomatis lewat KiriminAja.',
             'Untuk pesanan Shopee, atur pengiriman dan cetak label massal dari Pesanan & Pengiriman.',
         ]],
         ['Cara memakai inbox WhatsApp & broadcast', 'lanjutan', 'Balas semua chat dari satu tempat dan kirim broadcast.', [

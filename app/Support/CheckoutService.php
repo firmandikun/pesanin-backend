@@ -93,33 +93,33 @@ class CheckoutService
         ];
     }
 
-    /** The RajaOngkir account used for ongkir: always Pesanin's own from .env (seller products and dropship alike). */
+    /** The KiriminAja account used for ongkir: always Pesanin's own from .env (seller products and dropship alike). */
     public static function courierAccount(\App\Models\User $seller, bool $dropship = false): ?\App\Models\UserIntegration
     {
-        return \App\Support\RajaOngkir\RajaOngkir::platform();
+        return \App\Support\KiriminAja\KiriminAja::platform();
     }
 
     /**
-     * Real courier rates from RajaOngkir (Komerce). No estimates: without a connected account there are no rates.
+     * Real courier rates from KiriminAja. No estimates: without a connected account there are no rates.
      *
      * @return array{0: array, 1: ?string} [rates, error shown when empty]
      */
     public static function rates(\App\Models\User $seller, bool $dropship, Region $origin, Region $dest, int $weight, int $value = 0, ?string $method = null): array
     {
-        $ro = \App\Support\RajaOngkir\RajaOngkir::for(self::courierAccount($seller, $dropship));
-        if (! $ro) {
+        $ka = \App\Support\KiriminAja\KiriminAja::for(self::courierAccount($seller, $dropship));
+        if (! $ka) {
             return [[], 'Ongkir belum tersedia: layanan ongkir Pesanin belum dikonfigurasi.'];
         }
         try {
-            if ($rates = $ro->rates($origin, $dest, $weight)) {
+            if ($rates = $ka->rates($origin, $dest, $weight, $value)) {
                 return [$rates, null];
             }
 
             return [[], 'Tidak ada kurir yang melayani pengiriman ke lokasi ini.'];
         } catch (\Throwable $e) {
-            \Illuminate\Support\Facades\Log::warning("RajaOngkir rates for user {$seller->id}: {$e->getMessage()}");
+            \Illuminate\Support\Facades\Log::warning("KiriminAja rates for user {$seller->id}: {$e->getMessage()}");
 
-            return [[], 'Gagal mengambil ongkir dari RajaOngkir. Coba lagi sebentar.'];
+            return [[], 'Gagal mengambil ongkir dari KiriminAja. Coba lagi sebentar.'];
         }
     }
 

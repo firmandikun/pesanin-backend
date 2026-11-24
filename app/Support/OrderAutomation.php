@@ -37,7 +37,7 @@ class OrderAutomation
 
     public static function run(): array
     {
-        return ['shipped' => \App\Support\RajaOngkir\CourierBooking::auto(), 'shopee_shipped' => self::shopeeAutoShip(), 'delivered' => self::deliverDigital(),
+        return ['shipped' => \App\Support\KiriminAja\CourierBooking::auto(), 'shopee_shipped' => self::shopeeAutoShip(), 'delivered' => self::deliverDigital(),
             // Stok master: push changed stock to every linked Shopee listing.
             'stock_pushed' => \App\Support\MasterStock::pushPending()];
     }

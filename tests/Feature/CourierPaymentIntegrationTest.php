@@ -35,13 +35,24 @@ class CourierPaymentIntegrationTest extends TestCase
         $p = new Product(['name' => 'Toner', 'slug' => 'toner-uji', 'type' => 'physical', 'price' => 100000, 'weight' => 500, 'status' => 'active', 'payment_methods' => ['cod', 'epayment']]);
         $p->user_id = $this->seller->id;
         $p->save();
-        // RajaOngkir and Midtrans run on Pesanin's own keys from .env.
-        config(['services.rajaongkir.key' => 'ro-key', 'services.midtrans.server_key' => 'SB-Mid-server-xyz', 'services.midtrans.signature_key' => null, 'services.midtrans.production' => false]);
+        // KiriminAja and Midtrans run on Pesanin's own keys from .env.
+        config(['services.kiriminaja.key' => 'v4.local.ka-key', 'services.kiriminaja.sandbox' => true, 'services.midtrans.server_key' => 'SB-Mid-server-xyz', 'services.midtrans.signature_key' => null, 'services.midtrans.production' => false]);
         Http::fake([
-            'rajaongkir.komerce.id/api/v1/calculate/domestic-cost' => Http::response(['meta' => ['status' => 'success', 'code' => 200], 'data' => [
-                ['name' => 'Jalur Nugraha Ekakurir (JNE)', 'code' => 'jne', 'service' => 'REG', 'description' => 'Reguler', 'cost' => 11000, 'etd' => '2-3 day'],
-                ['name' => 'J&T Express', 'code' => 'jnt', 'service' => 'EZ', 'description' => 'Reguler', 'cost' => 9000, 'etd' => '2-4 day'],
-            ]]),
+            'tdev.kiriminaja.com/api/mitra/v6.1/addresses*' => fn ($r) => Http::response([
+                'status' => true,
+                'data' => [
+                    str_contains(strtoupper((string) ($r['search'] ?? '')), 'KEBAYORAN')
+                        ? ['district_id' => 100, 'district_name' => 'KEBAYORAN BARU', 'city_name' => 'JAKARTA SELATAN']
+                        : ['district_id' => 200, 'district_name' => 'COBLONG', 'city_name' => 'BANDUNG'],
+                ],
+            ]),
+            'tdev.kiriminaja.com/api/mitra/v6.1/shipping_price' => Http::response([
+                'status' => true,
+                'results' => [
+                    ['courier' => 'jne', 'courier_name' => 'JNE', 'service_type' => 'REG', 'cost' => 11000, 'etd' => '2-3'],
+                    ['courier' => 'jnt', 'courier_name' => 'J&T', 'service_type' => 'EZ', 'cost' => 9000, 'etd' => '2-4'],
+                ],
+            ]),
             'app.sandbox.midtrans.com/snap/v1/transactions' => Http::response(['token' => 'snap-token', 'redirect_url' => 'https://app.sandbox.midtrans.com/snap/v4/redirection/snap-token']),
         ]);
     }
@@ -53,13 +64,13 @@ class CourierPaymentIntegrationTest extends TestCase
         ], $extra))->assertCreated()->json();
     }
 
-    public function test_checkout_uses_rajaongkir_rates_for_every_payment_method(): void
+    public function test_checkout_uses_kiriminaja_rates_for_every_payment_method(): void
     {
         foreach (['epayment', 'cod'] as $method) {
             $rates = $this->postJson('/api/public/products/toner-uji/quote', ['region_id' => $this->dest->id, 'quantity' => 1, 'payment_method' => $method])->json('rates');
             $this->assertEqualsCanonicalizing(['jne:reg', 'jnt:ez'], array_column($rates, 'code'));
         }
-        Http::assertSent(fn ($r) => str_contains($r->url(), 'calculate/domestic-cost') && $r['origin'] == 100 && $r['destination'] == 200 && $r->header('key')[0] === 'ro-key');
+        Http::assertSent(fn ($r) => str_contains($r->url(), 'shipping_price') && $r['origin'] == 100 && $r['destination'] == 200 && $r->header('Authorization')[0] === 'Bearer v4.local.ka-key');
 
         $this->checkout(['payment_method' => 'cod', 'courier' => 'jne:reg']);
         $order = Order::first();

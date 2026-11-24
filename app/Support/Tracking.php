@@ -74,21 +74,25 @@ class Tracking
             }
         }
 
-        $bCourier = $order->courier_code ? strtok($order->courier_code, ':') : self::courierCode($order->courier);
-
-        // Seller's RajaOngkir: waybill tracking for the major couriers.
-        $ro = $order->channel !== 'shopee' ? \App\Support\RajaOngkir\RajaOngkir::for(\App\Support\RajaOngkir\RajaOngkir::account($order->user?->integration('rajaongkir'))) : null;
-        if ($ro && $order->tracking_number && $bCourier) {
+        // KiriminAja: waybill / order tracking for website & manual orders.
+        $ka = $order->channel !== 'shopee' ? \App\Support\KiriminAja\KiriminAja::for(\App\Support\KiriminAja\KiriminAja::account()) : null;
+        $trackId = $order->tracking_number ?: ($order->shipping_provider === 'kiriminaja' ? $order->shipping_ref : null);
+        if ($ka && $trackId) {
             try {
-                $t = $ro->track($order->tracking_number, $bCourier, $order->phone);
-                $events = collect($t['manifest'] ?? [])->map(fn ($m) => [
-                    'time' => ! empty($m['manifest_date']) ? Carbon::parse(trim($m['manifest_date'].' '.($m['manifest_time'] ?? '')))->toIso8601String() : null,
-                    'text' => trim($m['manifest_description'] ?? ''), 'location' => $m['city_name'] ?? null,
+                $t = $ka->track($trackId);
+                $rawHist = $t['history'] ?? $t['histories'] ?? [];
+                $events = collect($rawHist)->map(fn ($m) => [
+                    'time' => ! empty($m['date'] ?? $m['created_at'] ?? null) ? Carbon::parse((string) ($m['date'] ?? $m['created_at']))->toIso8601String() : null,
+                    'text' => trim((string) ($m['desc'] ?? $m['status'] ?? $m['description'] ?? '')),
+                    'location' => $m['location'] ?? $m['city_name'] ?? null,
                 ])->sortByDesc('time')->values()->all();
+                $status = $t['summary']['status'] ?? $t['status'] ?? null;
 
-                return ['status' => $t['delivery_status']['status'] ?? ($t['summary']['status'] ?? null), 'source' => 'rajaongkir', 'events' => $events] + $base;
+                if ($events || $status) {
+                    return ['status' => $status, 'source' => 'kiriminaja', 'events' => $events] + $base;
+                }
             } catch (Throwable $e) {
-                $base['note'] = 'RajaOngkir: '.$e->getMessage();
+                $base['note'] = 'KiriminAja: '.$e->getMessage();
             }
         }
 

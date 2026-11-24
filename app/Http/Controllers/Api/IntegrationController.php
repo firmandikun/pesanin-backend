@@ -14,10 +14,10 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use Throwable;
 
-/** Pengaturan → Integrasi (RajaOngkir, Midtrans, WhatsApp Cloud…) and their webhooks. */
+/** Pengaturan → Integrasi (KiriminAja, Midtrans, WhatsApp Cloud…) and their webhooks. */
 class IntegrationController extends Controller
 {
-    private const PROVIDERS = ['rajaongkir', 'midtrans', 'shopee_affiliate', 'serpapi', 'whatsapp_cloud', 'gemini'];
+    private const PROVIDERS = ['kiriminaja', 'midtrans', 'shopee_affiliate', 'serpapi', 'whatsapp_cloud', 'gemini'];
 
     public function index(Request $request)
     {
@@ -28,7 +28,7 @@ class IntegrationController extends Controller
 
     /** Save keys, verify them against the provider, and keep them only if they work. */
     /** Run only on Pesanin's own keys from .env: shown as status, not editable by sellers. */
-    private const ENV_ONLY = ['rajaongkir', 'midtrans'];
+    private const ENV_ONLY = ['kiriminaja', 'rajaongkir', 'midtrans'];
 
     public function save(Request $request, string $provider)
     {
@@ -117,23 +117,24 @@ class IntegrationController extends Controller
         return response()->noContent();
     }
 
-    /** "Pesan kurir": book web/manual orders through Komerce Delivery (waybill + courier pickup). */
+    /** "Pesan kurir": book web/manual orders through KiriminAja (waybill + courier pickup). */
     public function book(Request $request)
     {
         $data = $request->validate(['order_ids' => 'required|array|min:1|max:50', 'order_ids.*' => 'integer']);
         $user = $request->user();
-        $api = \App\Support\RajaOngkir\KomerceDelivery::for(\App\Support\RajaOngkir\RajaOngkir::account($user->integration('rajaongkir')));
+        $platform = \App\Support\KiriminAja\KiriminAja::platform();
+        $api = ! empty($platform?->settings['delivery']['enabled']) ? \App\Support\KiriminAja\KiriminAja::for($platform) : null;
         abort_unless($api, 422, 'Layanan pesan kurir Pesanin belum aktif. Sementara isi resi manual.');
         $done = [];
         $failed = [];
         foreach ($user->orders()->whereIn('id', $data['order_ids'])->get() as $order) {
-            if ($why = \App\Support\RajaOngkir\CourierBooking::blocker($order, $user)) {
+            if ($why = \App\Support\KiriminAja\CourierBooking::blocker($order, $user)) {
                 $failed[] = ['code' => $order->code, 'error' => $why];
 
                 continue;
             }
             $order->auto_ship_tries = 0;
-            ($error = \App\Support\RajaOngkir\CourierBooking::book($order, $api))
+            ($error = \App\Support\KiriminAja\CourierBooking::book($order, $api))
                 ? $failed[] = ['code' => $order->code, 'error' => $error]
                 : $done[] = ['code' => $order->code, 'waybill' => $order->tracking_number];
         }
@@ -204,13 +205,13 @@ class IntegrationController extends Controller
             ];
         }
 
-        // RajaOngkir / Komerce runs on Pesanin's .env account only.
-        if ($p === 'rajaongkir') {
-            $env = \App\Support\RajaOngkir\RajaOngkir::platform();
+        // KiriminAja runs on Pesanin's .env account only.
+        if ($p === 'kiriminaja' || $p === 'rajaongkir') {
+            $env = \App\Support\KiriminAja\KiriminAja::platform();
             if (! $env) {
                 return ['connected' => false, 'from_env' => true];
             }
-            return ['connected' => true, 'is_production' => ! config('services.rajaongkir.sandbox'), 'verified_at' => now(), 'last_error' => null,
+            return ['connected' => true, 'is_production' => ! config('services.kiriminaja.sandbox'), 'verified_at' => now(), 'last_error' => null,
                 'settings' => $env->settings, 'keys' => ['api_key' => $mask($env->key('api_key'))], 'webhook_url' => null, 'verify_token' => null, 'details' => null, 'from_env' => true];
         }
         if ($p === 'midtrans' && ! config('services.midtrans.server_key')) {

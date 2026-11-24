@@ -50,6 +50,14 @@ return [
         'production' => (bool) env('MIDTRANS_PRODUCTION', false),
     ],
 
+    // KiriminAja (developer.kiriminaja.com): region search, shipping rates, courier pickup booking, and tracking.
+    'kiriminaja' => [
+        'key' => env('KIRIMINAJA_API_KEY'),
+        'sandbox' => (bool) env('KIRIMINAJA_SANDBOX', true),
+        'delivery' => (bool) env('KIRIMINAJA_DELIVERY', true),
+        'password' => env('KIRIMINAJA_PASSWORD'),
+    ],
+
     // RajaOngkir / Komerce owned by Pesanin. Two keys from collaborator.komerce.id → Developer → Settings → Api Key:
     // "Shipping Cost" (ongkir, region search, waybill tracking) and "Shipping Delivery" (courier booking + resi).
     'rajaongkir' => [

@@ -50,12 +50,7 @@ class PublicCheckoutController extends Controller
             return [];
         }
 
-        // Use the RajaOngkir key of the shop being bought from (checkout) or of the signed-in seller (settings, input order).
-        $seller = $request->query('seller') ? Product::where('slug', $request->query('seller'))->first()?->user : auth('sanctum')->user();
-
-        $integrations = $seller?->integrations()->where('status', 'active')->get()->keyBy('provider');
-
-        return \App\Support\Regions::search($q, \App\Support\RajaOngkir\RajaOngkir::account($integrations['rajaongkir'] ?? null));
+        return \App\Support\Regions::search($q, \App\Support\KiriminAja\KiriminAja::account());
     }
 
     public function quote(Request $request, string $slug)

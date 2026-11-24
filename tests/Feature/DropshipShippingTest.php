@@ -24,15 +24,27 @@ class DropshipShippingTest extends TestCase
         return Region::create(['province' => 'DKI JAKARTA', 'city' => $city, 'district' => $district, 'island' => 'Jawa', 'rajaongkir_id' => $roId]);
     }
 
-    private function fakeRajaOngkir(): void
+    private function fakeKiriminAja(): void
     {
-        Http::fake(['rajaongkir.komerce.id/api/v1/calculate/domestic-cost' => Http::response(['meta' => ['status' => 'success', 'code' => 200], 'data' => [
-            ['name' => 'Jalur Nugraha Ekakurir (JNE)', 'code' => 'jne', 'service' => 'REG', 'description' => 'Reguler', 'cost' => 12000, 'etd' => '2-3 day'],
-        ]])]);
+        Http::fake([
+            'tdev.kiriminaja.com/api/mitra/v6.1/addresses*' => fn ($r) => Http::response([
+                'status' => true,
+                'data' => [
+                    ['district_id' => str_contains(strtoupper((string) ($r['search'] ?? '')), 'KEBON') ? 501 : 777, 'district_name' => str_contains(strtoupper((string) ($r['search'] ?? '')), 'KEBON') ? 'KEBON JERUK' : 'CIRACAS', 'city_name' => str_contains(strtoupper((string) ($r['search'] ?? '')), 'KEBON') ? 'JAKARTA BARAT' : 'JAKARTA TIMUR'],
+                ],
+            ]),
+            'tdev.kiriminaja.com/api/mitra/v6.1/shipping_price' => Http::response([
+                'status' => true,
+                'results' => [
+                    ['courier' => 'jne', 'courier_name' => 'JNE', 'service_type' => 'REG', 'cost' => 12000, 'etd' => '2-3'],
+                ],
+            ]),
+        ]);
     }
 
     public function test_seller_product_without_courier_account_gets_no_estimated_rates(): void
     {
+        config(['services.kiriminaja.key' => null]);
         $seller = User::factory()->create();
         $origin = $this->region('JAKARTA BARAT', 'KEBON JERUK', 1);
         $dest = $this->region('JAKARTA TIMUR', 'CIRACAS', 2);
@@ -55,7 +67,7 @@ class DropshipShippingTest extends TestCase
     public function test_dropship_ships_from_warehouse_and_has_no_cod(): void
     {
         $admin = User::factory()->create(['is_admin' => true]);
-        config(['services.rajaongkir.key' => 'platform-key']);
+        config(['services.kiriminaja.key' => 'v4.local.platform-key', 'services.kiriminaja.sandbox' => true]);
         $warehouse = $this->region('JAKARTA BARAT', 'KEBON JERUK', 501);
         $dest = $this->region('JAKARTA TIMUR', 'CIRACAS', 777);
         $dp = DropshipProduct::create(['sku' => 'DS-1', 'product_type' => 'physical', 'name' => 'Blender', 'category' => 'Rumah Tangga', 'status' => 'active',
@@ -72,13 +84,13 @@ class DropshipShippingTest extends TestCase
         $product = Product::where('dropship_product_id', $dp->id)->firstOrFail();
         $this->assertSame($warehouse->id, $product->origin_region_id);
 
-        $this->fakeRajaOngkir();
+        $this->fakeKiriminAja();
         $show = $this->getJson("/api/public/products/{$product->slug}")->assertOk();
         $this->assertNotContains('cod', $show->json('payment_methods'));
         $this->assertSame('JAKARTA BARAT', $show->json('store.origin'));
         $q = $this->postJson("/api/public/products/{$product->slug}/quote", ['region_id' => $dest->id, 'quantity' => 1])->assertOk();
         $this->assertSame(12000, $q->json('shipping_cost'));
-        Http::assertSent(fn ($r) => str_contains($r->url(), 'domestic-cost') && $r['origin'] == 501 && $r['destination'] == 777 && $r->header('key')[0] === 'platform-key');
+        Http::assertSent(fn ($r) => str_contains($r->url(), 'shipping_price') && $r['origin'] == 501 && $r['destination'] == 777 && $r->header('Authorization')[0] === 'Bearer v4.local.platform-key');
 
         $this->postJson("/api/public/products/{$product->slug}/checkout", ['customer_name' => 'Ani', 'phone' => '081234567890', 'address' => 'Jl. B', 'region_id' => $dest->id, 'quantity' => 1, 'payment_method' => 'cod'])
             ->assertStatus(422)->assertJsonValidationErrors('payment_method');

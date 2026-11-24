@@ -34,11 +34,21 @@ class DropshipFulfilmentQuotaTest extends TestCase
 
     public function test_dropship_order_cost_stock_warehouse_queue_and_ship(): void
     {
-        Http::fake(['rajaongkir.komerce.id/api/v1/calculate/domestic-cost' => Http::response(['meta' => ['code' => 200], 'data' => [
-            ['name' => 'JNE', 'code' => 'jne', 'service' => 'REG', 'cost' => 12000, 'etd' => '2-3 day'],
-        ]])]);
+        Http::fake([
+            'tdev.kiriminaja.com/api/mitra/v6.1/addresses*' => fn ($r) => Http::response([
+                'status' => true,
+                'data' => [
+                    str_contains(strtoupper((string) ($r['search'] ?? '')), 'KEBON')
+                        ? ['district_id' => 1, 'district_name' => 'KEBON JERUK', 'city_name' => 'JAKARTA BARAT']
+                        : ['district_id' => 2, 'district_name' => 'COBLONG', 'city_name' => 'BANDUNG'],
+                ],
+            ]),
+            'tdev.kiriminaja.com/api/mitra/v6.1/shipping_price' => Http::response(['status' => true, 'results' => [
+                ['courier' => 'jne', 'courier_name' => 'JNE', 'service_type' => 'REG', 'cost' => 12000, 'etd' => '2-3'],
+            ]]),
+        ]);
         $admin = User::factory()->create(['is_admin' => true]);
-        config(['services.rajaongkir.key' => 'k']);
+        config(['services.kiriminaja.key' => 'v4.local.k', 'services.kiriminaja.sandbox' => true]);
         $wh = Region::create(['province' => 'DKI JAKARTA', 'city' => 'JAKARTA BARAT', 'district' => 'KEBON JERUK', 'island' => 'Jawa', 'rajaongkir_id' => 1]);
         $dest = Region::create(['province' => 'JAWA BARAT', 'city' => 'BANDUNG', 'district' => 'COBLONG', 'island' => 'Jawa', 'rajaongkir_id' => 2]);
         $dp = DropshipProduct::create(['sku' => 'DS-9', 'product_type' => 'physical', 'name' => 'Blender', 'category' => 'Rumah', 'status' => 'active', 'weight_gram' => 400,

@@ -26,15 +26,15 @@ class Regions
         'Maluku & Papua' => ['MALUKU', 'MALUKU UTARA', 'PAPUA', 'PAPUA BARAT', 'PAPUA BARAT DAYA', 'PAPUA SELATAN', 'PAPUA TENGAH', 'PAPUA PEGUNUNGAN'],
     ];
 
-    public static function search(string $q, ?UserIntegration $rajaongkir = null): Collection
+    public static function search(string $q, ?UserIntegration $shipping = null): Collection
     {
         $q = trim($q);
-        // RajaOngkir (Komerce): every kelurahan in Indonesia with its kode pos.
-        if ($ro = \App\Support\RajaOngkir\RajaOngkir::for($rajaongkir)) {
+        // KiriminAja: every kelurahan/kecamatan in Indonesia with its postal code.
+        if ($ka = \App\Support\KiriminAja\KiriminAja::for($shipping)) {
             try {
-                return self::fromRajaOngkir($ro, $q);
+                return self::fromKiriminAja($ka, $q);
             } catch (Throwable $e) {
-                Log::warning("RajaOngkir destination search '{$q}': {$e->getMessage()}");
+                Log::warning("KiriminAja destination search '{$q}': {$e->getMessage()}");
             }
         }
         $like = '%'.str_replace(['%', '_'], ['\%', '\_'], $q).'%';
@@ -44,27 +44,38 @@ class Regions
             ->orderBy('province')->orderBy('city')->orderBy('district')->limit(30)->get();
     }
 
-    /** Destinations from RajaOngkir, stored as kelurahan-level regions so checkout/rates can use them. */
-    private static function fromRajaOngkir(\App\Support\RajaOngkir\RajaOngkir $ro, string $q): Collection
+    /** Destinations from KiriminAja, stored as kelurahan/kecamatan-level regions so checkout/rates can use them. */
+    private static function fromKiriminAja(\App\Support\KiriminAja\KiriminAja $ka, string $q): Collection
     {
-        return collect($ro->searchDestinations($q))->map(function ($d) {
+        return collect($ka->searchDestinations($q))->map(function ($d) use ($ka) {
             $province = self::clean($d['province_name'] ?? '');
-            $region = Region::firstOrNew(['rajaongkir_id' => $d['id']]);
-            $region->forceFill([
+            $city = self::clean($d['city_name'] ?? '', true);
+            $district = self::clean($d['district_name'] ?? '');
+            $subdistrict = self::clean($d['subdistrict_name'] ?? '') ?: null;
+            $zip = (string) ($d['postal_code'] ?? $d['zip_code'] ?? '');
+            $postal = ($zip !== '' && $zip !== '0') ? $zip : null;
+
+            $region = Region::firstOrNew([
                 'province' => $province,
-                'city' => self::clean($d['city_name'] ?? '', true),
-                'district' => self::clean($d['district_name'] ?? ''),
-                'subdistrict' => self::clean($d['subdistrict_name'] ?? '') ?: null,
-                'postal_code' => ($d['zip_code'] ?? '') && $d['zip_code'] !== '0' ? (string) $d['zip_code'] : null,
+                'city' => $city,
+                'district' => $district,
+                'subdistrict' => $subdistrict,
+            ]);
+            $region->forceFill([
+                'postal_code' => $postal ?: $region->postal_code,
                 'island' => self::island($province),
             ]);
             if ($region->isDirty()) {
                 $region->save();
             }
+            $districtId = (int) ($d['district_id'] ?? $d['kecamatan_id'] ?? $d['id'] ?? 0);
+            if ($districtId > 0) {
+                $ka->rememberDistrictId($region, $districtId);
+            }
 
             return $region;
         })
-            // RajaOngkir matches any word; put kelurahan/kecamatan/kota that contain the whole phrase first.
+            // Put kelurahan/kecamatan/kota that contain the whole phrase first.
             ->sortBy(function (Region $r) use ($q) {
                 $phrase = Str::upper($q);
                 $fields = [$r->subdistrict, $r->district, $r->city, $r->postal_code];
