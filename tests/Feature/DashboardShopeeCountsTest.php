@@ -83,6 +83,7 @@ class DashboardShopeeCountsTest extends TestCase
 
         $this->assertSame(4, $tab('processed'));
         $this->assertSame(4, $tab('to_ship'));
+        $this->assertSame(2, $tab('in_cancel'));
         $this->assertSame($tab('processed'), $cards['shopee_to_print']);
         $this->assertSame($tab('to_ship'), $cards['shopee_to_ship']);
     }

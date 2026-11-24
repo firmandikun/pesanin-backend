@@ -266,6 +266,8 @@ class OrderController extends Controller
             'perlu_kirim' => $q->where('shopee_auto_ship', false)->whereIn('external_status', ['PENDING', 'READY_TO_SHIP', 'PROCESSED', 'RETRY_SHIP', 'IN_CANCEL']),
             // Already arranged; a failed pickup (RETRY_SHIP) waits for the courier to come back.
             'processed' => $q->where('shopee_auto_ship', false)->where(fn ($w) => $w->whereIn('external_status', ['PROCESSED', 'RETRY_SHIP'])->orWhere(fn ($x) => $inCancel($x, true))),
+            // Pembatalan diajukan oleh pembeli (IN_CANCEL)
+            'in_cancel', 'IN_CANCEL' => $q->where('external_status', 'IN_CANCEL'),
             // Seller Centre keeps a parcel being returned (TO_RETURN) under "Dikirim" too.
             'shipping' => $q->whereIn('external_status', ['SHIPPED', 'TO_CONFIRM_RECEIVE', 'TO_RETURN']),
             // "Selesai" defaults to orders completed today (sent done=all to see every completed order).
