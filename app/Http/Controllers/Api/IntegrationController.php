@@ -217,6 +217,62 @@ class IntegrationController extends Controller
         return response()->json(['ok' => true]);
     }
 
+    /** KiriminAja webhook: updates tracking_number (AWB) and shipping_status when KiriminAja pushes package updates. */
+    public function kiriminajaWebhook(Request $request)
+    {
+        $p = $request->all();
+        $data = is_array($p['data'] ?? null) ? $p['data'] : $p;
+        $orderId = (string) ($data['order_id'] ?? $data['kj_order_id'] ?? $p['order_id'] ?? '');
+        $awb = trim((string) ($data['awb'] ?? $data['receipt'] ?? $p['awb'] ?? ''));
+        $rawStatus = strtolower((string) ($data['status'] ?? $data['status_code'] ?? $p['status'] ?? ''));
+
+        if ($orderId === '' && $awb === '') {
+            return response()->json(['ok' => true]);
+        }
+
+        $prefix = trim((string) config('services.kiriminaja.prefix', ''));
+        $plainCode = $prefix !== '' && str_starts_with($orderId, "{$prefix}-") ? substr($orderId, strlen($prefix) + 1) : $orderId;
+
+        $order = Order::where(function ($q) use ($orderId, $plainCode, $awb) {
+            if ($orderId !== '') {
+                $q->where('shipping_ref', $orderId)->orWhere('code', $plainCode);
+            }
+            if ($awb !== '') {
+                $orderId !== '' ? $q->orWhere('tracking_number', $awb) : $q->where('tracking_number', $awb);
+            }
+        })->first();
+
+        if (! $order) {
+            return response()->json(['ok' => true]);
+        }
+
+        $updates = [];
+        if ($awb !== '' && ! $order->tracking_number) {
+            $updates['tracking_number'] = $awb;
+        }
+        $shipStatus = match (true) {
+            str_contains($rawStatus, 'deliver') && ! str_contains($rawStatus, 'on_deliver') => 'delivered',
+            str_contains($rawStatus, 'return') || str_contains($rawStatus, 'rts') => 'returned',
+            str_contains($rawStatus, 'pickup') || str_contains($rawStatus, 'picked') => 'picked_up',
+            str_contains($rawStatus, 'transit') || str_contains($rawStatus, 'on_deliver') || str_contains($rawStatus, 'ship') || str_contains($rawStatus, 'manifest') => 'in_transit',
+            default => null,
+        };
+        if ($shipStatus) {
+            $updates['shipping_status'] = $shipStatus;
+            if ($shipStatus === 'delivered') {
+                $updates['status'] = 'completed';
+                $updates['completed_at'] = $order->completed_at ?? now();
+            } elseif ($order->status === 'pending') {
+                $updates['status'] = 'processing';
+            }
+        }
+        if ($updates !== []) {
+            $order->forceFill($updates)->save();
+        }
+
+        return response()->json(['ok' => true]);
+    }
+
     private function present(?UserIntegration $i, ?string $provider = null): array
     {
         $p = $provider ?? $i?->provider;

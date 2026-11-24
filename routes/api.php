@@ -33,6 +33,9 @@ Route::get('/brand/app-icon', fn () => response()->file(public_path('app-icon.pn
 Route::post('/shopee/push', ShopeePushController::class)->middleware('throttle:600,1');
 // Midtrans callback (called by the provider, not by the app).
 Route::post('/midtrans/notify', [\App\Http\Controllers\Api\IntegrationController::class, 'midtransNotify'])->middleware('throttle:600,1');
+// KiriminAja webhook for waybill issuance & delivery status updates.
+Route::post('/webhook', [\App\Http\Controllers\Api\IntegrationController::class, 'kiriminajaWebhook'])->middleware('throttle:120,1');
+Route::post('/kiriminaja/webhook', [\App\Http\Controllers\Api\IntegrationController::class, 'kiriminajaWebhook'])->middleware('throttle:120,1');
 
 Route::prefix('public')->middleware('throttle:60,1')->group(function () {
     Route::get('/regions', [PublicCheckoutController::class, 'regions']);

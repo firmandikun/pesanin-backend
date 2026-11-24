@@ -124,5 +124,14 @@ class KiriminAjaIntegrationTest extends TestCase
         $int = $this->actingAs($seller)->getJson('/api/integrations')->assertOk()->json('kiriminaja');
         $this->assertTrue($int['connected']);
         $this->assertFalse($int['is_production']);
+
+        // 7. KiriminAja webhook updates tracking_number & shipping_status
+        $this->postJson('/api/webhook', [
+            'order_id' => 'KA-001',
+            'awb' => 'JNE123456',
+            'status' => 'delivered',
+        ])->assertOk();
+        $order->refresh();
+        $this->assertSame(['delivered', 'completed'], [$order->shipping_status, $order->status]);
     }
 }
