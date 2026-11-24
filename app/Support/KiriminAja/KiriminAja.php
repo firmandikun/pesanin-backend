@@ -171,54 +171,47 @@ class KiriminAja
         $value = max(1000, $itemValue);
 
         $cacheKey = 'kiriminaja:cost:'.$this->envTag().":{$origin}:{$dest}:".(int) ceil($weight / 250);
-        if ($cached = Cache::get($cacheKey)) {
-            return $cached;
-        }
 
-        $res = $this->call('post', '/api/mitra/v6.1/shipping_price', [
-            'origin' => $origin,
-            'destination' => $dest,
-            'weight' => $weight,
-            'item_value' => $value,
-            'insurance' => 0,
-            'courier' => self::COURIERS,
-        ]);
+        return Cache::remember($cacheKey, now()->addHours(6), function () use ($origin, $dest, $weight, $value) {
+            $res = $this->call('post', '/api/mitra/v6.1/shipping_price', [
+                'origin' => $origin,
+                'destination' => $dest,
+                'weight' => $weight,
+                'item_value' => $value,
+                'insurance' => 0,
+                'courier' => self::COURIERS,
+            ]);
 
-        $rows = $res['results'] ?? $res['data']['results'] ?? $res['data'] ?? [];
-        if (! is_array($rows)) {
-            return [];
-        }
+            $rows = $res['results'] ?? $res['data']['results'] ?? $res['data'] ?? [];
+            if (! is_array($rows)) {
+                return [];
+            }
 
-        $rates = collect($rows)->map(function ($r) {
-            $rawCode = strtolower((string) ($r['courier'] ?? $r['service'] ?? ''));
-            $courier = self::CODE[$rawCode] ?? $rawCode;
-            $service = (string) ($r['service_type'] ?? $r['service'] ?? 'REG');
-            $etdRaw = trim(str_ireplace(['day', 'days', 'hari'], '', (string) ($r['etd'] ?? $r['duration'] ?? '')));
+            return collect($rows)->map(function ($r) {
+                $rawCode = strtolower((string) ($r['courier'] ?? $r['service'] ?? ''));
+                $courier = self::CODE[$rawCode] ?? $rawCode;
+                $service = (string) ($r['service_type'] ?? $r['service'] ?? 'REG');
+                $etdRaw = trim(str_ireplace(['day', 'days', 'hari'], '', (string) ($r['etd'] ?? $r['duration'] ?? '')));
 
-            return [
-                'code' => $courier.':'.strtolower(str_replace(' ', '_', $service)),
-                'courier' => $courier,
-                'name' => self::shortName($courier, (string) ($r['courier_name'] ?? $r['name'] ?? '')),
-                'service' => $service,
-                'cost' => (int) ($r['cost'] ?? $r['price'] ?? 0),
-                'etd' => $etdRaw !== '' ? "{$etdRaw} hari" : '-',
-                'cod' => (bool) ($r['cod'] ?? false),
-                'provider' => 'kiriminaja',
-            ];
-        })->filter(fn ($r) => $r['cost'] > 0 && $r['courier'] !== '')
-            // Up to two choices per courier: the cheapest and, if different, the fastest.
-            ->groupBy('courier')->flatMap(function ($g) {
-                $cheap = $g->sortBy('cost')->first();
-                $fast = $g->sortBy(fn ($r) => (int) $r['etd'] ?: 99)->first();
+                return [
+                    'code' => $courier.':'.strtolower(str_replace(' ', '_', $service)),
+                    'courier' => $courier,
+                    'name' => self::shortName($courier, (string) ($r['courier_name'] ?? $r['name'] ?? '')),
+                    'service' => $service,
+                    'cost' => (int) ($r['cost'] ?? $r['price'] ?? 0),
+                    'etd' => $etdRaw !== '' ? "{$etdRaw} hari" : '-',
+                    'cod' => (bool) ($r['cod'] ?? false),
+                    'provider' => 'kiriminaja',
+                ];
+            })->filter(fn ($r) => $r['cost'] > 0 && $r['courier'] !== '')
+                // Up to two choices per courier: the cheapest and, if different, the fastest.
+                ->groupBy('courier')->flatMap(function ($g) {
+                    $cheap = $g->sortBy('cost')->first();
+                    $fast = $g->sortBy(fn ($r) => (int) $r['etd'] ?: 99)->first();
 
-                return $fast['code'] !== $cheap['code'] && (int) $fast['etd'] < (int) $cheap['etd'] ? [$cheap, $fast] : [$cheap];
-            })->sortBy('cost')->values()->all();
-
-        if ($rates !== []) {
-            Cache::put($cacheKey, $rates, now()->addHours(6));
-        }
-
-        return $rates;
+                    return $fast['code'] !== $cheap['code'] && (int) $fast['etd'] < (int) $cheap['etd'] ? [$cheap, $fast] : [$cheap];
+                })->sortBy('cost')->values()->all();
+        });
     }
 
     /** Create order & request courier pickup via KiriminAja v6.2. @return array{order_id: string, awb: ?string} */
@@ -244,45 +237,15 @@ class KiriminAja
         }
 
         $phone = fn (?string $p) => preg_replace('/^\+?62/', '0', preg_replace('/[^\d+]/', '', (string) $p));
-        $qty = max(1, (int) $order->quantity);
         $items = max(0, (int) $order->subtotal);
         $cod = $order->payment_method === 'cod';
         $grand = $items + (int) $order->shipping_cost;
-        $rawTotalWeight = max(1, (int) ($order->weight ?: ($order->product?->weight ?? 1000) * $qty));
-        $unitWeight = max(1, (int) round($rawTotalWeight / $qty));
-        $weight = $unitWeight * $qty;
+        $weight = max(1, (int) ($order->weight ?: ($order->product?->weight ?? 1000) * max(1, (int) $order->quantity)));
 
         $at = now('Asia/Jakarta')->addMinutes(100)->second(0);
         $at->addMinutes((15 - $at->minute % 15) % 15);
         if ($at->hour >= 17 || $at->hour < 8) {
             $at = ($at->hour >= 17 ? $at->addDay() : $at)->setTime(9, 0);
-        }
-
-        $originId = $this->districtId($pickup->region);
-        $destId = $this->districtId($dest);
-        $itemValue = max(1000, $items);
-
-        // KiriminAja rejects request_pickup ("Ongkir tidak sesuai") if shipping_cost differs from their tariff
-        // (e.g. when the seller applied a shipping discount or extra fee at checkout). Match their exact cost.
-        $kaShippingCost = (int) $order->shipping_cost;
-        try {
-            $priceRes = $this->call('post', '/api/mitra/v6.1/shipping_price', [
-                'origin' => $originId,
-                'destination' => $destId,
-                'weight' => $weight,
-                'item_value' => $itemValue,
-                'insurance' => 0,
-                'courier' => [$service],
-            ]);
-            $priceRows = $priceRes['results'] ?? $priceRes['data']['results'] ?? $priceRes['data'] ?? [];
-            if (is_array($priceRows)) {
-                $matched = collect($priceRows)->first(fn ($r) => strtoupper((string) ($r['service_type'] ?? $r['service'] ?? '')) === strtoupper((string) $order->courier_service));
-                if ($matched && (int) ($matched['cost'] ?? 0) > 0) {
-                    $kaShippingCost = (int) $matched['cost'];
-                }
-            }
-        } catch (\Throwable) {
-            // Fall back to order's stored shipping_cost if tariff lookup fails.
         }
 
         $prefix = trim((string) config('services.kiriminaja.prefix', ''));
@@ -294,20 +257,20 @@ class KiriminAja
             'address' => (string) $pickup->address,
             'phone' => $phone($pickup->phone ?: $order->user->whatsapp),
             'name' => (string) ($pickup->name ?: $order->user->store_name ?: 'Pesanin'),
-            'kecamatan_id' => $originId,
+            'kecamatan_id' => $this->districtId($pickup->region),
             'schedule' => $at->format('Y-m-d H:i:s'),
             'packages' => [[
                 'order_id' => $kaOrderId,
                 'destination_name' => (string) $order->customer_name,
                 'destination_phone' => $phone($order->phone),
                 'destination_address' => trim(implode(', ', array_filter([$order->address, $order->village]))),
-                'destination_kecamatan_id' => $destId,
+                'destination_kecamatan_id' => $this->districtId($dest),
                 'weight' => $weight,
                 'width' => 10,
                 'length' => 10,
                 'height' => 10,
-                'item_value' => $itemValue,
-                'shipping_cost' => $kaShippingCost,
+                'item_value' => max(1000, $items),
+                'shipping_cost' => (int) $order->shipping_cost,
                 'service' => $service,
                 'service_type' => (string) $order->courier_service,
                 'cod' => $cod ? $grand : 0,
@@ -316,8 +279,8 @@ class KiriminAja
                 'items' => [[
                     'name' => (string) ($order->product?->name ?? 'Produk'),
                     'price' => (int) $order->unit_price,
-                    'qty' => $qty,
-                    'weight' => $unitWeight,
+                    'qty' => max(1, (int) $order->quantity),
+                    'weight' => $weight,
                     'width' => 10,
                     'length' => 10,
                     'height' => 10,
@@ -331,15 +294,11 @@ class KiriminAja
 
         $res = $this->call('post', '/api/mitra/v6.2/request_pickup', $payload);
         $data = $res['data'] ?? $res;
-        $pkg = $res['details'][0] ?? (is_array($data) && array_is_list($data) ? ($data[0] ?? []) : ($data['packages'][0] ?? $data));
-        $orderId = (string) ($pkg['kj_order_id'] ?? $pkg['order_id'] ?? $data['order_id'] ?? $kaOrderId);
-        $awb = $pkg['awb'] ?? $pkg['receipt'] ?? $data['receipt'] ?? $data['awb'] ?? null;
+        $pkg = is_array($data) && array_is_list($data) ? ($data[0] ?? []) : ($data['packages'][0] ?? $data);
+        $orderId = (string) ($pkg['order_id'] ?? $data['order_id'] ?? $order->code);
+        $awb = $pkg['receipt'] ?? $pkg['awb'] ?? $data['receipt'] ?? $data['awb'] ?? null;
 
-        return [
-            'order_id' => $orderId,
-            'awb' => $awb ? (string) $awb : null,
-            'pickup_number' => ! empty($res['pickup_number']) ? (string) $res['pickup_number'] : null,
-        ];
+        return ['order_id' => $orderId, 'awb' => $awb ? (string) $awb : null];
     }
 
     /** Track a shipment by order_id or AWB (resi). */

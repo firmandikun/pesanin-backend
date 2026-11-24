@@ -34,10 +34,10 @@ class CourierBooking
     }
 
     /** Book one order. @return string|null error message (null = waybill issued or pickup requested) */
-    public static function book(Order $order, KiriminAja $api): ?string
+    public static function book(Order $order, KiriminAja $api, bool $dropoff = false): ?string
     {
         try {
-            $res = $api->requestPickup($order);
+            $res = $api->requestPickup($order, $dropoff);
             $order->forceFill([
                 'shipping_ref' => $res['order_id'],
                 'shipping_provider' => 'kiriminaja',

@@ -146,6 +146,7 @@ class IntegrationController extends Controller
             'courier_code' => 'nullable|string|max:80',
             'courier_service' => 'nullable|string|max:80',
             'shipping_cost' => 'nullable|integer|min:0',
+            'pickup_method' => 'nullable|in:pickup,dropoff',
         ]);
         $user = $request->user();
         $platform = \App\Support\KiriminAja\KiriminAja::platform();
@@ -153,6 +154,7 @@ class IntegrationController extends Controller
         abort_unless($api, 422, 'Layanan pesan kurir Pesanin belum aktif. Sementara isi resi manual.');
         $done = [];
         $failed = [];
+        $dropoff = ($data['pickup_method'] ?? 'pickup') === 'dropoff';
         $overrideCourier = count($data['order_ids']) === 1 && ! empty($data['courier_code']) && ! empty($data['courier_service']);
         foreach ($user->orders()->whereIn('id', $data['order_ids'])->get() as $order) {
             if ($overrideCourier) {
@@ -169,7 +171,7 @@ class IntegrationController extends Controller
                 continue;
             }
             $order->auto_ship_tries = 0;
-            ($error = \App\Support\KiriminAja\CourierBooking::book($order, $api))
+            ($error = \App\Support\KiriminAja\CourierBooking::book($order, $api, $dropoff))
                 ? $failed[] = ['code' => $order->code, 'error' => $error]
                 : $done[] = ['code' => $order->code, 'waybill' => $order->tracking_number ?: $order->shipping_ref];
         }
