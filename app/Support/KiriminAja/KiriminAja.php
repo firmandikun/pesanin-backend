@@ -97,6 +97,30 @@ class KiriminAja
         }
     }
 
+    /** Parse a KiriminAja address item (supports both `full_address` string and explicit name fields). */
+    public static function parseAddress(array $d): array
+    {
+        $parts = array_values(array_filter(array_map('trim', explode(',', (string) ($d['full_address'] ?? ''))), fn ($v) => $v !== ''));
+        $n = count($parts);
+        $postalFromParts = $n >= 2 && preg_match('/^\d{5}$/', $parts[$n - 1]) ? array_pop($parts) : '';
+        $n = count($parts);
+
+        $subdistrict = (string) ($d['subdistrict_name'] ?? ($n >= 4 ? $parts[0] : ''));
+        $district = (string) ($d['district_name'] ?? ($n >= 4 ? $parts[1] : ($n === 3 ? $parts[0] : ($parts[0] ?? ''))));
+        $city = (string) ($d['city_name'] ?? ($n >= 4 ? $parts[2] : ($n === 3 ? $parts[1] : ($parts[1] ?? ''))));
+        $province = (string) ($d['province_name'] ?? ($n >= 4 ? $parts[3] : ($n === 3 ? $parts[2] : ($parts[2] ?? ''))));
+        $zip = (string) ($d['postal_code'] ?? $d['zip_code'] ?? $postalFromParts);
+
+        return [
+            'district_id' => (int) ($d['district_id'] ?? $d['kecamatan_id'] ?? $d['id'] ?? 0),
+            'subdistrict' => $subdistrict,
+            'district' => $district,
+            'city' => $city,
+            'province' => $province,
+            'postal_code' => ($zip !== '' && $zip !== '0') ? $zip : null,
+        ];
+    }
+
     /** KiriminAja district_id for a region (cached permanently per environment + region id). */
     public function districtId(Region $region): int
     {
@@ -107,20 +131,17 @@ class KiriminAja
 
         $norm = fn ($s) => trim(preg_replace('/^(KOTA|KABUPATEN|KAB\.)\s+/', '', mb_strtoupper((string) $s)));
         foreach (array_filter([$region->subdistrict, $region->district, $region->postal_code]) as $kw) {
-            $hits = $this->searchDestinations((string) $kw);
-            $hit = collect($hits)->first(fn ($h) => $norm($h['district_name'] ?? '') === $norm($region->district)
-                && str_contains($norm($h['city_name'] ?? ''), $norm($region->city))
-                && (! $region->postal_code || (string) ($h['postal_code'] ?? $h['zip_code'] ?? '') === (string) $region->postal_code))
-                ?? collect($hits)->first(fn ($h) => $norm($h['district_name'] ?? '') === $norm($region->district)
-                    && str_contains($norm($h['city_name'] ?? ''), $norm($region->city)))
-                ?? (count($hits) === 1 ? $hits[0] : null);
-            if ($hit) {
-                $id = (int) ($hit['district_id'] ?? $hit['kecamatan_id'] ?? $hit['id'] ?? 0);
-                if ($id > 0) {
-                    $this->rememberDistrictId($region, $id);
+            $hits = collect($this->searchDestinations((string) $kw))->map(fn ($d) => self::parseAddress($d));
+            $hit = $hits->first(fn ($h) => $norm($h['district']) === $norm($region->district)
+                && str_contains($norm($h['city']), $norm($region->city))
+                && (! $region->postal_code || (string) ($h['postal_code'] ?? '') === (string) $region->postal_code))
+                ?? $hits->first(fn ($h) => $norm($h['district']) === $norm($region->district)
+                    && str_contains($norm($h['city']), $norm($region->city)))
+                ?? ($hits->count() === 1 ? $hits->first() : null);
+            if ($hit && $hit['district_id'] > 0) {
+                $this->rememberDistrictId($region, $hit['district_id']);
 
-                    return $id;
-                }
+                return $hit['district_id'];
             }
         }
 
@@ -143,6 +164,7 @@ class KiriminAja
                 'destination' => $dest,
                 'weight' => $weight,
                 'item_value' => $value,
+                'insurance' => 0,
                 'courier' => self::COURIERS,
             ]);
 

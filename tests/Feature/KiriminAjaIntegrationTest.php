@@ -40,15 +40,15 @@ class KiriminAjaIntegrationTest extends TestCase
                 'status' => true,
                 'code' => 200,
                 'data' => str_contains(strtoupper((string) ($r['search'] ?? '')), 'SERPONG')
-                    ? [['id' => 11, 'district_id' => 5783, 'subdistrict_name' => 'SERPONG', 'district_name' => 'SERPONG', 'city_name' => 'TANGERANG SELATAN', 'province_name' => 'BANTEN', 'postal_code' => '15310']]
-                    : [['id' => 31555, 'district_id' => 5507, 'subdistrict_name' => 'CIBUBUR', 'district_name' => 'CIRACAS', 'city_name' => 'JAKARTA TIMUR', 'province_name' => 'DKI JAKARTA', 'postal_code' => '13720']],
+                    ? [['province_id' => 3, 'city_id' => 457, 'district_id' => 5783, 'subdistrict_id' => 11, 'full_address' => 'Serpong, Serpong, Tangerang Selatan, Banten, 15310']]
+                    : [['province_id' => 6, 'city_id' => 154, 'district_id' => 5507, 'subdistrict_id' => 31555, 'full_address' => 'Cibubur, Ciracas, Jakarta Timur, DKI Jakarta, 13720']],
             ]),
             'tdev.kiriminaja.com/api/mitra/v6.1/shipping_price' => Http::response([
                 'status' => true,
                 'code' => 200,
                 'results' => [
-                    ['courier' => 'jne', 'courier_name' => 'JNE', 'service_type' => 'REG', 'cost' => 10000, 'etd' => '1-2', 'cod' => true],
-                    ['courier' => 'ide', 'courier_name' => 'ID Express', 'service_type' => 'STD', 'cost' => 8500, 'etd' => '2-3', 'cod' => true],
+                    ['service' => 'jne', 'service_name' => 'JNE Express Reguler', 'service_type' => 'REG', 'cost' => '10000', 'etd' => '1-2', 'cod' => true],
+                    ['service' => 'ide', 'service_name' => 'ID Express STD', 'service_type' => 'STD', 'cost' => '8500', 'etd' => '2-3', 'cod' => true],
                 ],
             ]),
             'tdev.kiriminaja.com/api/mitra/v6.2/request_pickup' => Http::response([
@@ -81,6 +81,7 @@ class KiriminAjaIntegrationTest extends TestCase
         Http::assertSent(fn (HttpRequest $r) => str_contains($r->url(), '/api/mitra/v6.1/shipping_price')
             && $r['origin'] == 5783
             && $r['destination'] == 5507
+            && $r['insurance'] === 0
             && $r->header('Authorization')[0] === 'Bearer v4.local.test-key');
 
         // 3. Checkout

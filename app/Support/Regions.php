@@ -48,12 +48,12 @@ class Regions
     private static function fromKiriminAja(\App\Support\KiriminAja\KiriminAja $ka, string $q): Collection
     {
         return collect($ka->searchDestinations($q))->map(function ($d) use ($ka) {
-            $province = self::clean($d['province_name'] ?? '');
-            $city = self::clean($d['city_name'] ?? '', true);
-            $district = self::clean($d['district_name'] ?? '');
-            $subdistrict = self::clean($d['subdistrict_name'] ?? '') ?: null;
-            $zip = (string) ($d['postal_code'] ?? $d['zip_code'] ?? '');
-            $postal = ($zip !== '' && $zip !== '0') ? $zip : null;
+            $parsed = \App\Support\KiriminAja\KiriminAja::parseAddress($d);
+            $province = self::clean($parsed['province']);
+            $city = self::clean($parsed['city'], true);
+            $district = self::clean($parsed['district']);
+            $subdistrict = self::clean($parsed['subdistrict']) ?: null;
+            $postal = $parsed['postal_code'];
 
             $region = Region::firstOrNew([
                 'province' => $province,
@@ -68,9 +68,8 @@ class Regions
             if ($region->isDirty()) {
                 $region->save();
             }
-            $districtId = (int) ($d['district_id'] ?? $d['kecamatan_id'] ?? $d['id'] ?? 0);
-            if ($districtId > 0) {
-                $ka->rememberDistrictId($region, $districtId);
+            if ($parsed['district_id'] > 0) {
+                $ka->rememberDistrictId($region, $parsed['district_id']);
             }
 
             return $region;
