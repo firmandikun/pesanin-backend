@@ -117,17 +117,52 @@ class IntegrationController extends Controller
         return response()->noContent();
     }
 
+    /** Live KiriminAja courier options for one order so the seller can pick/change expedition before booking. */
+    public function orderRates(Request $request, Order $order)
+    {
+        abort_unless($order->user_id === $request->user()->id, 404);
+        $order->loadMissing('user', 'product');
+        $pickup = $order->user->pickupAddress();
+        if (! $pickup?->region) {
+            return ['rates' => [], 'error' => 'Alamat pickup belum diisi (Pengaturan → Alamat).'];
+        }
+        $dest = $order->region_id ? \App\Models\Region::find($order->region_id) : null;
+        if (! $dest) {
+            return ['rates' => [], 'error' => 'Alamat pembeli belum lengkap (kecamatan tujuan kosong).'];
+        }
+        $weight = max(1, (int) ($order->weight ?: ($order->product?->weight ?? 1000) * max(1, (int) $order->quantity)));
+        [$rates, $error] = \App\Support\CheckoutService::rates($request->user(), false, $pickup->region, $dest, $weight, (int) $order->subtotal);
+
+        return ['rates' => $rates, 'error' => $error];
+    }
+
     /** "Pesan kurir": book web/manual orders through KiriminAja (waybill + courier pickup). */
     public function book(Request $request)
     {
-        $data = $request->validate(['order_ids' => 'required|array|min:1|max:50', 'order_ids.*' => 'integer']);
+        $data = $request->validate([
+            'order_ids' => 'required|array|min:1|max:50',
+            'order_ids.*' => 'integer',
+            'courier' => 'nullable|string|max:60',
+            'courier_code' => 'nullable|string|max:80',
+            'courier_service' => 'nullable|string|max:80',
+            'shipping_cost' => 'nullable|integer|min:0',
+        ]);
         $user = $request->user();
         $platform = \App\Support\KiriminAja\KiriminAja::platform();
         $api = ! empty($platform?->settings['delivery']['enabled']) ? \App\Support\KiriminAja\KiriminAja::for($platform) : null;
         abort_unless($api, 422, 'Layanan pesan kurir Pesanin belum aktif. Sementara isi resi manual.');
         $done = [];
         $failed = [];
+        $overrideCourier = count($data['order_ids']) === 1 && ! empty($data['courier_code']) && ! empty($data['courier_service']);
         foreach ($user->orders()->whereIn('id', $data['order_ids'])->get() as $order) {
+            if ($overrideCourier) {
+                $order->forceFill(array_filter([
+                    'courier' => $data['courier'] ?? $order->courier,
+                    'courier_code' => $data['courier_code'],
+                    'courier_service' => $data['courier_service'],
+                    'shipping_cost' => $data['shipping_cost'] ?? null,
+                ], fn ($v) => $v !== null))->save();
+            }
             if ($why = \App\Support\KiriminAja\CourierBooking::blocker($order, $user)) {
                 $failed[] = ['code' => $order->code, 'error' => $why];
 

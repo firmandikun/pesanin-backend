@@ -80,13 +80,18 @@ class KiriminAja
     public function searchDestinations(string $q): array
     {
         $key = 'kiriminaja:dest:'.$this->envTag().':'.mb_strtolower(trim($q));
+        if ($cached = Cache::get($key)) {
+            return $cached;
+        }
 
-        return Cache::remember($key, now()->addDays(30), function () use ($q) {
-            $res = $this->call('get', '/api/mitra/v6.1/addresses', ['search' => $q]);
-            $rows = $res['data'] ?? $res['results'] ?? (is_array($res) && array_is_list($res) ? $res : []);
+        $res = $this->call('get', '/api/mitra/v6.1/addresses', ['search' => $q]);
+        $rows = $res['data'] ?? $res['results'] ?? (is_array($res) && array_is_list($res) ? $res : []);
+        $rows = is_array($rows) ? $rows : [];
+        if ($rows !== []) {
+            Cache::put($key, $rows, now()->addDays(30));
+        }
 
-            return is_array($rows) ? $rows : [];
-        });
+        return $rows;
     }
 
     /** Remember a Region's KiriminAja district_id so rates/pickup don't need an extra lookup. */
@@ -130,7 +135,16 @@ class KiriminAja
         }
 
         $norm = fn ($s) => trim(preg_replace('/^(KOTA|KABUPATEN|KAB\.)\s+/', '', mb_strtoupper((string) $s)));
-        foreach (array_filter([$region->subdistrict, $region->district, $region->postal_code]) as $kw) {
+        $cleanCity = $norm($region->city);
+        $queries = array_values(array_unique(array_filter([
+            $region->subdistrict && $cleanCity ? trim("{$region->subdistrict} {$region->district} {$cleanCity}") : null,
+            $cleanCity ? trim("{$region->district} {$cleanCity}") : null,
+            $region->postal_code ?: null,
+            $region->subdistrict ?: null,
+            $region->district ?: null,
+        ])));
+
+        foreach ($queries as $kw) {
             $hits = collect($this->searchDestinations((string) $kw))->map(fn ($d) => self::parseAddress($d));
             $hit = $hits->first(fn ($h) => $norm($h['district']) === $norm($region->district)
                 && str_contains($norm($h['city']), $norm($region->city))
@@ -261,9 +275,10 @@ class KiriminAja
                     'width' => 10,
                     'length' => 10,
                     'height' => 10,
-                    'metadata' => array_filter([
-                        'variant_label' => $order->variant ?: null,
-                    ]),
+                    'metadata' => [
+                        'sku' => (string) ($order->product?->sku ?? ''),
+                        'variant_label' => (string) ($order->variant ?? ''),
+                    ],
                 ]],
             ]],
         ];

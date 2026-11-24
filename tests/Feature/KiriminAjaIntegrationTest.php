@@ -92,9 +92,21 @@ class KiriminAjaIntegrationTest extends TestCase
         $order = Order::firstOrFail();
         $this->assertSame(['10000', '13720', 'CIBUBUR', 'jne:reg'], [(string) (int) $order->shipping_cost, $order->postal_code, $order->village, $order->courier_code]);
 
-        // 4. Book pickup
-        $book = $this->actingAs($seller)->postJson('/api/orders/book', ['order_ids' => [$order->id]])->assertOk();
+        // 4. Order rates & book pickup (with expedition override + object metadata)
+        $orderRates = $this->actingAs($seller)->getJson("/api/orders/{$order->id}/shipping-rates")->assertOk()->json('rates');
+        $this->assertSame(['idexpress:std', 'jne:reg'], array_column($orderRates, 'code'));
+
+        $book = $this->actingAs($seller)->postJson('/api/orders/book', [
+            'order_ids' => [$order->id],
+            'courier' => 'JNE',
+            'courier_code' => 'jne:reg',
+            'courier_service' => 'REG',
+            'shipping_cost' => 10000,
+        ])->assertOk();
         $this->assertSame([['code' => $order->code, 'waybill' => 'JNE123456']], $book->json('shipped'));
+        Http::assertSent(fn (HttpRequest $r) => str_contains($r->url(), '/api/mitra/v6.2/request_pickup')
+            && is_string($r['packages'][0]['items'][0]['metadata']['sku'] ?? null)
+            && is_string($r['packages'][0]['items'][0]['metadata']['variant_label'] ?? null));
         $order->refresh();
         $this->assertSame(['KA-001', 'kiriminaja', 'JNE123456'], [$order->shipping_ref, $order->shipping_provider, $order->tracking_number]);
         $this->assertSame(0, CourierBooking::auto(), 'already booked');
