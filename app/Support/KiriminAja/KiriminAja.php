@@ -221,8 +221,8 @@ class KiriminAja
         return $rates;
     }
 
-    /** Create order & request courier pickup via KiriminAja v6.2. @return array{order_id: string, awb: ?string} */
-    public function requestPickup(Order $order): array
+    /** Create order & request courier pickup/dropoff via KiriminAja v6.2. @return array{order_id: string, awb: ?string, pickup_number: ?string} */
+    public function requestPickup(Order $order, bool $dropoff = false): array
     {
         $order->loadMissing('user', 'product');
         $pickup = $order->user->pickupAddress();
@@ -296,6 +296,7 @@ class KiriminAja
             'name' => (string) ($pickup->name ?: $order->user->store_name ?: 'Pesanin'),
             'kecamatan_id' => $originId,
             'schedule' => $at->format('Y-m-d H:i:s'),
+            'drop' => $dropoff,
             'packages' => [[
                 'order_id' => $kaOrderId,
                 'destination_name' => (string) $order->customer_name,
