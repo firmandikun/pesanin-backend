@@ -171,47 +171,54 @@ class KiriminAja
         $value = max(1000, $itemValue);
 
         $cacheKey = 'kiriminaja:cost:'.$this->envTag().":{$origin}:{$dest}:".(int) ceil($weight / 250);
+        if ($cached = Cache::get($cacheKey)) {
+            return $cached;
+        }
 
-        return Cache::remember($cacheKey, now()->addHours(6), function () use ($origin, $dest, $weight, $value) {
-            $res = $this->call('post', '/api/mitra/v6.1/shipping_price', [
-                'origin' => $origin,
-                'destination' => $dest,
-                'weight' => $weight,
-                'item_value' => $value,
-                'insurance' => 0,
-                'courier' => self::COURIERS,
-            ]);
+        $res = $this->call('post', '/api/mitra/v6.1/shipping_price', [
+            'origin' => $origin,
+            'destination' => $dest,
+            'weight' => $weight,
+            'item_value' => $value,
+            'insurance' => 0,
+            'courier' => self::COURIERS,
+        ]);
 
-            $rows = $res['results'] ?? $res['data']['results'] ?? $res['data'] ?? [];
-            if (! is_array($rows)) {
-                return [];
-            }
+        $rows = $res['results'] ?? $res['data']['results'] ?? $res['data'] ?? [];
+        if (! is_array($rows)) {
+            return [];
+        }
 
-            return collect($rows)->map(function ($r) {
-                $rawCode = strtolower((string) ($r['courier'] ?? $r['service'] ?? ''));
-                $courier = self::CODE[$rawCode] ?? $rawCode;
-                $service = (string) ($r['service_type'] ?? $r['service'] ?? 'REG');
-                $etdRaw = trim(str_ireplace(['day', 'days', 'hari'], '', (string) ($r['etd'] ?? $r['duration'] ?? '')));
+        $rates = collect($rows)->map(function ($r) {
+            $rawCode = strtolower((string) ($r['courier'] ?? $r['service'] ?? ''));
+            $courier = self::CODE[$rawCode] ?? $rawCode;
+            $service = (string) ($r['service_type'] ?? $r['service'] ?? 'REG');
+            $etdRaw = trim(str_ireplace(['day', 'days', 'hari'], '', (string) ($r['etd'] ?? $r['duration'] ?? '')));
 
-                return [
-                    'code' => $courier.':'.strtolower(str_replace(' ', '_', $service)),
-                    'courier' => $courier,
-                    'name' => self::shortName($courier, (string) ($r['courier_name'] ?? $r['name'] ?? '')),
-                    'service' => $service,
-                    'cost' => (int) ($r['cost'] ?? $r['price'] ?? 0),
-                    'etd' => $etdRaw !== '' ? "{$etdRaw} hari" : '-',
-                    'cod' => (bool) ($r['cod'] ?? false),
-                    'provider' => 'kiriminaja',
-                ];
-            })->filter(fn ($r) => $r['cost'] > 0 && $r['courier'] !== '')
-                // Up to two choices per courier: the cheapest and, if different, the fastest.
-                ->groupBy('courier')->flatMap(function ($g) {
-                    $cheap = $g->sortBy('cost')->first();
-                    $fast = $g->sortBy(fn ($r) => (int) $r['etd'] ?: 99)->first();
+            return [
+                'code' => $courier.':'.strtolower(str_replace(' ', '_', $service)),
+                'courier' => $courier,
+                'name' => self::shortName($courier, (string) ($r['courier_name'] ?? $r['name'] ?? '')),
+                'service' => $service,
+                'cost' => (int) ($r['cost'] ?? $r['price'] ?? 0),
+                'etd' => $etdRaw !== '' ? "{$etdRaw} hari" : '-',
+                'cod' => (bool) ($r['cod'] ?? false),
+                'provider' => 'kiriminaja',
+            ];
+        })->filter(fn ($r) => $r['cost'] > 0 && $r['courier'] !== '')
+            // Up to two choices per courier: the cheapest and, if different, the fastest.
+            ->groupBy('courier')->flatMap(function ($g) {
+                $cheap = $g->sortBy('cost')->first();
+                $fast = $g->sortBy(fn ($r) => (int) $r['etd'] ?: 99)->first();
 
-                    return $fast['code'] !== $cheap['code'] && (int) $fast['etd'] < (int) $cheap['etd'] ? [$cheap, $fast] : [$cheap];
-                })->sortBy('cost')->values()->all();
-        });
+                return $fast['code'] !== $cheap['code'] && (int) $fast['etd'] < (int) $cheap['etd'] ? [$cheap, $fast] : [$cheap];
+            })->sortBy('cost')->values()->all();
+
+        if ($rates !== []) {
+            Cache::put($cacheKey, $rates, now()->addHours(6));
+        }
+
+        return $rates;
     }
 
     /** Create order & request courier pickup via KiriminAja v6.2. @return array{order_id: string, awb: ?string} */
