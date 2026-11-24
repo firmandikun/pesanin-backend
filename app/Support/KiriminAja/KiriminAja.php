@@ -226,8 +226,12 @@ class KiriminAja
         if (! $dest) {
             throw new RuntimeException('Alamat pembeli belum lengkap (kecamatan tujuan kosong).');
         }
-        $rawCourier = strtok((string) $order->courier_code, ':') ?: strtolower((string) $order->courier);
-        $service = array_search($rawCourier, self::CODE, true) ?: $rawCourier;
+        $rawCourier = strtolower((string) (strtok((string) $order->courier_code, ':') ?: $order->courier));
+        $service = match ($rawCourier) {
+            'j&t', 'jnt' => 'jnt',
+            'ide', 'idexpress' => 'idexpress',
+            default => $rawCourier,
+        };
         if (! $service || ! $order->courier_service) {
             throw new RuntimeException("Kurir {$order->courier} {$order->courier_service} belum didukung untuk pesan otomatis.");
         }
