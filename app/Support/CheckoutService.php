@@ -119,7 +119,7 @@ class CheckoutService
         } catch (\Throwable $e) {
             \Illuminate\Support\Facades\Log::warning("KiriminAja rates for user {$seller->id}: {$e->getMessage()}");
 
-            return [[], 'Gagal mengambil ongkir dari KiriminAja. Coba lagi sebentar.'];
+            return [[], 'Gagal mengambil ongkir dari KiriminAja: '.$e->getMessage()];
         }
     }
 
