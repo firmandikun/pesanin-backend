@@ -80,6 +80,11 @@ class Tracking
         if ($ka && $trackId) {
             try {
                 $t = $ka->track($trackId);
+                $foundAwb = trim((string) ($t['summary']['awb'] ?? $t['awb'] ?? ''));
+                if ($foundAwb !== '' && ! $order->tracking_number) {
+                    $order->forceFill(['tracking_number' => $foundAwb])->save();
+                    $base['tracking_number'] = $foundAwb;
+                }
                 $rawHist = $t['history'] ?? $t['histories'] ?? [];
                 $events = collect($rawHist)->map(fn ($m) => [
                     'time' => ! empty($m['date'] ?? $m['created_at'] ?? null) ? Carbon::parse((string) ($m['date'] ?? $m['created_at']))->toIso8601String() : null,
