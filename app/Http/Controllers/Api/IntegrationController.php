@@ -221,53 +221,74 @@ class IntegrationController extends Controller
     public function kiriminajaWebhook(Request $request)
     {
         $p = $request->all();
-        $data = is_array($p['data'] ?? null) ? $p['data'] : $p;
-        $orderId = (string) ($data['order_id'] ?? $data['kj_order_id'] ?? $p['order_id'] ?? '');
-        $awb = trim((string) ($data['awb'] ?? $data['receipt'] ?? $p['awb'] ?? ''));
-        $rawStatus = strtolower((string) ($data['status'] ?? $data['status_code'] ?? $p['status'] ?? ''));
+        \Illuminate\Support\Facades\Log::info('KiriminAja webhook', $p);
 
-        if ($orderId === '' && $awb === '') {
-            return response()->json(['ok' => true]);
+        $topStatus = strtolower((string) ($p['status'] ?? $p['event'] ?? $p['method'] ?? ''));
+        $candidates = [];
+        if (isset($p['data']) && is_array($p['data'])) {
+            $candidates = array_is_list($p['data']) ? $p['data'] : [$p['data']];
+        } elseif (isset($p['details']) && is_array($p['details'])) {
+            $candidates = array_is_list($p['details']) ? $p['details'] : [$p['details']];
+        } elseif (isset($p['packages']) && is_array($p['packages'])) {
+            $candidates = array_is_list($p['packages']) ? $p['packages'] : [$p['packages']];
+        } elseif (array_is_list($p)) {
+            $candidates = $p;
+        } else {
+            $candidates = [$p];
         }
 
         $prefix = trim((string) config('services.kiriminaja.prefix', ''));
-        $plainCode = $prefix !== '' && str_starts_with($orderId, "{$prefix}-") ? substr($orderId, strlen($prefix) + 1) : $orderId;
 
-        $order = Order::where(function ($q) use ($orderId, $plainCode, $awb) {
-            if ($orderId !== '') {
-                $q->where('shipping_ref', $orderId)->orWhere('code', $plainCode);
+        foreach ($candidates as $item) {
+            if (! is_array($item)) {
+                continue;
             }
-            if ($awb !== '') {
-                $orderId !== '' ? $q->orWhere('tracking_number', $awb) : $q->where('tracking_number', $awb);
-            }
-        })->first();
+            $orderId = trim((string) ($item['order_id'] ?? $item['kj_order_id'] ?? $item['merchant_order_id'] ?? $p['order_id'] ?? ''));
+            $awb = trim((string) ($item['awb'] ?? $item['receipt'] ?? $item['waybill'] ?? $item['tracking_number'] ?? $item['resi'] ?? $p['awb'] ?? ''));
+            $rawStatus = strtolower((string) ($item['status'] ?? $item['state'] ?? $item['status_code'] ?? $topStatus));
 
-        if (! $order) {
-            return response()->json(['ok' => true]);
-        }
-
-        $updates = [];
-        if ($awb !== '' && ! $order->tracking_number) {
-            $updates['tracking_number'] = $awb;
-        }
-        $shipStatus = match (true) {
-            str_contains($rawStatus, 'deliver') && ! str_contains($rawStatus, 'on_deliver') => 'delivered',
-            str_contains($rawStatus, 'return') || str_contains($rawStatus, 'rts') => 'returned',
-            str_contains($rawStatus, 'pickup') || str_contains($rawStatus, 'picked') => 'picked_up',
-            str_contains($rawStatus, 'transit') || str_contains($rawStatus, 'on_deliver') || str_contains($rawStatus, 'ship') || str_contains($rawStatus, 'manifest') => 'in_transit',
-            default => null,
-        };
-        if ($shipStatus) {
-            $updates['shipping_status'] = $shipStatus;
-            if ($shipStatus === 'delivered') {
-                $updates['status'] = 'completed';
-                $updates['completed_at'] = $order->completed_at ?? now();
-            } elseif ($order->status === 'pending') {
-                $updates['status'] = 'processing';
+            if ($orderId === '' && $awb === '') {
+                continue;
             }
-        }
-        if ($updates !== []) {
-            $order->forceFill($updates)->save();
+
+            $plainCode = $prefix !== '' && str_starts_with($orderId, "{$prefix}-") ? substr($orderId, strlen($prefix) + 1) : $orderId;
+            $order = Order::where(function ($q) use ($orderId, $plainCode, $awb) {
+                if ($orderId !== '') {
+                    $q->where('shipping_ref', $orderId)->orWhere('code', $plainCode);
+                }
+                if ($awb !== '') {
+                    $orderId !== '' ? $q->orWhere('tracking_number', $awb) : $q->where('tracking_number', $awb);
+                }
+            })->first();
+
+            if (! $order) {
+                continue;
+            }
+
+            $updates = [];
+            if ($awb !== '' && ! $order->tracking_number) {
+                $updates['tracking_number'] = $awb;
+            }
+            $shipStatus = match (true) {
+                str_contains($rawStatus, 'deliver') && ! str_contains($rawStatus, 'on_deliver') && ! str_contains($rawStatus, 'on deliver') => 'delivered',
+                str_contains($rawStatus, 'complet') => 'delivered',
+                str_contains($rawStatus, 'return') || str_contains($rawStatus, 'rts') => 'returned',
+                str_contains($rawStatus, 'pickup') || str_contains($rawStatus, 'picked') || str_contains($rawStatus, 'process') => 'picked_up',
+                str_contains($rawStatus, 'transit') || str_contains($rawStatus, 'on_deliver') || str_contains($rawStatus, 'on deliver') || str_contains($rawStatus, 'ship') || str_contains($rawStatus, 'manifest') => 'in_transit',
+                default => null,
+            };
+            if ($shipStatus) {
+                $updates['shipping_status'] = $shipStatus;
+                if ($shipStatus === 'delivered') {
+                    $updates['status'] = 'completed';
+                    $updates['completed_at'] = $order->completed_at ?? now();
+                } elseif ($order->status === 'pending') {
+                    $updates['status'] = 'processing';
+                }
+            }
+            if ($updates !== []) {
+                $order->forceFill($updates)->save();
+            }
         }
 
         return response()->json(['ok' => true]);
