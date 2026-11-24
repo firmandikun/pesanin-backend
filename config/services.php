@@ -56,6 +56,7 @@ return [
         'sandbox' => (bool) env('KIRIMINAJA_SANDBOX', true),
         'delivery' => (bool) env('KIRIMINAJA_DELIVERY', true),
         'password' => env('KIRIMINAJA_PASSWORD'),
+        'prefix' => env('KIRIMINAJA_PREFIX', ''),
     ],
 
     // RajaOngkir / Komerce owned by Pesanin. Two keys from collaborator.komerce.id → Developer → Settings → Api Key:

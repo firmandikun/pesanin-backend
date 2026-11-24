@@ -244,6 +244,11 @@ class KiriminAja
             $at = ($at->hour >= 17 ? $at->addDay() : $at)->setTime(9, 0);
         }
 
+        $prefix = trim((string) config('services.kiriminaja.prefix', ''));
+        $kaOrderId = $prefix !== '' && ! str_starts_with((string) $order->code, $prefix)
+            ? "{$prefix}-{$order->code}"
+            : (string) $order->code;
+
         $payload = [
             'address' => (string) $pickup->address,
             'phone' => $phone($pickup->phone ?: $order->user->whatsapp),
@@ -251,7 +256,7 @@ class KiriminAja
             'kecamatan_id' => $this->districtId($pickup->region),
             'schedule' => $at->format('Y-m-d H:i:s'),
             'packages' => [[
-                'order_id' => (string) $order->code,
+                'order_id' => $kaOrderId,
                 'destination_name' => (string) $order->customer_name,
                 'destination_phone' => $phone($order->phone),
                 'destination_address' => trim(implode(', ', array_filter([$order->address, $order->village]))),

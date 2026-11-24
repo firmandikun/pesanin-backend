@@ -33,6 +33,7 @@ class KiriminAjaIntegrationTest extends TestCase
             'services.kiriminaja.key' => 'v4.local.test-key',
             'services.kiriminaja.sandbox' => true,
             'services.kiriminaja.delivery' => true,
+            'services.kiriminaja.prefix' => 'PSN',
         ]);
 
         Http::fake([
@@ -105,6 +106,7 @@ class KiriminAjaIntegrationTest extends TestCase
         ])->assertOk();
         $this->assertSame([['code' => $order->code, 'waybill' => 'JNE123456']], $book->json('shipped'));
         Http::assertSent(fn (HttpRequest $r) => str_contains($r->url(), '/api/mitra/v6.2/request_pickup')
+            && str_starts_with((string) ($r['packages'][0]['order_id'] ?? ''), 'PSN-')
             && is_string($r['packages'][0]['items'][0]['metadata']['sku'] ?? null)
             && is_string($r['packages'][0]['items'][0]['metadata']['variant_label'] ?? null));
         $order->refresh();
