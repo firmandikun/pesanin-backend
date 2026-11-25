@@ -245,7 +245,8 @@ class IntegrationController extends Controller
             }
             $orderId = trim((string) ($item['order_id'] ?? $item['kj_order_id'] ?? $item['merchant_order_id'] ?? $p['order_id'] ?? ''));
             $awb = trim((string) ($item['awb'] ?? $item['receipt'] ?? $item['waybill'] ?? $item['tracking_number'] ?? $item['resi'] ?? $p['awb'] ?? ''));
-            $rawStatus = strtolower((string) ($item['status'] ?? $item['state'] ?? $item['status_code'] ?? $topStatus));
+            $statusText = (string) ($item['status'] ?? $item['state'] ?? $topStatus);
+            $statusCode = $item['status_code'] ?? $p['status_code'] ?? null;
 
             if ($orderId === '' && $awb === '') {
                 continue;
@@ -269,14 +270,7 @@ class IntegrationController extends Controller
             if ($awb !== '' && ! $order->tracking_number) {
                 $updates['tracking_number'] = $awb;
             }
-            $shipStatus = match (true) {
-                str_contains($rawStatus, 'deliver') && ! str_contains($rawStatus, 'on_deliver') && ! str_contains($rawStatus, 'on deliver') => 'delivered',
-                str_contains($rawStatus, 'complet') => 'delivered',
-                str_contains($rawStatus, 'return') || str_contains($rawStatus, 'rts') => 'returned',
-                str_contains($rawStatus, 'pickup') || str_contains($rawStatus, 'picked') || str_contains($rawStatus, 'process') => 'picked_up',
-                str_contains($rawStatus, 'transit') || str_contains($rawStatus, 'on_deliver') || str_contains($rawStatus, 'on deliver') || str_contains($rawStatus, 'ship') || str_contains($rawStatus, 'manifest') => 'in_transit',
-                default => null,
-            };
+            $shipStatus = \App\Support\KiriminAja\KiriminAja::mapShippingStatus($statusText, $statusCode);
             if ($shipStatus) {
                 $updates['shipping_status'] = $shipStatus;
                 if ($shipStatus === 'delivered') {
@@ -285,6 +279,8 @@ class IntegrationController extends Controller
                 } elseif ($order->status === 'pending') {
                     $updates['status'] = 'processing';
                 }
+            } elseif ((int) $statusCode === 300 || str_contains(strtolower($statusText), 'cancel')) {
+                $updates['status'] = 'cancelled';
             }
             if ($updates !== []) {
                 $order->forceFill($updates)->save();

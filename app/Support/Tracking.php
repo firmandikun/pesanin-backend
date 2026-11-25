@@ -92,12 +92,19 @@ class Tracking
                     'location' => $m['location'] ?? $m['city_name'] ?? null,
                 ])->sortByDesc('time')->values()->all();
                 $status = $t['summary']['status'] ?? $t['status'] ?? null;
+                $shipStatus = \App\Support\KiriminAja\KiriminAja::mapShippingStatus($status, $t['status_code'] ?? $t['summary']['status_code'] ?? null);
+                if ($shipStatus && $order->shipping_status !== $shipStatus) {
+                    $order->forceFill([
+                        'shipping_status' => $shipStatus,
+                        ...($shipStatus === 'delivered' ? ['status' => 'completed', 'completed_at' => $order->completed_at ?? now()] : []),
+                    ])->save();
+                }
 
                 if ($events || $status) {
                     return ['status' => $status, 'source' => 'kiriminaja', 'events' => $events] + $base;
                 }
             } catch (Throwable $e) {
-                $base['note'] = 'KiriminAja: '.$e->getMessage();
+                $base['note'] = $e->getMessage();
             }
         }
 

@@ -346,9 +346,43 @@ class KiriminAja
     /** Track a shipment by order_id or AWB (resi). */
     public function track(string $waybillOrOrderId): array
     {
-        $res = $this->call('post', '/api/mitra/tracking', ['order_id' => $waybillOrOrderId]);
+        $key = 'kiriminaja:track:'.$this->envTag().':'.$waybillOrOrderId;
+        if ($cached = Cache::get($key)) {
+            return $cached;
+        }
 
-        return is_array($res) ? ($res['data'] ?? $res) : [];
+        $res = $this->call('post', '/api/mitra/tracking', ['order_id' => $waybillOrOrderId]);
+        $data = is_array($res) ? ($res['data'] ?? $res) : [];
+        if ($data !== []) {
+            Cache::put($key, $data, now()->addMinutes(5));
+        }
+
+        return $data;
+    }
+
+    /** Map KiriminAja status text or numeric status_code to Pesanin shipping_status. */
+    public static function mapShippingStatus(?string $status = null, mixed $statusCode = null): ?string
+    {
+        $code = is_numeric($statusCode) ? (int) $statusCode : null;
+        if ($code === 200) {
+            return 'delivered';
+        }
+        if ($code === 400) {
+            return 'returned';
+        }
+        $s = strtolower(trim((string) $status));
+        if ($s === '') {
+            return null;
+        }
+
+        return match (true) {
+            str_contains($s, 'deliver') && ! str_contains($s, 'on_deliver') && ! str_contains($s, 'on deliver') => 'delivered',
+            str_contains($s, 'complet') || str_contains($s, 'finish') || str_contains($s, 'selesai') || str_contains($s, 'diterima') => 'delivered',
+            str_contains($s, 'return') || str_contains($s, 'rts') || str_contains($s, 'dikembalikan') => 'returned',
+            str_contains($s, 'pickup') || str_contains($s, 'picked') || str_contains($s, 'process') => 'picked_up',
+            str_contains($s, 'transit') || str_contains($s, 'on_deliver') || str_contains($s, 'on deliver') || str_contains($s, 'ship') || str_contains($s, 'manifest') => 'in_transit',
+            default => null,
+        };
     }
 
     /** Connection check: one small address search. */

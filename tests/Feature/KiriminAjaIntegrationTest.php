@@ -140,7 +140,7 @@ class KiriminAjaIntegrationTest extends TestCase
         $this->postJson('/api/webhook', [
             'order_id' => 'KA-001',
             'awb' => 'JNE123456',
-            'status' => 'delivered',
+            'status_code' => 200,
         ])->assertOk();
         $order->refresh();
         $this->assertSame(['delivered', 'completed'], [$order->shipping_status, $order->status]);
