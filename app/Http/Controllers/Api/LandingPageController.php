@@ -42,7 +42,58 @@ class LandingPageController extends Controller
             ],
             'labels' => $user->landingPages()->whereNotNull('label')->distinct()->pluck('label'),
             'templates' => LandingTemplates::TEMPLATES,
+            'gemini_connected' => (bool) \App\Support\Ai\Gemini::key($user),
         ];
+    }
+
+    public function generateAi(Request $request)
+    {
+        $user = $request->user();
+        $data = $request->validate([
+            'title' => 'nullable|string|max:150',
+            'product_id' => ['nullable', Rule::exists('products', 'id')->where('user_id', $user->id)],
+            'brief' => 'nullable|string|max:1500',
+            'tone' => 'nullable|in:persuasif,elegan,santai,profesional',
+            'preview' => 'nullable|in:mobile,desktop',
+        ]);
+        if (empty($data['product_id']) && trim((string) ($data['brief'] ?? '')) === '') {
+            abort(422, 'Pilih produk atau tulis deskripsi singkat agar AI bisa menyusun landing page.');
+        }
+
+        Plans::ensureQuota($user, 'landing_pages');
+        $apiKey = \App\Support\Ai\Gemini::key($user);
+        abort_unless($apiKey, 422, 'API Key Gemini belum terhubung. Atur di Pengaturan → Integrasi.');
+
+        $product = ! empty($data['product_id']) ? Product::find($data['product_id']) : null;
+
+        try {
+            $generated = \App\Support\LandingPageAi::generate(
+                $apiKey,
+                $product,
+                $data['title'] ?? null,
+                $data['brief'] ?? null,
+                $data['tone'] ?? 'persuasif',
+                $data['preview'] ?? 'mobile',
+                $user->store_name,
+            );
+        } catch (\Throwable $e) {
+            abort(422, $e->getMessage());
+        }
+
+        $page = $user->landingPages()->create([
+            'title' => $generated['title'],
+            'slug' => $this->uniqueSlug(Str::slug($generated['title']) ?: 'landing-page'),
+            'template' => 'ai',
+            'product_id' => $product?->id,
+            'status' => 'draft',
+            'theme' => $generated['theme'],
+            'seo' => $generated['seo'],
+            'settings' => ['floating_whatsapp' => false],
+            'blocks' => $generated['blocks'],
+        ]);
+        ActivityLog::record($user, 'landing.ai', "Membuat landing page dengan AI: {$page->title}");
+
+        return response()->json($page, 201);
     }
 
     public function store(Request $request)

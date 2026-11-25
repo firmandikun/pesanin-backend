@@ -292,6 +292,7 @@ Route::middleware(['auth:sanctum', 'member', 'subscribed'])->group(function () {
     Route::post('/products/{product}/duplicate', [ProductController::class, 'duplicate']);
     Route::apiResource('products', ProductController::class);
 
+    Route::post('/landing-pages/ai', [LandingPageController::class, 'generateAi'])->middleware('throttle:10,1');
     Route::post('/landing-pages/{landingPage}/duplicate', [LandingPageController::class, 'duplicate']);
     Route::apiResource('landing-pages', LandingPageController::class);
 
