@@ -95,8 +95,8 @@ class AdsGuardTest extends TestCase
     {
         $this->user->forceFill(['settings' => ['ads_guard' => ['action' => 'raise_target']]])->save();
         AdsGuard::check($this->user->fresh());
-        // Losing auto-bidding ad → target raised to 1.2 × break-even; the no-sale ad → paused.
-        $this->assertContains([102, 'change_roas_target', 21.7], $this->edits);
+        // Losing auto-bidding ad → target raised to 1.2 × break-even × (1 + PPN 11%), since Shopee's ROAS ignores PPN; the no-sale ad → paused.
+        $this->assertContains([102, 'change_roas_target', 24.1], $this->edits);
         $this->assertContains([103, 'pause', null], $this->edits);
         $this->assertSame('paused', ShopeeAdCampaign::firstWhere('campaign_id', 103)->status);
     }

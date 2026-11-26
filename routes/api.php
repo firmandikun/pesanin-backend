@@ -293,6 +293,7 @@ Route::middleware(['auth:sanctum', 'member', 'subscribed'])->group(function () {
     Route::apiResource('products', ProductController::class);
 
     Route::post('/landing-pages/ai', [LandingPageController::class, 'generateAi'])->middleware('throttle:10,1');
+    Route::get('/landing-pages/ai/{job}', [LandingPageController::class, 'generateAiStatus']);
     Route::post('/landing-pages/{landingPage}/duplicate', [LandingPageController::class, 'duplicate']);
     Route::apiResource('landing-pages', LandingPageController::class);
 

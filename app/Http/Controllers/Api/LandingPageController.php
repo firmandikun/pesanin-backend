@@ -66,7 +66,12 @@ class LandingPageController extends Controller
 
         $product = ! empty($data['product_id']) ? Product::find($data['product_id']) : null;
 
-        try {
+        // Gemini (Pro) takes up to a few minutes, longer than nginx waits (504): build the page after the response;
+        // the page polls generateAiStatus() until it is ready.
+        $job = (string) Str::uuid();
+        $userId = $user->id;
+        \App\Support\Ai\AiJob::start(self::aiKey($userId, $job), function () use ($apiKey, $product, $data, $userId) {
+            $user = \App\Models\User::findOrFail($userId);
             $generated = \App\Support\LandingPageAi::generate(
                 $apiKey,
                 $product,
@@ -76,24 +81,45 @@ class LandingPageController extends Controller
                 $data['preview'] ?? 'mobile',
                 $user->store_name,
             );
-        } catch (\Throwable $e) {
-            abort(422, $e->getMessage());
+            $page = $user->landingPages()->create([
+                'title' => $generated['title'],
+                'slug' => $this->uniqueSlug(Str::slug($generated['title']) ?: 'landing-page'),
+                'template' => 'ai',
+                'product_id' => $product?->id,
+                'status' => 'draft',
+                'theme' => $generated['theme'],
+                'seo' => $generated['seo'],
+                'settings' => ['floating_whatsapp' => false],
+                'blocks' => $generated['blocks'],
+            ]);
+            ActivityLog::record($user, 'landing.ai', "Membuat landing page dengan AI: {$page->title}");
+
+            return ['page_id' => $page->id];
+        });
+
+        return response()->json(['job' => $job, 'status' => 'running'], 202);
+    }
+
+    /** Progress of an AI landing page: running | done (+ page) | failed (+ error). */
+    public function generateAiStatus(Request $request, string $job)
+    {
+        abort_unless(Str::isUuid($job), 404);
+        $key = self::aiKey($request->user()->id, $job);
+        $state = \App\Support\Ai\AiJob::status($key);
+        abort_unless($state, 404, 'Proses AI tidak ditemukan. Coba buat lagi.');
+        if ($state['status'] === 'done') {
+            $page = $request->user()->landingPages()->find(\Illuminate\Support\Facades\Cache::get($key)['page_id'] ?? 0);
+            abort_unless($page, 404, 'Landing page hasil AI tidak ditemukan. Coba buat lagi.');
+
+            return response()->json(['status' => 'done', 'page' => $page]);
         }
 
-        $page = $user->landingPages()->create([
-            'title' => $generated['title'],
-            'slug' => $this->uniqueSlug(Str::slug($generated['title']) ?: 'landing-page'),
-            'template' => 'ai',
-            'product_id' => $product?->id,
-            'status' => 'draft',
-            'theme' => $generated['theme'],
-            'seo' => $generated['seo'],
-            'settings' => ['floating_whatsapp' => false],
-            'blocks' => $generated['blocks'],
-        ]);
-        ActivityLog::record($user, 'landing.ai', "Membuat landing page dengan AI: {$page->title}");
+        return response()->json($state);
+    }
 
-        return response()->json($page, 201);
+    private static function aiKey(int $userId, string $job): string
+    {
+        return "landing_ai:{$userId}:{$job}";
     }
 
     public function store(Request $request)

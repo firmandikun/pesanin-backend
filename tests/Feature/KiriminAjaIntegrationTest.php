@@ -55,7 +55,9 @@ class KiriminAjaIntegrationTest extends TestCase
             'tdev.kiriminaja.com/api/mitra/v6.2/request_pickup' => Http::response([
                 'status' => true,
                 'code' => 200,
-                'data' => ['order_id' => 'KA-001', 'receipt' => 'JNE123456'],
+                // v6.2 shape: one entry per package in `details`.
+                'details' => [['order_id' => 'PSN-X', 'kj_order_id' => 'KA-001', 'awb' => 'JNE123456']],
+                'pickup_number' => 'XID-001',
             ]),
             'tdev.kiriminaja.com/api/mitra/tracking' => Http::response([
                 'status' => true,

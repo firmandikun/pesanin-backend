@@ -74,9 +74,11 @@ class LandingPageAiTest extends TestCase
             'brief' => 'Fokus ke wanita usia 25-35 tahun',
             'tone' => 'persuasif',
             'preview' => 'mobile',
-        ])->assertCreated();
+        ])->assertStatus(202)->assertJson(['status' => 'running']);
 
-        $page = LandingPage::findOrFail($res->json('id'));
+        // Built after the response (no 504 while Gemini thinks); the page polls the status.
+        $status = $this->actingAs($seller)->getJson('/api/landing-pages/ai/'.$res->json('job'))->assertOk()->assertJson(['status' => 'done']);
+        $page = LandingPage::findOrFail($status->json('page.id'));
         $this->assertSame('Kulit Cerah Alami dengan Serum Vitamin C', $page->title);
         $this->assertSame('draft', $page->status);
         $this->assertSame('#7c3aed', $page->theme['primary']);
