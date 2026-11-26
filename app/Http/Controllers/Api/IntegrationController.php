@@ -364,7 +364,8 @@ class IntegrationController extends Controller
             }
         }
 
-        return response()->json(['ok' => true]);
+        // KiriminAja's callback page reads `success`.
+        return response()->json(['success' => true, 'ok' => true]);
     }
 
     private function present(?UserIntegration $i, ?string $provider = null): array

@@ -371,6 +371,16 @@ Artisan::command('kiriminaja:check {code : Kode pesanan Pesanin, mis. FK2611261Z
     $this->info('Pesanan diperbarui: resi='.($order->tracking_number ?: '-').' status='.$order->shipping_status);
 })->purpose('Sync one order with KiriminAja (resi, status) and link a booking that was not recorded');
 
+// KiriminAja: does this server accept the webhook as registered (URL + token)? Sends a harmless test event.
+Artisan::command('kiriminaja:webhook-test', function () {
+    $secret = (string) config('services.kiriminaja.webhook_secret');
+    $url = rtrim(config('app.url'), '/').'/api/kiriminaja/webhook'.($secret !== '' ? '?token='.urlencode($secret) : '');
+    $res = \Illuminate\Support\Facades\Http::timeout(15)->acceptJson()->post($url, ['method' => 'test', 'data' => []]);
+    $res->successful()
+        ? $this->info("OK ({$res->status()}): webhook diterima. Kalau KiriminAja masih gagal, jalankan php artisan kiriminaja:callback lagi.")
+        : $this->error("Gagal ({$res->status()}): ".mb_substr($res->body(), 0, 200).($res->status() === 403 ? ' → token beda: jalankan php artisan config:cache lalu php artisan kiriminaja:callback.' : ''));
+})->purpose('Check that this server accepts the KiriminAja webhook (URL + token)');
+
 // KiriminAja: pick up AWBs issued after booking (fallback when the webhook did not arrive).
 Artisan::command('kiriminaja:awb', function () {
     $this->info('Resi KiriminAja baru: '.\App\Support\KiriminAja\CourierBooking::fetchAwbs());

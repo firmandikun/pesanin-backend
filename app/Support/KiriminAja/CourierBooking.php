@@ -71,8 +71,8 @@ class CourierBooking
     }
 
     /**
-     * Scheduler (every 10 min): KiriminAja issues the AWB after the booking, normally pushed by the webhook. As a
-     * fallback, ask its tracking for orders booked in the last 7 days that still have no resi.
+     * Scheduler (every 10 min): fallback for the webhook. Orders booked through KiriminAja in the last 14 days that
+     * are not finished are checked with KiriminAja's tracking: the AWB once issued, and the delivery status.
      */
     public static function fetchAwbs(): int
     {
@@ -81,20 +81,34 @@ class CourierBooking
             return 0;
         }
         $n = 0;
-        $orders = Order::where('shipping_provider', 'kiriminaja')->whereNotNull('shipping_ref')->whereNull('tracking_number')
-            ->where('updated_at', '>=', now()->subDays(7))->whereNotIn('status', ['cancelled', 'refunded'])->orderBy('id')->limit(30)->get();
+        $orders = Order::where('shipping_provider', 'kiriminaja')->whereNotNull('shipping_ref')
+            ->whereIn('shipping_status', ['not_shipped', 'picked_up', 'in_transit'])->where('updated_at', '>=', now()->subDays(14))
+            ->whereNotIn('status', ['cancelled', 'refunded'])
+            // Orders without a resi first, then the ones checked longest ago.
+            ->orderByRaw('tracking_number IS NOT NULL')->orderBy('updated_at')->limit(30)->get();
         foreach ($orders as $order) {
             try {
                 $t = $api->track($order->shipping_ref);
-                $awb = trim((string) ($t['details']['awb'] ?? ''));
-                if ($awb === '') {
+                $d = $t['details'] ?? [];
+                if (! $d) {
                     continue;
                 }
+                $awb = trim((string) ($d['awb'] ?? ''));
+                $status = KiriminAja::mapShippingStatus(null, $d['status_code'] ?? null);
                 $cf = (array) ($order->custom_fields ?? []);
-                $cf['kiriminaja'] = array_merge((array) ($cf['kiriminaja'] ?? []), array_filter(['sorting_code' => $t['details']['sorting_code'] ?? null]));
-                $order->forceFill(['tracking_number' => $awb, 'custom_fields' => $cf])->save();
-                Notifier::send($order->user_id, 'order', 'Resi terbit', "{$order->code}: {$awb}", '/orders?search='.$order->code, $order->id);
-                $n++;
+                $cf['kiriminaja'] = array_merge((array) ($cf['kiriminaja'] ?? []), array_filter(['sorting_code' => $d['sorting_code'] ?? null, 'checked_at' => now()->toIso8601String()]));
+                $newResi = $awb !== '' && ! $order->tracking_number;
+                $order->forceFill(array_filter([
+                    'tracking_number' => $newResi ? $awb : null,
+                    'shipping_status' => $status && $status !== $order->shipping_status ? $status : null,
+                    'status' => $status === 'delivered' ? 'completed' : null,
+                    'completed_at' => $status === 'delivered' ? ($order->completed_at ?? now()) : null,
+                    'custom_fields' => $cf,
+                ], fn ($v) => $v !== null))->save();
+                if ($newResi) {
+                    Notifier::send($order->user_id, 'order', 'Resi terbit', "{$order->code}: {$awb}", '/orders?search='.$order->code, $order->id);
+                    $n++;
+                }
             } catch (Throwable) {
                 // not issued yet / tracking unavailable: try again next round
             }
