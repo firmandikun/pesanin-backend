@@ -192,6 +192,21 @@ class KiriminAja
         }
     }
 
+    /** Sender name of 8–14 characters: short names get the store name added, long ones are cut on a word. */
+    public static function senderName(string $name, string $store = ''): string
+    {
+        $name = trim(preg_replace('/\s+/', ' ', $name)) ?: 'Pesanin';
+        if (mb_strlen($name) < 8 && $store !== '' && mb_stripos($name, $store) === false) {
+            $name = trim($name.' '.$store);
+        }
+        if (mb_strlen($name) > 14) {
+            $cut = mb_substr($name, 0, 14);
+            $name = mb_strrpos($cut, ' ') >= 8 ? mb_substr($cut, 0, mb_strrpos($cut, ' ')) : $cut;
+        }
+
+        return mb_strlen($name) < 8 ? mb_substr($name.' Pesanin', 0, 14) : $name;
+    }
+
     /** Percent from KiriminAja's setting strings ("2.5" = 2.5 %, "0.025" = 2.5 %). */
     public static function pct(mixed $v): float
     {
@@ -422,6 +437,17 @@ class KiriminAja
             $schedule = $at->format('Y-m-d H:i:s');
         }
 
+        // KA Credit: check the balance first (API overview → Payment And KA Credit) so a short balance is a clear message.
+        $credit = config('services.kiriminaja.payment') === 'credit';
+        $pin = preg_match('/^\d{6}$/', (string) config('services.kiriminaja.pin')) ? (string) config('services.kiriminaja.pin') : null;
+        if ($credit) {
+            $balance = $this->balance();
+            $need = $shippingCost + $amt['insurance'];
+            if ($balance !== null && $balance < $need) {
+                throw new RuntimeException('Saldo KA Credit kurang (sisa Rp'.number_format($balance, 0, ',', '.').', perlu Rp'.number_format($need, 0, ',', '.').'). Top up di dashboard KiriminAja.');
+            }
+        }
+
         $prefix = trim((string) config('services.kiriminaja.prefix', ''));
         $kaOrderId = $prefix !== '' && ! str_starts_with((string) $order->code, $prefix) ? "{$prefix}-{$order->code}" : (string) $order->code;
         $name = trim((string) ($pickup->name ?: $order->user->store_name ?: 'Pesanin'));
@@ -429,8 +455,8 @@ class KiriminAja
         $payload = array_filter([
             'address' => (string) $pickup->address,
             'phone' => $phone($pickup->phone ?: $order->user->whatsapp),
-            // KiriminAja: sender name must be 8–14 characters.
-            'name' => str_pad(mb_substr($name, 0, 14), 8, '.'),
+            // KiriminAja: sender name must be 8–14 characters (a short name gets the store name added).
+            'name' => self::senderName($name, (string) $order->user->store_name),
             'kecamatan_id' => $originId,
             'kelurahan_id' => $this->subdistrictId($pickup->region),
             'zipcode' => (string) ($pickup->postal_code ?: $pickup->region->postal_code ?: '00000'),
@@ -441,6 +467,8 @@ class KiriminAja
             'platform_name' => 'Pesanin',
             // KA Credit pays the shipping right away (KIRIMINAJA_PAYMENT=credit); otherwise KiriminAja's default billing.
             'payment_method' => in_array(config('services.kiriminaja.payment'), ['credit', 'cash'], true) ? config('services.kiriminaja.payment') : null,
+            // Only when the account uses a PIN: never an empty string (API docs).
+            'pin' => $credit ? $pin : null,
             'packages' => [[
                 'order_id' => $kaOrderId,
                 'destination_name' => (string) $order->customer_name,

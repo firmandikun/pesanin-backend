@@ -60,6 +60,8 @@ return [
         'webhook_secret' => env('KIRIMINAJA_WEBHOOK_SECRET', ''),
         // credit = pay shipping from KA Credit at booking; empty = account's default billing.
         'payment' => env('KIRIMINAJA_PAYMENT', ''),
+        // 6-digit KA Credit PIN, only when the KiriminAja account has a payment PIN (3 wrong tries lock it).
+        'pin' => env('KIRIMINAJA_PIN', ''),
     ],
 
     // RajaOngkir / Komerce owned by Pesanin. Two keys from collaborator.komerce.id → Developer → Settings → Api Key:

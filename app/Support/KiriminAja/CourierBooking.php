@@ -54,12 +54,19 @@ class CourierBooking
 
             return null;
         } catch (Throwable $e) {
+            $msg = $e->getMessage();
+            // A wrong / missing KA Credit PIN: never retry automatically (KiriminAja locks the PIN after 3 wrong tries).
+            $pinError = (bool) preg_match('/\bpin\b/i', $msg);
+            if ($pinError) {
+                $msg = 'PIN KA Credit ditolak KiriminAja. Isi KIRIMINAJA_PIN (6 digit) yang benar di .env server, lalu pesan kurir lagi. '
+                    .'Pesan otomatis dihentikan untuk pesanan ini supaya PIN tidak terkunci (maks. 3x salah). ['.mb_substr($e->getMessage(), 0, 120).']';
+            }
             $order->forceFill([
-                'auto_ship_tries' => $order->auto_ship_tries + 1,
-                'auto_ship_error' => mb_substr($e->getMessage(), 0, 300),
+                'auto_ship_tries' => $pinError ? self::MAX_TRIES : $order->auto_ship_tries + 1,
+                'auto_ship_error' => mb_substr($msg, 0, 300),
             ])->save();
 
-            return $e->getMessage();
+            return $msg;
         }
     }
 

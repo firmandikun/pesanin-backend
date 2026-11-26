@@ -151,22 +151,26 @@ class IntegrationController extends Controller
     {
         abort_unless($order->user_id === $request->user()->id, 404);
         $data = $request->validate(['reason' => 'nullable|string|max:200']);
-        abort_unless($order->shipping_provider === 'kiriminaja' && $order->tracking_number, 422, 'Pengiriman ini belum punya resi KiriminAja.');
+        abort_unless($order->shipping_provider === 'kiriminaja' && ($order->tracking_number || $order->shipping_ref), 422, 'Pesanan ini belum dipesankan kurir KiriminAja.');
         abort_unless(in_array($order->shipping_status, ['not_shipped', null], true), 422, 'Paket sudah diambil kurir, tidak bisa dibatalkan.');
-        $api = \App\Support\KiriminAja\KiriminAja::for(\App\Support\KiriminAja\KiriminAja::platform());
-        abort_unless($api, 422, 'Layanan kurir Pesanin belum aktif.');
-        try {
-            $api->cancel($order->tracking_number, $data['reason'] ?? 'Dibatalkan penjual');
-        } catch (\Throwable $e) {
-            abort(422, $e->getMessage());
+        // Before the AWB exists KiriminAja has nothing to cancel by API (cancel needs the AWB): the unpaid / unprocessed
+        // package is only released in Pesanin so the order can be booked again (delete it in the KiriminAja dashboard).
+        if ($order->tracking_number) {
+            $api = \App\Support\KiriminAja\KiriminAja::for(\App\Support\KiriminAja\KiriminAja::platform());
+            abort_unless($api, 422, 'Layanan kurir Pesanin belum aktif.');
+            try {
+                $api->cancel($order->tracking_number, $data['reason'] ?? 'Dibatalkan penjual');
+            } catch (\Throwable $e) {
+                abort(422, $e->getMessage());
+            }
         }
         $cf = (array) ($order->custom_fields ?? []);
-        $cf['kiriminaja_cancelled'] = ['awb' => $order->tracking_number, 'at' => now()->toIso8601String(), 'reason' => $data['reason'] ?? null];
+        $cf['kiriminaja_cancelled'] = ['awb' => $order->tracking_number, 'ka_order_id' => $order->shipping_ref, 'at' => now()->toIso8601String(), 'reason' => $data['reason'] ?? null];
         unset($cf['kiriminaja']);
         $order->forceFill(['tracking_number' => null, 'shipping_ref' => null, 'shipping_provider' => null, 'auto_ship_tries' => 0, 'custom_fields' => $cf])->save();
         \App\Models\ActivityLog::record($request->user(), 'order.ship_cancel', "Batal kirim {$order->code} (KiriminAja)");
 
-        return ['ok' => true];
+        return ['ok' => true, 'local_only' => ! $cf['kiriminaja_cancelled']['awb']];
     }
 
     /** "Pesan kurir": book web/manual orders through KiriminAja (waybill + courier pickup). */
