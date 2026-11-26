@@ -21,7 +21,13 @@ class KiriminAja
     public const SANDBOX = 'https://tdev.kiriminaja.com';
 
     /** Express couriers asked when KiriminAja's courier list is unavailable (KiriminAja codes). */
-    public const COURIERS = ['jne', 'sicepat', 'jnt', 'sap', 'idx', 'ninja', 'lion', 'anteraja', 'posindonesia', 'tiki'];
+    public const COURIERS = ['jne', 'sicepat', 'jnt', 'sap', 'idx', 'ninja', 'lion', 'anteraja', 'tiki'];
+
+    /**
+     * Express couriers priced through shipping_price. Pos Indonesia, RPX and Paxel "may require separate APIs" (API
+     * overview → 3PL Service Availability): asking for them can make the whole price request come back empty.
+     */
+    public const PRICEABLE = ['jne', 'sicepat', 'jnt', 'sap', 'idx', 'ide', 'ninja', 'lion', 'anteraja', 'tiki', 'jtcargo', 'ncs'];
 
     /** KiriminAja courier code → Pesanin courier code (logos, tracking). */
     public const CODE = ['ide' => 'idexpress', 'idx' => 'idexpress', 'j&t' => 'jnt', 'posindonesia' => 'pos'];
@@ -137,11 +143,12 @@ class KiriminAja
     /** Express courier codes active on this account (KiriminAja codes), cached a day; fallback list on error. */
     public function couriers(): array
     {
-        return Cache::remember('kiriminaja:couriers:'.$this->envTag(), now()->addDay(), function () {
+        return Cache::remember('kiriminaja:couriers:v2:'.$this->envTag(), now()->addDay(), function () {
             try {
                 $rows = collect($this->call('post', '/api/mitra/couriers')['datas'] ?? []);
                 $codes = $rows->filter(fn ($c) => strtolower((string) ($c['type'] ?? 'express')) !== 'instant' && ! in_array($c['code'] ?? '', self::INSTANT, true))
-                    ->pluck('code')->filter()->map(fn ($c) => strtolower((string) $c))->values()->all();
+                    ->pluck('code')->filter()->map(fn ($c) => strtolower((string) $c))
+                    ->filter(fn ($c) => in_array($c, self::PRICEABLE, true))->values()->all();
 
                 return $codes ?: self::COURIERS;
             } catch (\Throwable) {
@@ -282,16 +289,21 @@ class KiriminAja
             return $cached;
         }
 
-        $res = $this->call('post', '/api/mitra/v6.1/shipping_price', [
-            'origin' => $origin,
-            'destination' => $dest,
-            'weight' => $weight,
-            'item_value' => $value,
-            'insurance' => 0,
-            'courier' => $this->couriers(),
+        $ask = fn (array $couriers) => $this->call('post', '/api/mitra/v6.1/shipping_price', [
+            'origin' => $origin, 'destination' => $dest, 'weight' => $weight, 'item_value' => $value, 'insurance' => 0, 'courier' => $couriers,
         ]);
-
+        $list = $this->couriers();
+        $res = $ask($list);
         $rows = $res['results'] ?? $res['data']['results'] ?? $res['data'] ?? [];
+        // Nothing back with the account's courier list: try once more with the safe default list.
+        if ((! is_array($rows) || $rows === []) && $list !== self::COURIERS) {
+            \Illuminate\Support\Facades\Log::warning('KiriminAja shipping_price empty for ['.implode(',', $list)."] {$origin}→{$dest}, retrying with defaults: ".mb_substr(json_encode($res), 0, 300));
+            $res = $ask(self::COURIERS);
+            $rows = $res['results'] ?? $res['data']['results'] ?? $res['data'] ?? [];
+        }
+        if (! is_array($rows) || $rows === []) {
+            \Illuminate\Support\Facades\Log::warning("KiriminAja shipping_price empty {$origin}→{$dest} {$weight}g: ".mb_substr(json_encode($res), 0, 300));
+        }
         if (! is_array($rows)) {
             return [];
         }
