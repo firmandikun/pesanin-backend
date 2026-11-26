@@ -30,6 +30,9 @@ class Gemini
         $errors = []; // model => message
         $started = microtime(true);
         foreach (self::models($apiKey) as $model) {
+            if (Cache::has(self::deadKey($apiKey, $model))) {
+                continue;
+            }
             // Stay inside the background job's time: Pro thinks longer (up to 150 s), Flash up to 90 s.
             $name = str_replace('models/', '', $model);
             $timeout = str_contains($name, 'pro') ? 150 : 90;
@@ -62,6 +65,13 @@ class Gemini
                 }
                 if (! $res->successful()) {
                     $errors[$name] = (string) ($res->json('error.message') ?? "HTTP {$res->status()}");
+                    // Retired for this key ("no longer available to new users", 404): skip it from now on.
+                    if ($res->status() === 404 || preg_match('/no longer available|not found|deprecated|is not supported for generatecontent/i', $errors[$name])) {
+                        Cache::put(self::deadKey($apiKey, $model), 1, now()->addDays(30));
+                        unset($errors[$name]);
+
+                        continue 2;
+                    }
                     // A wrong / blocked key fails on every model: stop early.
                     if (in_array($res->status(), [400, 401, 403], true) && str_contains(strtolower($errors[$name]), 'api key')) {
                         break 2;
@@ -86,6 +96,11 @@ class Gemini
         }
 
         throw new RuntimeException(self::summarize($errors));
+    }
+
+    private static function deadKey(string $apiKey, string $model): string
+    {
+        return 'gemini_dead:'.md5($apiKey).':'.str_replace('models/', '', $model);
     }
 
     /** Seconds Google asks to wait (RetryInfo.retryDelay, e.g. "34s"), if any. */
@@ -145,9 +160,9 @@ class Gemini
     /** generateContent models of this key in the order to try (cached 6 hours). */
     public static function models(string $apiKey): array
     {
-        $fallback = ['models/gemini-2.5-pro', 'models/gemini-2.5-flash', 'models/gemini-2.5-flash-lite'];
+        $fallback = ['models/gemini-3.1-pro-preview', 'models/gemini-2.5-pro', 'models/gemini-2.5-flash', 'models/gemini-2.5-flash-lite'];
 
-        return Cache::remember('gemini_models:v3:'.md5($apiKey), now()->addHours(6), function () use ($apiKey, $fallback) {
+        return Cache::remember('gemini_models:v4:'.md5($apiKey), now()->addHours(6), function () use ($apiKey, $fallback) {
             try {
                 $res = Http::timeout(10)->get('https://generativelanguage.googleapis.com/v1beta/models', ['key' => $apiKey]);
                 if (! $res->successful()) {
@@ -156,16 +171,21 @@ class Gemini
                 $list = collect($res->json('models', []))
                     ->filter(fn ($m) => in_array('generateContent', $m['supportedGenerationMethods'] ?? [], true))
                     ->pluck('name')
-                    ->filter(fn ($n) => str_contains($n, 'gemini-') && ! preg_match('/embedding|tts|image|audio|live|thinking-exp|learnlm|gemma/', $n))
-                    // Stable Pro first (best analysis), then Flash as the fallback when Pro is out of quota (Pro's free
-                    // quota is small, sometimes 0), then Flash-Lite; preview / experimental models last. Newer first.
+                    ->filter(fn ($n) => str_contains($n, 'gemini-') && ! preg_match('/embedding|tts|image|audio|live|thinking-exp|learnlm|gemma|customtools|computer-use|robotics|nano|-latest/', $n))
+                    // Newest Pro first (Gemini 3.x Pro only exists as "preview"; Google closes older Pro models such as
+                    // 2.5 Pro to new keys), then stable Flash as the fallback when Pro is out of quota, then Flash-Lite;
+                    // other preview / experimental models last.
                     ->sortByDesc(function ($n) {
                         preg_match('/gemini-(\d+(?:\.\d+)?)/', $n, $m);
-                        $preview = (bool) preg_match('/preview|exp|latest/', $n);
-                        $group = str_contains($n, 'flash-lite') ? 2 : (str_contains($n, 'flash') ? 3 : (str_contains($n, 'pro') ? 4 : 0));
+                        $v = (float) ($m[1] ?? 0);
+                        $preview = (bool) preg_match('/preview|exp/', $n);
+                        if (str_contains($n, 'pro')) {
+                            return 50000 + $v * 100 - ($preview ? 1 : 0);
+                        }
+                        $group = str_contains($n, 'flash-lite') ? 2 : (str_contains($n, 'flash') ? 3 : 0);
 
-                        return ($preview ? 0 : 10000) + $group * 1000 + (float) ($m[1] ?? 0) * 10;
-                    })->values()->take(4)->all();
+                        return ($preview ? 0 : 10000) + $group * 1000 + $v * 10;
+                    })->values()->take(5)->all();
 
                 return $list ?: $fallback;
             } catch (Throwable) {
