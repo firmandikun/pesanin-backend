@@ -80,19 +80,20 @@ class Tracking
         if ($ka && $trackId) {
             try {
                 $t = $ka->track($trackId);
-                $foundAwb = trim((string) ($t['summary']['awb'] ?? $t['awb'] ?? ''));
+                // v6 tracking: details.awb / details.status_code / histories (older responses: summary.*, history).
+                $foundAwb = trim((string) ($t['details']['awb'] ?? $t['summary']['awb'] ?? $t['awb'] ?? ''));
                 if ($foundAwb !== '' && ! $order->tracking_number) {
                     $order->forceFill(['tracking_number' => $foundAwb])->save();
                     $base['tracking_number'] = $foundAwb;
                 }
-                $rawHist = $t['history'] ?? $t['histories'] ?? [];
+                $rawHist = $t['histories'] ?? $t['history'] ?? [];
                 $events = collect($rawHist)->map(fn ($m) => [
                     'time' => ! empty($m['date'] ?? $m['created_at'] ?? null) ? Carbon::parse((string) ($m['date'] ?? $m['created_at']))->toIso8601String() : null,
                     'text' => trim((string) ($m['desc'] ?? $m['status'] ?? $m['description'] ?? '')),
                     'location' => $m['location'] ?? $m['city_name'] ?? null,
                 ])->sortByDesc('time')->values()->all();
-                $status = $t['summary']['status'] ?? $t['status'] ?? null;
-                $shipStatus = \App\Support\KiriminAja\KiriminAja::mapShippingStatus($status, $t['status_code'] ?? $t['summary']['status_code'] ?? null);
+                $status = $t['summary']['status'] ?? (collect($rawHist)->sortByDesc('created_at')->first()['status'] ?? null) ?? (is_string($t['status'] ?? null) ? $t['status'] : null);
+                $shipStatus = \App\Support\KiriminAja\KiriminAja::mapShippingStatus($status, $t['details']['status_code'] ?? $t['status_code'] ?? $t['summary']['status_code'] ?? null);
                 if ($shipStatus && $order->shipping_status !== $shipStatus) {
                     $order->forceFill([
                         'shipping_status' => $shipStatus,

@@ -63,6 +63,39 @@ class CourierBooking
         }
     }
 
+    /**
+     * Scheduler (every 10 min): KiriminAja issues the AWB after the booking, normally pushed by the webhook. As a
+     * fallback, ask its tracking for orders booked in the last 7 days that still have no resi.
+     */
+    public static function fetchAwbs(): int
+    {
+        $api = KiriminAja::for(KiriminAja::platform());
+        if (! $api) {
+            return 0;
+        }
+        $n = 0;
+        $orders = Order::where('shipping_provider', 'kiriminaja')->whereNotNull('shipping_ref')->whereNull('tracking_number')
+            ->where('updated_at', '>=', now()->subDays(7))->whereNotIn('status', ['cancelled', 'refunded'])->orderBy('id')->limit(30)->get();
+        foreach ($orders as $order) {
+            try {
+                $t = $api->track($order->shipping_ref);
+                $awb = trim((string) ($t['details']['awb'] ?? ''));
+                if ($awb === '') {
+                    continue;
+                }
+                $cf = (array) ($order->custom_fields ?? []);
+                $cf['kiriminaja'] = array_merge((array) ($cf['kiriminaja'] ?? []), array_filter(['sorting_code' => $t['details']['sorting_code'] ?? null]));
+                $order->forceFill(['tracking_number' => $awb, 'custom_fields' => $cf])->save();
+                Notifier::send($order->user_id, 'order', 'Resi terbit', "{$order->code}: {$awb}", '/orders?search='.$order->code, $order->id);
+                $n++;
+            } catch (Throwable) {
+                // not issued yet / tracking unavailable: try again next round
+            }
+        }
+
+        return $n;
+    }
+
     /** Scheduler: paid (and, if allowed, COD) orders of sellers with "Resi otomatis" on. */
     public static function auto(): int
     {

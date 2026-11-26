@@ -488,7 +488,8 @@ class KiriminAja
         $res = $this->call('post', '/api/mitra/tracking', ['order_id' => $waybillOrOrderId]);
         $data = is_array($res) ? ($res['data'] ?? $res) : [];
         if ($data !== []) {
-            Cache::put($key, $data, now()->addMinutes(5));
+            // Short cache while the AWB is not issued yet (the page's "Cek resi" should see it quickly).
+            Cache::put($key, $data, empty($data['details']['awb']) ? now()->addSeconds(30) : now()->addMinutes(5));
         }
 
         return $data;
@@ -498,11 +499,19 @@ class KiriminAja
     public static function mapShippingStatus(?string $status = null, mixed $statusCode = null): ?string
     {
         $code = is_numeric($statusCode) ? (int) $statusCode : null;
-        if ($code === 200) {
-            return 'delivered';
-        }
-        if ($code === 400) {
-            return 'returned';
+        // Package status codes (API overview → Package Status Mapping) win over the status text.
+        if ($code !== null) {
+            $mapped = match (true) {
+                $code === 200 => 'delivered',
+                $code === 106, $code === 107, $code === 152, $code === 210, $code === 211 => 'in_transit',
+                $code === 103, $code === 104 => 'picked_up',
+                $code === 400, $code >= 401 && $code <= 406 => 'returned',
+                $code >= 100 && $code <= 105, $code === 110 => false, // created / pickup requested: not with the courier yet
+                default => null,
+            };
+            if ($mapped !== null) {
+                return $mapped ?: null;
+            }
         }
         $s = strtolower(trim((string) $status));
         if ($s === '') {

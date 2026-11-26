@@ -332,6 +332,12 @@ Artisan::command('kiriminaja:callback {url?}', function (?string $url = null) {
     $this->info('Callback KiriminAja terdaftar: '.preg_replace('/token=[^&]+/', 'token=***', $url));
 })->purpose('Register the KiriminAja webhook callback URL');
 
+// KiriminAja: pick up AWBs issued after booking (fallback when the webhook did not arrive).
+Artisan::command('kiriminaja:awb', function () {
+    $this->info('Resi KiriminAja baru: '.\App\Support\KiriminAja\CourierBooking::fetchAwbs());
+})->purpose('Fetch AWBs of booked KiriminAja shipments that have no resi yet');
+\Illuminate\Support\Facades\Schedule::command('kiriminaja:awb')->everyTenMinutes()->withoutOverlapping();
+
 // Kesehatan akun Shopee: every morning, alert on new penalty points, late orders or a performance drop.
 Artisan::command('shopee:health', function () {
     $users = \App\Models\User::whereHas('marketplaceShops', fn ($q) => $q->where('platform', 'shopee')->where('status', 'active')->where('is_demo', false))->get();
