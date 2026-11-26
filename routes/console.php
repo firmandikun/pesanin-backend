@@ -32,12 +32,20 @@ Artisan::command('marketplace:sync {--what=orders}', function () {
                 'products' => $sync->products($shop),
                 'ads' => $sync->ads($shop),
                 'stats' => (new \App\Support\Shopee\ShopeeProductTools)->syncStats($shop),
-                'recent' => [$sync->recent($shop), \App\Support\Shopee\ShopeeChatWatch::check($shop)],
+                'recent' => $sync->recent($shop),
                 default => $sync->orders($shop),
             };
         } catch (\Throwable $e) {
             $shop->update(['last_error' => mb_substr($e->getMessage(), 0, 250)]);
             $this->warn("{$shop->shop_name}: {$e->getMessage()}");
+        }
+        // New buyer chats → notification, on its own: a failing order sync must not silence chat notifications.
+        if ($this->option('what') === 'recent') {
+            try {
+                \App\Support\Shopee\ShopeeChatWatch::check($shop);
+            } catch (\Throwable $e) {
+                $this->warn("Chat {$shop->shop_name}: {$e->getMessage()}");
+            }
         }
     }
     // Penjaga Iklan: right after fresh ad numbers, alert (and optionally act) on ads below break-even.

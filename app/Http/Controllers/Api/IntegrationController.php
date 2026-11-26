@@ -322,6 +322,8 @@ class IntegrationController extends Controller
             })->first();
 
             if (! $order) {
+                \Illuminate\Support\Facades\Log::warning('KiriminAja webhook: pesanan tidak ditemukan', ['order_id' => $orderId, 'awb' => $awb, 'prefix' => $prefix]);
+
                 continue;
             }
 

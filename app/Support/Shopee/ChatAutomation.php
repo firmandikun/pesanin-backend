@@ -179,6 +179,8 @@ class ChatAutomation
             try {
                 $api->chatSend($shop, $toId, self::fill($reply, $vars));
                 $sent++;
+                // The reply makes the seller the last sender, so the chat poll would no longer see this buyer message.
+                ShopeeChatWatch::notify($shop, $c, $msgId, true);
             } catch (Throwable $e) {
                 report($e);
             }

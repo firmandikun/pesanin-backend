@@ -6,6 +6,7 @@ use App\Http\Controllers\Api\ShopeeChatController;
 use App\Models\MarketplaceShop;
 use App\Support\Notifier;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\Log;
 use Throwable;
 
 /**
@@ -22,8 +23,9 @@ class ShopeeChatWatch
         }
         try {
             $conversations = ($api ?? new ShopeeClient)->chatConversations($shop)['conversations'] ?? [];
-        } catch (Throwable) {
+        } catch (Throwable $e) {
             Cache::put("shopee:chat:off:{$shop->id}", true, now()->addMinutes(30));
+            Log::warning("Notifikasi chat Shopee dijeda 30 menit untuk toko {$shop->id} ({$shop->shop_name}): {$e->getMessage()}");
 
             return 0;
         }
@@ -37,16 +39,30 @@ class ShopeeChatWatch
                 continue;
             }
             Cache::forever($key, $lastId);
-            if ($primed && $fromBuyer && (int) ($c['unread_count'] ?? 0) > 0) {
-                $text = ShopeeChatController::preview($c['latest_message_type'] ?? 'text', $c['latest_message_content'] ?? []);
-                Notifier::send($shop->user_id, 'chat', 'Chat Shopee baru',
-                    mb_strimwidth(($c['to_name'] ?? 'Pembeli').': '.$text, 0, 120, '…').' · '.$shop->shop_name,
-                    "/chat?channel=shopee&source={$shop->id}&c={$c['conversation_id']}");
+            // unread_count missing in some responses: a new buyer message counts as unread.
+            if ($primed && $fromBuyer && (int) ($c['unread_count'] ?? 1) > 0 && self::notify($shop, $c, $lastId)) {
                 $sent++;
             }
         }
         Cache::forever("shopee:chat:primed:{$shop->id}", true);
 
         return $sent;
+    }
+
+    /**
+     * Notify one buyer message once (shared with chat auto-reply, which may answer before this poll sees it).
+     * @return bool sent now
+     */
+    public static function notify(MarketplaceShop $shop, array $c, string $messageId, bool $autoReplied = false): bool
+    {
+        if (! Cache::add("shopee:chat:notified:{$shop->id}:{$messageId}", 1, now()->addDays(3))) {
+            return false;
+        }
+        $text = ShopeeChatController::preview($c['latest_message_type'] ?? 'text', (array) ($c['latest_message_content'] ?? []));
+        Notifier::send($shop->user_id, 'chat', $autoReplied ? 'Chat Shopee baru (dibalas otomatis)' : 'Chat Shopee baru',
+            mb_strimwidth(($c['to_name'] ?? 'Pembeli').': '.($text ?: 'Pesan'), 0, 120, '…').' · '.$shop->shop_name,
+            "/chat?channel=shopee&source={$shop->id}&c={$c['conversation_id']}");
+
+        return true;
     }
 }
