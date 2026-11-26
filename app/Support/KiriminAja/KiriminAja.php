@@ -535,6 +535,32 @@ class KiriminAja
         return $data;
     }
 
+    /**
+     * Shipping status from an express tracking response. The package status can sit in details.status_code, in the
+     * newest history entry or in the root status_code (API overview → Tracking Details); details.delivered / refunded
+     * flags win. The sandbox often leaves details.status_code empty.
+     */
+    public static function trackStatus(array $t): ?string
+    {
+        $d = (array) ($t['details'] ?? []);
+        if (! empty($d['delivered']) || ! empty($d['delivered_at'])) {
+            return 'delivered';
+        }
+        if (! empty($d['refunded']) || ! empty($d['refunded_at'])) {
+            return 'returned';
+        }
+        $hist = collect($t['histories'] ?? $t['history'] ?? [])->filter(fn ($h) => is_array($h))->sortByDesc(fn ($h) => (string) ($h['created_at'] ?? $h['date'] ?? ''));
+        $last = $hist->first() ?? [];
+        // The first package code found decides (a "created / pickup requested" code too: not with the courier yet).
+        foreach ([$d['status_code'] ?? null, $last['status_code'] ?? null, $t['status_code'] ?? null] as $code) {
+            if (is_numeric($code) && (int) $code > 0) {
+                return self::mapShippingStatus(null, $code) ?? (((int) $code >= 100 && (int) $code <= 110) ? null : self::mapShippingStatus($last['status'] ?? null));
+            }
+        }
+
+        return self::mapShippingStatus($last['status'] ?? null);
+    }
+
     /** Map KiriminAja status text or numeric status_code to Pesanin shipping_status. */
     public static function mapShippingStatus(?string $status = null, mixed $statusCode = null): ?string
     {

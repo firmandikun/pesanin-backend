@@ -93,7 +93,8 @@ class Tracking
                     'location' => $m['location'] ?? $m['city_name'] ?? null,
                 ])->sortByDesc('time')->values()->all();
                 $status = $t['summary']['status'] ?? (collect($rawHist)->sortByDesc('created_at')->first()['status'] ?? null) ?? (is_string($t['status'] ?? null) ? $t['status'] : null);
-                $shipStatus = \App\Support\KiriminAja\KiriminAja::mapShippingStatus($status, $t['details']['status_code'] ?? $t['status_code'] ?? $t['summary']['status_code'] ?? null);
+                $shipStatus = isset($t['details']) ? \App\Support\KiriminAja\KiriminAja::trackStatus($t)
+                    : \App\Support\KiriminAja\KiriminAja::mapShippingStatus($status, $t['status_code'] ?? $t['summary']['status_code'] ?? null);
                 if ($shipStatus && $order->shipping_status !== $shipStatus) {
                     $order->forceFill([
                         'shipping_status' => $shipStatus,

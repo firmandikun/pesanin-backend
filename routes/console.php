@@ -333,7 +333,7 @@ Artisan::command('kiriminaja:callback {url?}', function (?string $url = null) {
 })->purpose('Register the KiriminAja webhook callback URL');
 
 // KiriminAja: check one order against KiriminAja (resi, status) and link it if it was booked but not recorded.
-Artisan::command('kiriminaja:check {code : Kode pesanan Pesanin, mis. FK2611261ZIMU}', function (string $code) {
+Artisan::command('kiriminaja:check {code : Kode pesanan Pesanin, mis. FK2611261ZIMU} {--raw : Tampilkan jawaban mentah tracking KiriminAja}', function (string $code) {
     $order = \App\Models\Order::where('code', $code)->first();
     $api = \App\Support\KiriminAja\KiriminAja::for(\App\Support\KiriminAja\KiriminAja::platform());
     if (! $order || ! $api) {
@@ -352,6 +352,9 @@ Artisan::command('kiriminaja:check {code : Kode pesanan Pesanin, mis. FK2611261Z
 
         return 1;
     }
+    if ($this->option('raw')) {
+        $this->line(json_encode($t, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+    }
     $d = $t['details'] ?? [];
     if (! $d) {
         $this->warn("KiriminAja tidak punya paket {$kaId}.");
@@ -359,8 +362,10 @@ Artisan::command('kiriminaja:check {code : Kode pesanan Pesanin, mis. FK2611261Z
         return 1;
     }
     $awb = trim((string) ($d['awb'] ?? ''));
-    $status = \App\Support\KiriminAja\KiriminAja::mapShippingStatus(null, $d['status_code'] ?? null);
-    $this->line("KiriminAja: order={$kaId} resi=".($awb ?: '-').' kode status='.($d['status_code'] ?? '-').' → '.($status ?: 'belum dikirim'));
+    $status = \App\Support\KiriminAja\KiriminAja::trackStatus($t);
+    $last = collect($t['histories'] ?? [])->sortByDesc('created_at')->first() ?? [];
+    $this->line("KiriminAja: order={$kaId} resi=".($awb ?: '-').' kode status='.($d['status_code'] ?? $last['status_code'] ?? $t['status_code'] ?? '-')
+        .(! empty($d['delivered']) ? ' (delivered)' : '').' → '.($status ?: 'belum dikirim'));
     $cf = (array) ($order->custom_fields ?? []);
     $cf['kiriminaja'] = array_merge((array) ($cf['kiriminaja'] ?? []), array_filter(['sorting_code' => $d['sorting_code'] ?? null]));
     $order->forceFill(array_filter([

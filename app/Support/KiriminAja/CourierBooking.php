@@ -94,7 +94,7 @@ class CourierBooking
                     continue;
                 }
                 $awb = trim((string) ($d['awb'] ?? ''));
-                $status = KiriminAja::mapShippingStatus(null, $d['status_code'] ?? null);
+                $status = KiriminAja::trackStatus($t);
                 $cf = (array) ($order->custom_fields ?? []);
                 $cf['kiriminaja'] = array_merge((array) ($cf['kiriminaja'] ?? []), array_filter(['sorting_code' => $d['sorting_code'] ?? null, 'checked_at' => now()->toIso8601String()]));
                 $newResi = $awb !== '' && ! $order->tracking_number;
