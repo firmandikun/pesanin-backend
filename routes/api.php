@@ -298,6 +298,7 @@ Route::middleware(['auth:sanctum', 'member', 'subscribed'])->group(function () {
 
     Route::get('/orders/export', [OrderController::class, 'export']);
     Route::get('/orders/{order}/shipping-rates', [\App\Http\Controllers\Api\IntegrationController::class, 'orderRates']);
+    Route::post('/orders/{order}/ship/cancel', [\App\Http\Controllers\Api\IntegrationController::class, 'cancelShipment'])->middleware('throttle:20,1');
     Route::post('/orders/book', [\App\Http\Controllers\Api\IntegrationController::class, 'book'])->middleware('throttle:20,1');
     Route::post('/orders/bulk', [OrderController::class, 'bulkUpdate']);
     Route::post('/orders/{order}/digital-send', [OrderController::class, 'digitalSend'])->middleware('throttle:20,1');

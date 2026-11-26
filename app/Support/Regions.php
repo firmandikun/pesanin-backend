@@ -69,7 +69,7 @@ class Regions
                 $region->save();
             }
             if ($parsed['district_id'] > 0) {
-                $ka->rememberDistrictId($region, $parsed['district_id']);
+                $ka->rememberDistrictId($region, $parsed['district_id'], $parsed['subdistrict_id']);
             }
 
             return $region;

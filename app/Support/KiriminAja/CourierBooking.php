@@ -34,16 +34,22 @@ class CourierBooking
     }
 
     /** Book one order. @return string|null error message (null = waybill issued or pickup requested) */
-    public static function book(Order $order, KiriminAja $api, bool $dropoff = false): ?string
+    public static function book(Order $order, KiriminAja $api, bool $dropoff = false, array $opts = []): ?string
     {
         try {
-            $res = $api->requestPickup($order, $dropoff);
+            $res = $api->requestPickup($order, $dropoff, $opts);
             $order->forceFill([
                 'shipping_ref' => $res['order_id'],
                 'shipping_provider' => 'kiriminaja',
                 'tracking_number' => $res['awb'] ?: $order->tracking_number,
                 'auto_ship_error' => null,
                 'status' => $order->status === 'pending' ? 'processing' : $order->status,
+                // What KiriminAja booked: tariff, insurance, COD to collect, pickup time (shown on the order).
+                'custom_fields' => array_merge((array) ($order->custom_fields ?? []), ['kiriminaja' => array_filter([
+                    'pickup_number' => $res['pickup_number'], 'schedule' => $dropoff ? null : $res['schedule'], 'dropoff' => $dropoff,
+                    'shipping_cost' => $res['shipping_cost'], 'insurance' => $res['insurance'], 'cod' => $res['cod'], 'cod_fee' => $res['cod_fee'],
+                    'payment_status' => $res['payment_status'], 'qr_url' => $res['qr_url'], 'booked_at' => now()->toIso8601String(),
+                ], fn ($v) => $v !== null && $v !== '')]),
             ])->save();
 
             return null;

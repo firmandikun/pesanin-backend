@@ -57,6 +57,9 @@ return [
         'delivery' => (bool) env('KIRIMINAJA_DELIVERY', true),
         'password' => env('KIRIMINAJA_PASSWORD'),
         'prefix' => env('KIRIMINAJA_PREFIX', ''),
+        'webhook_secret' => env('KIRIMINAJA_WEBHOOK_SECRET', ''),
+        // credit = pay shipping from KA Credit at booking; empty = account's default billing.
+        'payment' => env('KIRIMINAJA_PAYMENT', ''),
     ],
 
     // RajaOngkir / Komerce owned by Pesanin. Two keys from collaborator.komerce.id → Developer → Settings → Api Key:

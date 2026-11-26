@@ -132,8 +132,41 @@ class IntegrationController extends Controller
         }
         $weight = max(1, (int) ($order->weight ?: ($order->product?->weight ?? 1000) * max(1, (int) $order->quantity)));
         [$rates, $error] = \App\Support\CheckoutService::rates($request->user(), false, $pickup->region, $dest, $weight, (int) $order->subtotal);
+        // Pickup windows offered by KiriminAja for the booking modal.
+        $schedules = [];
+        if ($api = \App\Support\KiriminAja\KiriminAja::for(\App\Support\KiriminAja\KiriminAja::platform())) {
+            try {
+                $schedules = $api->schedules();
+            } catch (\Throwable) {
+                // the modal falls back to "as soon as possible"
+            }
+        }
 
-        return ['rates' => $rates, 'error' => $error];
+        return ['rates' => $rates, 'error' => $error, 'schedules' => $schedules, 'weight' => $weight, 'cod' => $order->payment_method === 'cod',
+            'item_value' => (int) $order->subtotal, 'pickup' => ['name' => $pickup->name, 'address' => $pickup->address, 'city' => $pickup->region->city]];
+    }
+
+    /** Cancel a KiriminAja shipment before the courier picks it up (frees the order to be booked again). */
+    public function cancelShipment(Request $request, Order $order)
+    {
+        abort_unless($order->user_id === $request->user()->id, 404);
+        $data = $request->validate(['reason' => 'nullable|string|max:200']);
+        abort_unless($order->shipping_provider === 'kiriminaja' && $order->tracking_number, 422, 'Pengiriman ini belum punya resi KiriminAja.');
+        abort_unless(in_array($order->shipping_status, ['not_shipped', null], true), 422, 'Paket sudah diambil kurir, tidak bisa dibatalkan.');
+        $api = \App\Support\KiriminAja\KiriminAja::for(\App\Support\KiriminAja\KiriminAja::platform());
+        abort_unless($api, 422, 'Layanan kurir Pesanin belum aktif.');
+        try {
+            $api->cancel($order->tracking_number, $data['reason'] ?? 'Dibatalkan penjual');
+        } catch (\Throwable $e) {
+            abort(422, $e->getMessage());
+        }
+        $cf = (array) ($order->custom_fields ?? []);
+        $cf['kiriminaja_cancelled'] = ['awb' => $order->tracking_number, 'at' => now()->toIso8601String(), 'reason' => $data['reason'] ?? null];
+        unset($cf['kiriminaja']);
+        $order->forceFill(['tracking_number' => null, 'shipping_ref' => null, 'shipping_provider' => null, 'auto_ship_tries' => 0, 'custom_fields' => $cf])->save();
+        \App\Models\ActivityLog::record($request->user(), 'order.ship_cancel', "Batal kirim {$order->code} (KiriminAja)");
+
+        return ['ok' => true];
     }
 
     /** "Pesan kurir": book web/manual orders through KiriminAja (waybill + courier pickup). */
@@ -147,8 +180,15 @@ class IntegrationController extends Controller
             'courier_service' => 'nullable|string|max:80',
             'shipping_cost' => 'nullable|integer|min:0',
             'pickup_method' => 'nullable|in:pickup,dropoff',
+            'insurance' => 'nullable|boolean',
+            'length' => 'nullable|integer|min:1|max:300',
+            'width' => 'nullable|integer|min:1|max:300',
+            'height' => 'nullable|integer|min:1|max:300',
+            'schedule' => ['nullable', 'regex:/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}(:\d{2})?$/'],
         ]);
         $user = $request->user();
+        $opts = array_filter(['insurance' => $data['insurance'] ?? null, 'length' => $data['length'] ?? null, 'width' => $data['width'] ?? null,
+            'height' => $data['height'] ?? null, 'schedule' => isset($data['schedule']) ? (strlen($data['schedule']) === 16 ? $data['schedule'].':00' : $data['schedule']) : null], fn ($v) => $v !== null);
         $platform = \App\Support\KiriminAja\KiriminAja::platform();
         $api = ! empty($platform?->settings['delivery']['enabled']) ? \App\Support\KiriminAja\KiriminAja::for($platform) : null;
         abort_unless($api, 422, 'Layanan pesan kurir Pesanin belum aktif. Sementara isi resi manual.');
@@ -171,7 +211,7 @@ class IntegrationController extends Controller
                 continue;
             }
             $order->auto_ship_tries = 0;
-            ($error = \App\Support\KiriminAja\CourierBooking::book($order, $api, $dropoff))
+            ($error = \App\Support\KiriminAja\CourierBooking::book($order, $api, $dropoff, $opts))
                 ? $failed[] = ['code' => $order->code, 'error' => $error]
                 : $done[] = ['code' => $order->code, 'waybill' => $order->tracking_number ?: $order->shipping_ref];
         }
@@ -220,8 +260,19 @@ class IntegrationController extends Controller
     /** KiriminAja webhook: updates tracking_number (AWB) and shipping_status when KiriminAja pushes package updates. */
     public function kiriminajaWebhook(Request $request)
     {
+        // Only KiriminAja may change orders: when KIRIMINAJA_WEBHOOK_SECRET is set, the callback URL must carry ?token=<secret>.
+        $secret = (string) config('services.kiriminaja.webhook_secret', '');
+        abort_if($secret !== '' && ! hash_equals($secret, (string) $request->query('token', '')), 403);
         $p = $request->all();
         \Illuminate\Support\Facades\Log::info('KiriminAja webhook', $p);
+        // Event names of the express webhook (method) → shipping status, checked before any text guessing.
+        $events = [
+            'processed_packages' => null, 'shipped_packages' => 'in_transit', 'finished_packages' => 'delivered',
+            'returned_packages' => 'returned', 'return_finished_packages' => 'returned', 'problem_packages' => null, 'canceled_packages' => 'cancelled',
+        ];
+        // false = not a known event (guess from the status text); null = known event that does not change the status.
+        $method = strtolower((string) ($p['method'] ?? ''));
+        $event = array_key_exists($method, $events) ? $events[$method] : false;
 
         $topStatus = strtolower((string) ($p['status'] ?? $p['event'] ?? $p['method'] ?? ''));
         $candidates = [];
@@ -270,7 +321,25 @@ class IntegrationController extends Controller
             if ($awb !== '' && ! $order->tracking_number) {
                 $updates['tracking_number'] = $awb;
             }
-            $shipStatus = \App\Support\KiriminAja\KiriminAja::mapShippingStatus($statusText, $statusCode);
+            // Sorting code (printed on the label) and the latest event, from processed_packages & co.
+            if (! empty($item['sorting_code']) || ! empty($p['method'])) {
+                $cf = (array) ($order->custom_fields ?? []);
+                $cf['kiriminaja'] = array_merge((array) ($cf['kiriminaja'] ?? []), array_filter([
+                    'sorting_code' => $item['sorting_code'] ?? null, 'last_event' => $p['method'] ?? null, 'event_at' => now()->toIso8601String(),
+                    'reason' => $item['reason'] ?? null,
+                ]));
+                $updates['custom_fields'] = $cf;
+            }
+            if ($event === 'cancelled') {
+                if ($order->shipping_status === 'not_shipped') {
+                    $updates['status'] = 'cancelled';
+                }
+                $order->forceFill($updates)->save();
+
+                continue;
+            }
+            // "problem_packages" is not final: keep the status, wait for the next event.
+            $shipStatus = $event !== false ? $event : \App\Support\KiriminAja\KiriminAja::mapShippingStatus($statusText, $statusCode);
             if ($shipStatus) {
                 $updates['shipping_status'] = $shipStatus;
                 if ($shipStatus === 'delivered') {

@@ -318,6 +318,20 @@ Artisan::command('stock:restock-alert', function () {
 })->purpose('Alert sellers about SKUs that need restocking');
 \Illuminate\Support\Facades\Schedule::command('stock:restock-alert')->dailyAt('07:30')->timezone('Asia/Jakarta')->withoutOverlapping();
 
+// KiriminAja: register this server's webhook URL (status updates, AWB, sorting code) on Pesanin's KiriminAja account.
+Artisan::command('kiriminaja:callback {url?}', function (?string $url = null) {
+    $api = \App\Support\KiriminAja\KiriminAja::for(\App\Support\KiriminAja\KiriminAja::platform());
+    if (! $api) {
+        $this->error('KIRIMINAJA_API_KEY belum diisi.');
+
+        return 1;
+    }
+    $secret = (string) config('services.kiriminaja.webhook_secret');
+    $url ??= rtrim(config('app.url'), '/').'/api/kiriminaja/webhook'.($secret !== '' ? '?token='.urlencode($secret) : '');
+    $api->setCallback($url);
+    $this->info('Callback KiriminAja terdaftar: '.preg_replace('/token=[^&]+/', 'token=***', $url));
+})->purpose('Register the KiriminAja webhook callback URL');
+
 // Kesehatan akun Shopee: every morning, alert on new penalty points, late orders or a performance drop.
 Artisan::command('shopee:health', function () {
     $users = \App\Models\User::whereHas('marketplaceShops', fn ($q) => $q->where('platform', 'shopee')->where('status', 'active')->where('is_demo', false))->get();
