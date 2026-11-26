@@ -332,6 +332,45 @@ Artisan::command('kiriminaja:callback {url?}', function (?string $url = null) {
     $this->info('Callback KiriminAja terdaftar: '.preg_replace('/token=[^&]+/', 'token=***', $url));
 })->purpose('Register the KiriminAja webhook callback URL');
 
+// KiriminAja: check one order against KiriminAja (resi, status) and link it if it was booked but not recorded.
+Artisan::command('kiriminaja:check {code : Kode pesanan Pesanin, mis. FK2611261ZIMU}', function (string $code) {
+    $order = \App\Models\Order::where('code', $code)->first();
+    $api = \App\Support\KiriminAja\KiriminAja::for(\App\Support\KiriminAja\KiriminAja::platform());
+    if (! $order || ! $api) {
+        $this->error(! $order ? "Pesanan {$code} tidak ditemukan." : 'KIRIMINAJA_API_KEY belum diisi.');
+
+        return 1;
+    }
+    $prefix = trim((string) config('services.kiriminaja.prefix', ''));
+    $kaId = $order->shipping_ref ?: ($prefix !== '' ? "{$prefix}-{$order->code}" : $order->code);
+    $this->line("Pesanin: ref=".($order->shipping_ref ?: '-')." provider=".($order->shipping_provider ?: '-')." resi=".($order->tracking_number ?: '-')." status=".$order->shipping_status);
+    \Illuminate\Support\Facades\Cache::forget('kiriminaja:track:'.(config('services.kiriminaja.sandbox') ? 'sbx' : 'live').':'.$kaId);
+    try {
+        $t = $api->track($kaId);
+    } catch (\Throwable $e) {
+        $this->error("KiriminAja ({$kaId}): ".$e->getMessage());
+
+        return 1;
+    }
+    $d = $t['details'] ?? [];
+    if (! $d) {
+        $this->warn("KiriminAja tidak punya paket {$kaId}.");
+
+        return 1;
+    }
+    $awb = trim((string) ($d['awb'] ?? ''));
+    $status = \App\Support\KiriminAja\KiriminAja::mapShippingStatus(null, $d['status_code'] ?? null);
+    $this->line("KiriminAja: order={$kaId} resi=".($awb ?: '-').' kode status='.($d['status_code'] ?? '-').' → '.($status ?: 'belum dikirim'));
+    $cf = (array) ($order->custom_fields ?? []);
+    $cf['kiriminaja'] = array_merge((array) ($cf['kiriminaja'] ?? []), array_filter(['sorting_code' => $d['sorting_code'] ?? null]));
+    $order->forceFill(array_filter([
+        'shipping_ref' => $order->shipping_ref ?: $kaId, 'shipping_provider' => 'kiriminaja', 'auto_ship_error' => null,
+        'tracking_number' => $order->tracking_number ?: ($awb ?: null), 'shipping_status' => $status, 'custom_fields' => $cf,
+        'status' => $status === 'delivered' ? 'completed' : ($order->status === 'pending' ? 'processing' : null),
+    ], fn ($v) => $v !== null))->save();
+    $this->info('Pesanan diperbarui: resi='.($order->tracking_number ?: '-').' status='.$order->shipping_status);
+})->purpose('Sync one order with KiriminAja (resi, status) and link a booking that was not recorded');
+
 // KiriminAja: pick up AWBs issued after booking (fallback when the webhook did not arrive).
 Artisan::command('kiriminaja:awb', function () {
     $this->info('Resi KiriminAja baru: '.\App\Support\KiriminAja\CourierBooking::fetchAwbs());

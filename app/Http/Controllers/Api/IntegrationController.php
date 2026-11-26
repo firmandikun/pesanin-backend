@@ -266,7 +266,11 @@ class IntegrationController extends Controller
     {
         // Only KiriminAja may change orders: when KIRIMINAJA_WEBHOOK_SECRET is set, the callback URL must carry ?token=<secret>.
         $secret = (string) config('services.kiriminaja.webhook_secret', '');
-        abort_if($secret !== '' && ! hash_equals($secret, (string) $request->query('token', '')), 403);
+        if ($secret !== '' && ! hash_equals($secret, (string) $request->query('token', ''))) {
+            // Usually: the URL registered at KiriminAja has no / an old ?token=. Fix: php artisan kiriminaja:callback
+            \Illuminate\Support\Facades\Log::warning('KiriminAja webhook ditolak: token tidak cocok (jalankan php artisan kiriminaja:callback).', ['method' => $request->input('method'), 'ip' => $request->ip()]);
+            abort(403, 'Invalid token');
+        }
         $p = $request->all();
         \Illuminate\Support\Facades\Log::info('KiriminAja webhook', $p);
         // Event names of the express webhook (method) → shipping status, checked before any text guessing.
