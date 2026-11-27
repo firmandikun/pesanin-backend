@@ -4,12 +4,15 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Models\MarketplaceEvent;
-use App\Models\MarketplaceShop;
 use App\Support\Shopee\ShopeeClient;
-use App\Support\Shopee\ShopeeSync;
+use App\Support\Shopee\ShopeePush;
 use Illuminate\Http\Request;
 
-/** Shopee Live Push receiver (set the Push URL in open.shopee.com → App → Push Mechanism). */
+/**
+ * Shopee Live Push receiver (set the Push URL in open.shopee.com → App → Push Mechanism).
+ * In production the gateway can route /api/shopee/push to the Go receiver (services/cmd/shopee-push) instead,
+ * which stores the event and lets `shopee:push-process` apply it; this controller stays as the fallback.
+ */
 class ShopeePushController extends Controller
 {
     public function __invoke(Request $request)
@@ -21,27 +24,7 @@ class ShopeePushController extends Controller
         $event = MarketplaceEvent::create([
             'platform' => 'shopee', 'shop_id' => $payload['shop_id'] ?? null, 'code' => (int) ($payload['code'] ?? 0), 'payload' => $payload,
         ]);
-
-        try {
-            $shops = MarketplaceShop::where('platform', 'shopee')->where('shop_id', $payload['shop_id'] ?? 0)->where('status', 'active')->where('is_demo', false)->get();
-            $orderSn = $payload['data']['ordersn'] ?? $payload['data']['order_sn'] ?? null;
-            $bookingSn = $payload['data']['booking_sn'] ?? $payload['data']['bookingsn'] ?? null;
-            foreach ($shops as $shop) {
-                if ($bookingSn) {
-                    (new ShopeeSync)->booking($shop, (string) $bookingSn);
-                }
-                match ($event->code) {
-                    // 3 = order status update, 4 = tracking number update
-                    3, 4 => $orderSn ? (new ShopeeSync)->order($shop, $orderSn) : null,
-                    // 2 = seller revoked the authorisation
-                    2 => $shop->update(['status' => 'disconnected', 'access_token' => null, 'refresh_token' => null]),
-                    default => $orderSn ? (new ShopeeSync)->order($shop, (string) $orderSn) : null,
-                };
-            }
-            $event->update(['processed_at' => now()]);
-        } catch (\Throwable $e) {
-            $event->update(['error' => mb_substr($e->getMessage(), 0, 250)]);
-        }
+        (new ShopeePush)->process($event);
 
         return response()->json(['ok' => true]);
     }

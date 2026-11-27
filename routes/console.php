@@ -432,3 +432,13 @@ Artisan::command('mail:test {to}', function (string $to) {
         return 1;
     }
 })->purpose('Send a test email to verify SMTP config');
+
+// Shopee Live Push events stored by the Go receiver (services/cmd/shopee-push) are applied here, outside php-fpm,
+// so Shopee's webhook never waits on a Shopee API call. Events the Laravel controller already applied are skipped.
+Artisan::command('shopee:push-process {--seconds=50}', function () {
+    $done = (new \App\Support\Shopee\ShopeePush)->drain((int) $this->option('seconds'));
+    if ($done) {
+        $this->info("{$done} event Shopee diproses.");
+    }
+})->purpose('Apply stored Shopee Live Push events');
+\Illuminate\Support\Facades\Schedule::command('shopee:push-process')->everyFiveSeconds()->withoutOverlapping()->runInBackground();
