@@ -121,6 +121,8 @@ return [
         'redirect' => env('SHOPEE_REDIRECT_URL') ?: rtrim(env('APP_URL', 'http://localhost:8000'), '/').'/api/shopee/callback',
         'push_url' => env('SHOPEE_PUSH_URL') ?: null,
         'push_key' => env('SHOPEE_PUSH_PARTNER_KEY') ?: null, // Live Push Partner Key
+        // "go" = chat notifications + auto-replies run in services/cmd/shopee-worker; Laravel skips them so nothing runs twice.
+        'chat_worker' => env('SHOPEE_CHAT_WORKER', 'laravel'),
     ],
 
     'frontend_url' => env('FRONTEND_URL', 'http://localhost:3000'),

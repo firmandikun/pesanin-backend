@@ -40,7 +40,7 @@ Artisan::command('marketplace:sync {--what=orders}', function () {
             $this->warn("{$shop->shop_name}: {$e->getMessage()}");
         }
         // New buyer chats → notification, on its own: a failing order sync must not silence chat notifications.
-        if ($this->option('what') === 'recent') {
+        if ($this->option('what') === 'recent' && config('services.shopee.chat_worker') !== 'go') {
             try {
                 \App\Support\Shopee\ShopeeChatWatch::check($shop);
             } catch (\Throwable $e) {
@@ -256,6 +256,11 @@ Artisan::command('shopee:reviews', function () {
 
 // Chat Shopee otomatis: hanya MEMBALAS chat pembeli (kata kunci & pesan di luar jam kerja), tidak pernah chat duluan.
 Artisan::command('shopee:chat-auto', function () {
+    if (config('services.shopee.chat_worker') === 'go') {
+        $this->info('Chat otomatis dijalankan oleh shopee-worker (Go).');
+
+        return;
+    }
     $users = \App\Models\User::whereHas('marketplaceShops', fn ($q) => $q->where('platform', 'shopee')->where('status', 'active')->where('is_demo', false))
         ->get()->filter(fn ($u) => ! empty($u->settings[\App\Support\Shopee\ChatAutomation::KEY]));
     $t = 0;
