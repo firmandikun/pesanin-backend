@@ -32,10 +32,11 @@ class Member
         'cs' => [
             '#^\w+ (chat|chat-labels|quick-replies|customers|orders|labels)(/|$)#', '#^GET (products|inventory|rotator-chats|followup-templates)(/|$)#',
             '#^GET marketplace/(shops|listings)$#', '#^\w+ marketplace/(returns|orders)(/|$)#', '#^\w+ r/payment-confirmations(/|$)#', '#^GET r/(staff|coupons)$#',
+            '#^POST shipping/check$#',
         ],
         'gudang' => [
             '#^\w+ (orders|labels|products|inventory|transactions|scan-out)(/|$)#', '#^\w+ marketplace/(shops|listings|listing-costs|returns|orders)(/|$)#',
-            '#^GET r/staff$#',
+            '#^GET r/staff$#', '#^POST shipping/check$#',
             // Gudang sees purchase orders and books goods in, but not prices paid / supplier payments.
             '#^GET (purchases|suppliers)(/|$)#', '#^POST purchases/\d+/receive$#',
         ],

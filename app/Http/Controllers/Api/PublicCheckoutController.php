@@ -205,10 +205,9 @@ class PublicCheckoutController extends Controller
         $seller = $product->user;
         $redirectTpl = $seller->followupTemplates()->where('event', 'redirect')->value('message');
         $waTarget = $settings['whatsapp'] ?? $seller->whatsapp;
-        // "Alihkan ke WhatsApp (random)": a random CS on duty now (same shifts/time off as WA Rotator), else the store number.
+        // "Alihkan ke WhatsApp CS": the order's CS penanggung jawab (assigned in turn among the CS on shift), else the store number.
         if (($settings['action'] ?? 'page') === 'whatsapp_random') {
-            $waTarget = \App\Models\CsStaff::onDuty(\App\Models\CsStaff::where('user_id', $seller->id)->where('is_active', true)->whereNotNull('phone')->get())
-                ->shuffle()->first()?->phone ?? $seller->whatsapp;
+            $waTarget = $order->csStaff?->phone ?: $seller->whatsapp;
         }
 
         return [

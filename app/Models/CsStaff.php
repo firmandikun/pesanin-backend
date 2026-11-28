@@ -10,7 +10,7 @@ class CsStaff extends Model
 
     protected $guarded = ['id', 'user_id'];
 
-    protected $casts = ['is_active' => 'boolean', 'schedule' => 'array'];
+    protected $casts = ['is_active' => 'boolean', 'schedule' => 'array', 'last_assigned_at' => 'datetime'];
 
     /** Active staff that are on shift now and not on time off (WA Rotator & "WhatsApp acak" after checkout). */
     public static function onDuty(\Illuminate\Support\Collection $staff): \Illuminate\Support\Collection

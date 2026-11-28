@@ -297,7 +297,10 @@ class CheckoutService
                 'status' => 'pending',
                 'payment_status' => 'unpaid',
                 'created_at' => now(),
-            ] + $extra)->save();
+            ] + $extra + [
+                // Buyer checkouts get a CS penanggung jawab (round-robin among the CS on shift).
+                'cs_staff_id' => ($extra['source'] ?? null) === 'checkout' ? \App\Support\CsAssign::pick($product)?->id : null,
+            ])->save();
 
             if ($product->track_stock) {
                 self::decrementStock($product, $variant, $qty);

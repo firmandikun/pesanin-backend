@@ -42,6 +42,7 @@ class Order extends Model
             'over_quota' => 'boolean',
             'packed_at' => 'datetime',
             'packing_check' => 'array',
+            'cs_contacted_at' => 'datetime',
         ];
     }
 
@@ -79,6 +80,12 @@ class Order extends Model
     public function product(): BelongsTo
     {
         return $this->belongsTo(Product::class)->withTrashed();
+    }
+
+    /** CS penanggung jawab: confirms the order with the buyer (assigned in turn at checkout). */
+    public function csStaff(): BelongsTo
+    {
+        return $this->belongsTo(CsStaff::class);
     }
 
     public function marketplaceShop(): BelongsTo

@@ -35,7 +35,7 @@ class OrderController extends Controller
         $stats = array_map('intval', (array) $stats);
         $stats['paid_ratio'] = $stats['total_orders'] ? round($stats['total_paid'] / $stats['total_orders'] * 100, 1) : 0;
 
-        $orders = $query->with(['product:id,name,type', 'marketplaceShop:id,shop_name,is_demo'])
+        $orders = $query->with(['product:id,name,type', 'marketplaceShop:id,shop_name,is_demo', 'csStaff:id,name,phone'])
             ->orderBy(in_array($request->query('sort'), self::SORTABLE, true) ? $request->query('sort') : 'created_at', $request->query('dir') === 'asc' ? 'asc' : 'desc')
             ->paginate(min(1000, max(1, $request->integer('per_page', 10))));
         // Orders over the monthly plan quota: buyer details stay locked until the seller upgrades.
@@ -189,8 +189,38 @@ class OrderController extends Controller
         $template = $request->user()->followupTemplates()->where('event', $data['event'])->firstOrFail();
         $order->load('product', 'user');
         $order->increment('followup_count');
+        // The CS reached out to the buyer: counts as "sudah dihubungi" for Kinerja CS.
+        if (! $order->cs_contacted_at) {
+            $order->forceFill(['cs_contacted_at' => now()])->save();
+        }
 
         return ['url' => WhatsApp::link($order->phone, WhatsApp::fill($template->message, $order))];
+    }
+
+    /** Change an order's CS penanggung jawab, or mark it contacted / not contacted. */
+    public function assignCs(Request $request, Order $order)
+    {
+        $this->authorizeOwner($request, $order);
+        $data = $request->validate(['cs_staff_id' => 'sometimes|nullable|integer', 'contacted' => 'sometimes|boolean']);
+        if (array_key_exists('cs_staff_id', $data)) {
+            abort_if($data['cs_staff_id'] && ! \App\Models\CsStaff::where('user_id', $request->user()->id)->whereKey($data['cs_staff_id'])->exists(), 422, 'CS tidak ditemukan.');
+            $order->cs_staff_id = $data['cs_staff_id'];
+        }
+        if (array_key_exists('contacted', $data)) {
+            $order->cs_contacted_at = $data['contacted'] ? ($order->cs_contacted_at ?? now()) : null;
+        }
+        $order->save();
+        ActivityLog::record($request->user(), 'order.cs', "Mengubah CS pesanan {$order->code}");
+
+        return $order->load('csStaff:id,name,phone');
+    }
+
+    /** Kinerja CS: orders, contacted, paid and closing rate per CS for a period (default: this month). */
+    public function csSummary(Request $request)
+    {
+        [$from, $to] = \App\Support\Dates::range($request->query('from') ?: now('Asia/Jakarta')->startOfMonth()->toDateString(), $request->query('to') ?: now('Asia/Jakarta')->toDateString());
+
+        return ['rows' => \App\Support\CsAssign::summary($request->user(), $from, $to)];
     }
 
     public function export(Request $request)
@@ -308,6 +338,10 @@ class OrderController extends Controller
         // "Pesanan Web" never mixes in marketplace orders; the Shopee page asks for channel=shopee explicitly.
         if (! $request->query('channel')) {
             $q->where('channel', '!=', 'shopee');
+        }
+        // CS penanggung jawab: an id, or "none" for orders nobody handles yet.
+        if ($cs = $request->query('cs_staff_id')) {
+            $cs === 'none' ? $q->whereNull('cs_staff_id') : $q->where('cs_staff_id', (int) $cs);
         }
         if ($state = $request->query('shopee_state')) {
             self::applyShopeeState($q, $state, $request->query('done') === 'all');

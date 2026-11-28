@@ -303,6 +303,27 @@ class FeatureController extends Controller
      * Live ongkir for the editor preview: from the seller's pickup address, or from a dropship warehouse
      * (origin_region_id) to a sample destination, through the real RajaOngkir account.
      */
+    /**
+     * Cek Ongkir: every courier's rate from one of the seller's addresses (or any region) to a destination, for CS
+     * answering "ongkir ke X berapa?". Same rates as the checkout (KiriminAja), before the product's courier settings.
+     */
+    public function shippingCheck(Request $request)
+    {
+        $d = $request->validate([
+            'address_id' => 'nullable|integer', 'origin_region_id' => 'nullable|integer|exists:regions,id',
+            'region_id' => 'required|integer|exists:regions,id', 'weight' => 'required|integer|min:1|max:100000', 'value' => 'nullable|integer|min:0|max:1000000000',
+        ], ['region_id.required' => 'Pilih tujuan pengiriman.']);
+        $user = $request->user();
+        $origin = ! empty($d['origin_region_id']) ? \App\Models\Region::find($d['origin_region_id'])
+            : (! empty($d['address_id']) ? $user->addresses()->with('region')->findOrFail($d['address_id'])->region : $user->pickupAddress()?->region);
+        abort_unless($origin, 422, 'Pilih asal pengiriman, atau atur alamat di Pengaturan → Alamat.');
+        $dest = \App\Models\Region::findOrFail($d['region_id']);
+        [$rates, $error] = \App\Support\CheckoutService::rates($user, false, $origin, $dest, (int) $d['weight'], (int) ($d['value'] ?? 0));
+
+        return ['origin' => $origin->label, 'destination' => $dest->label, 'weight' => (int) $d['weight'],
+            'rates' => collect($rates)->sortBy('cost')->values()->all(), 'error' => $rates ? null : $error];
+    }
+
     public function shippingPreview(Request $request)
     {
         $data = $request->validate(['origin_region_id' => 'nullable|integer|exists:regions,id', 'weight' => 'nullable|integer|min:0', 'shipping' => 'nullable|array']);

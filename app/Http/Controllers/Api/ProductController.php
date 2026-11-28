@@ -253,6 +253,8 @@ class ProductController extends Controller
             'form_settings.shipping.discount.type' => 'nullable|in:amount,percent',
             'form_settings.shipping.discount.value' => 'nullable|numeric|min:0',
             'success_settings.whatsapp' => 'nullable|string|max:30',
+            'success_settings.cs_staff_ids' => 'nullable|array|max:50',
+            'success_settings.cs_staff_ids.*' => 'integer',
             'success_settings.redirect_url' => 'nullable|url|required_if:success_settings.action,url',
             'success_settings.messages' => 'nullable|array',
             'success_settings.messages.*' => 'nullable|string|max:1000',
