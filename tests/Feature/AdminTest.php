@@ -39,7 +39,7 @@ class AdminTest extends TestCase
         $o = $this->getJson('/api/admin/overview')->assertOk()->json();
         $this->assertSame(1, $o['users']['total']);
         $this->assertSame(1, $o['users']['paying']);
-        $this->assertSame(129000, $o['mrr']);
+        $this->assertSame(\App\Support\Plans::monthly('bisnis'), $o['mrr']); // seller on Bisnis (marketplace track), monthly
         $this->assertCount(30, $o['daily']);
     }
 
@@ -101,11 +101,12 @@ class AdminTest extends TestCase
 
         Sanctum::actingAs($this->admin);
         $p = $this->getJson('/api/admin/platform')->assertOk()->json();
-        $plans = collect($p['plans'])->keyBy('id')->map(fn ($x) => ['name' => $x['name'], 'monthly' => $x['monthly'], 'limits' => $x['limits']])->all();
+        // Prices and quotas are edited per track (catalog.<track>.<plan>), as the Paket & Fitur page sends them.
+        $plans = collect($p['catalog']['marketplace'])->keyBy('id')->map(fn ($x) => ['name' => $x['name'], 'monthly' => $x['monthly'], 'limits' => $x['limits']])->all();
         $plans['starter']['monthly'] = 59000;
         $plans['starter']['limits']['orders'] = 1500;
         $plans['pro']['limits']['team'] = null;
-        $this->putJson('/api/admin/platform', ['plans' => $plans, 'features' => ['coupons' => 'starter'],
+        $this->putJson('/api/admin/platform', ['catalog' => ['marketplace' => $plans], 'features' => ['coupons' => 'starter'],
             'site' => ['registration_open' => false, 'notice' => 'Maintenance Sabtu 22.00', 'notice_tone' => 'warning', 'whatsapp' => '6281111111111']])->assertOk();
 
         $this->assertSame(59000, \App\Support\Plans::price('starter', 'monthly'));

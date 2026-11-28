@@ -49,27 +49,6 @@ class KomerceDeliveryTest extends TestCase
             'quantity' => 2, 'payment_method' => 'cod', 'courier' => 'jne:reg'])->assertCreated();
     }
 
-    public function test_pesan_kurir_books_order_and_saves_waybill(): void
-    {
-        $this->setUpShop();
-        $order = Order::first();
-        $r = $this->actingAs($this->seller)->postJson('/api/orders/book', ['order_ids' => [$order->id]])->assertOk();
-        $this->assertSame([['code' => $order->code, 'waybill' => 'JNE999']], $r->json('shipped'));
-        $order->refresh();
-        $this->assertSame(['KOM123', 'komship', 'JNE999'], [$order->shipping_ref, $order->shipping_provider, $order->tracking_number]);
-
-        $store = Http::recorded()->map(fn ($p) => $p[0])->first(fn ($r) => str_ends_with($r->url(), '/orders/store'));
-        $this->assertSame('deliv-key', $store->header('x-api-key')[0]); // Shipping Delivery key, not the Shipping Cost one
-        $this->assertSame([31001, 42002, 'JNE', 'REG', 'COD', 'Toko Uji', '081200000000', '081234567890'], [$store['shipper_destination_id'], $store['receiver_destination_id'],
-            $store['shipping'], $store['shipping_type'], $store['payment_method'], $store['brand_name'], $store['shipper_phone'], $store['receiver_phone']]);
-        $this->assertSame((int) $order->subtotal + 11000, $store['grand_total']);
-        $this->assertSame($store['grand_total'], $store['cod_value']);
-        $this->assertSame(2, $store['order_details'][0]['qty']);
-        Http::assertSent(fn ($r) => str_ends_with($r->url(), '/pickup/request') && $r['orders'] === [['order_no' => 'KOM123']] && $r['pickup_vehicle'] === 'Motor');
-
-        $this->actingAs($this->seller)->postJson('/api/orders/book', ['order_ids' => [$order->id]])->assertJsonPath('failed.0.error', 'sudah punya resi');
-    }
-
     public function test_auto_resi_runs_for_paid_or_allowed_cod_orders(): void
     {
         $this->setUpShop();
@@ -82,25 +61,19 @@ class KomerceDeliveryTest extends TestCase
         $this->assertSame(0, \App\Support\RajaOngkir\CourierBooking::auto(), 'never booked twice');
     }
 
-    public function test_booking_needs_delivery_switched_on(): void
-    {
-        $this->setUpShop(false);
-        $this->actingAs($this->seller)->postJson('/api/orders/book', ['order_ids' => [Order::first()->id]])->assertStatus(422);
-        Http::assertNotSent(fn ($r) => str_contains($r->url(), 'collaborator.komerce.id'));
-    }
-
     public function test_env_keys_are_shown_as_status_only_and_seller_keys_are_ignored(): void
     {
         $this->setUpShop();
-        // An old per-seller key is ignored: everything runs on Pesanin's .env key.
+        // An old per-seller key is ignored: the integration status comes from Pesanin's .env keys.
+        // (Pesan kurir itself now runs on KiriminAja: see KiriminAjaIntegrationTest.)
         UserIntegration::create(['user_id' => $this->seller->id, 'provider' => 'rajaongkir', 'credentials' => ['api_key' => 'old-seller-key'], 'webhook_token' => Str::random(40), 'status' => 'active']);
-        $this->actingAs($this->seller)->postJson('/api/orders/book', ['order_ids' => [Order::first()->id]])->assertOk();
-        Http::assertNotSent(fn ($req) => ($req->header('x-api-key')[0] ?? null) === 'old-seller-key');
 
-        $i = $this->actingAs($this->seller)->getJson('/api/integrations')->json('rajaongkir');
-        $this->assertTrue($i['connected'] && $i['from_env']);
-        $this->assertStringNotContainsString('ship-key', json_encode($i));
-        $this->assertStringNotContainsString('deliv-key', json_encode($i));
+        // RajaOngkir is no longer listed (shipping runs on KiriminAja), and no .env key ever reaches the browser.
+        $all = $this->actingAs($this->seller)->getJson('/api/integrations')->assertOk();
+        $this->assertNull($all->json('rajaongkir'));
+        $this->assertStringNotContainsString('ship-key', $all->getContent());
+        $this->assertStringNotContainsString('deliv-key', $all->getContent());
+        $this->assertStringNotContainsString('old-seller-key', $all->getContent());
         $this->actingAs($this->seller)->putJson('/api/integrations/rajaongkir', ['api_key' => 'x'])->assertStatus(422);
         $this->actingAs($this->seller)->putJson('/api/integrations/midtrans', ['server_key' => 'x', 'is_production' => false])->assertStatus(422);
     }

@@ -19,6 +19,7 @@ class WhatsAppChatTest extends TestCase
     public function test_full_flow(): void
     {
         $user = User::factory()->create();
+        $user->forceFill(['plan_track' => 'social'])->save(); // WhatsApp inbox belongs to the Social & Web track
         Sanctum::actingAs($user);
         Http::fake([
             'graph.facebook.com/*/111222333?*' => Http::response(['display_phone_number' => '+62 812-0000-1111', 'verified_name' => 'Toko Yurizumi', 'quality_rating' => 'GREEN', 'id' => '111222333']),

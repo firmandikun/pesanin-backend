@@ -49,7 +49,8 @@ class ShopeeChatTest extends TestCase
         $this->assertSame('[Gambar]', $r['conversations'][0]['last_text']);
         $this->assertSame(2, $r['unread']);
         $this->assertSame(['shopee', 'Toko A'], [$r['conversations'][0]['channel'], $r['conversations'][0]['source_name']]);
-        $this->assertSame(['shopee', 'facebook', 'instagram', 'whatsapp'], array_column($r['channels'], 'id'));
+        // Channels follow the plan track: a Marketplace store only sees Shopee (Meta & WhatsApp come with the Social add-on).
+        $this->assertSame(['shopee'], array_column($r['channels'], 'id'));
         $this->assertSame([], $this->getJson('/api/chat?channel=facebook')->json('conversations'));
 
         $m = $this->getJson("/api/chat/shopee/{$this->shop->id}/11")->assertOk()->json('messages');

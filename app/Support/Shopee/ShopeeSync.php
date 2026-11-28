@@ -64,11 +64,15 @@ class ShopeeSync
         } while (! empty($page['has_next_page']));
 
         // Remove listings that no longer exist in Shopee (deleted / removed from NORMAL & UNLIST).
+        // Listings hold seller data (HPP, Stok Master links), so a reply without any item only empties the shop when
+        // Shopee explicitly says it has none (total_count 0); a blank/odd reply never wipes everything.
         $stale = MarketplaceListing::where('marketplace_shop_id', $shop->id);
         if ($syncedItemIds) {
             $stale->whereNotIn('item_id', array_values(array_unique($syncedItemIds)));
+            $stale->delete();
+        } elseif (isset($page['total_count']) && (int) $page['total_count'] === 0) {
+            $stale->delete();
         }
-        $stale->delete();
 
         $shop->update(['products_synced_at' => now(), 'last_error' => null]);
 

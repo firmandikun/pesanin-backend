@@ -22,6 +22,7 @@ class MetaChatTest extends TestCase
         parent::setUp();
         config(['services.meta.app_id' => '1', 'services.meta.app_secret' => 's', 'services.meta.chat_config_id' => '9']);
         $this->user = User::factory()->create();
+        $this->user->forceFill(['plan_track' => 'social'])->save(); // Facebook & Instagram inbox belong to the Social & Web track
         Sanctum::actingAs($this->user);
         Http::fake([
             'graph.facebook.com/*/oauth/access_token*' => Http::response(['access_token' => 'LONG']),

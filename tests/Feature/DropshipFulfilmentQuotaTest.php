@@ -90,7 +90,9 @@ class DropshipFulfilmentQuotaTest extends TestCase
     public function test_orders_over_quota_come_in_locked_until_upgrade(): void
     {
         $seller = User::factory()->create();
-        \App\Models\PlatformSetting::write('plans', ['gratis' => ['name' => 'Gratis', 'monthly' => 0, 'limits' => array_merge(\App\Support\Plans::PLANS['gratis']['limits'], ['orders' => 2])]]);
+        // Admin quota changes are stored per plan track (plans_v2.<track>.<plan>).
+        $track = \App\Support\Plans::track($seller);
+        \App\Models\PlatformSetting::write('plans_v2', [$track => ['gratis' => ['name' => 'Gratis', 'monthly' => 0, 'limits' => array_merge(\App\Support\Plans::all($track)['gratis']['limits'], ['orders' => 2])]]]);
         $this->digital($seller, 'eb-q');
         foreach (range(1, 3) as $i) {
             $this->buy('eb-q', ['customer_name' => "Pembeli {$i}"])->assertCreated();

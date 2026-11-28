@@ -17,7 +17,7 @@ class TrackingPixelTest extends TestCase
     public function test_saved_pixels_are_served_on_public_pages(): void
     {
         $seller = User::factory()->create();
-        $seller->forceFill(['plan' => 'pro'])->save();
+        $seller->forceFill(['plan' => 'pro', 'plan_track' => 'social'])->save(); // tracking pixels are a Social & Web feature
         $this->actingAs($seller)->postJson('/api/r/pixels', ['platform' => 'facebook', 'pixel_id' => '123456789012345', 'name' => 'Utama'])->assertCreated();
         $this->actingAs($seller)->postJson('/api/r/pixels', ['platform' => 'google_ads', 'pixel_id' => 'AW-1234567/AbC_d-1'])->assertCreated();
         $this->actingAs($seller)->postJson('/api/r/pixels', ['platform' => 'tiktok', 'pixel_id' => 'CABCDEF12345', 'all_pages' => false])->assertCreated();

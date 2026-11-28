@@ -18,7 +18,7 @@ class MetaConversionsApiTest extends TestCase
     private function seller(): User
     {
         $u = User::factory()->create();
-        $u->forceFill(['plan' => 'pro'])->save();
+        $u->forceFill(['plan' => 'pro', 'plan_track' => 'social'])->save(); // tracking pixels are a Social & Web feature
 
         return $u;
     }
