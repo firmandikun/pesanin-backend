@@ -779,12 +779,15 @@ class MarketplaceController extends Controller
         $by = $request->validate(['by' => 'required|in:sku,name'])['by'];
         $listings = MarketplaceListing::where('user_id', $request->user()->id)->with('shop:id,shop_name')->get();
         $key = fn ($l) => $by === 'sku' ? ($l->sku ?: null) : trim($l->name.($l->model_name ? ' · '.$l->model_name : ''));
+        // Units sold in the last 30 days, so the products that move the profit numbers most can be filled first.
+        $sold = \App\Support\MarginCheck::sold($request->user(), $listings->pluck('marketplace_shop_id')->unique()->values()->all(), 30);
 
-        $groups = $listings->groupBy(fn ($l) => $key($l) ?? '')->map(function ($g, $k) {
+        $groups = $listings->groupBy(fn ($l) => $key($l) ?? '')->map(function ($g, $k) use ($sold) {
             $costs = $g->pluck('cost_price')->filter()->unique()->values();
 
             return [
                 'key' => $k, 'listings' => $g->count(), 'shops' => $g->pluck('shop.shop_name')->unique()->values(),
+                'sold_30d' => (int) $g->sum(fn ($l) => $sold["{$l->marketplace_shop_id}:{$l->item_id}:".(int) $l->model_id]['units'] ?? 0),
                 'price' => (int) $g->min('price'), 'image' => $g->first()->image,
                 'example' => trim($g->first()->name.($g->first()->model_name ? ' · '.$g->first()->model_name : '')),
                 'cost_price' => $costs->count() === 1 ? (int) $costs[0] : null, 'mixed' => $costs->count() > 1,

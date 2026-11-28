@@ -45,26 +45,7 @@ class MarginCheck
             ->mapWithKeys(fn ($r) => [$r->marketplace_shop_id => $r->n >= 5 && $r->sub > 0 ? min(0.5, max(0, $r->fee / $r->sub)) : null]);
 
         // Units sold and average paid price per variant (last 30 days).
-        $sold = [];
-        $orders = Order::where('user_id', $user->id)->whereIn('marketplace_shop_id', $shops->keys())->where('channel', 'shopee')
-            ->where('created_at', '>=', now()->subDays(30))->whereNotIn('status', ['cancelled', 'refunded'])
-            ->where(fn ($w) => $w->whereNull('external_status')->orWhereNotIn('external_status', ['CANCELLED', 'IN_CANCEL']))
-            ->get(['marketplace_shop_id', 'items']);
-        foreach ($orders as $o) {
-            foreach ($o->items ?? [] as $it) {
-                $iid = (int) ($it['item_id'] ?? 0);
-                if (! $iid) {
-                    continue;
-                }
-                $qty = max(1, (int) ($it['qty'] ?? 1));
-                $price = (int) ($it['discounted_price'] ?? $it['price'] ?? 0);
-                foreach (["{$o->marketplace_shop_id}:{$iid}:".(int) ($it['model_id'] ?? 0), "{$o->marketplace_shop_id}:{$iid}"] as $k) {
-                    $sold[$k] ??= ['units' => 0, 'revenue' => 0];
-                    $sold[$k]['units'] += $qty;
-                    $sold[$k]['revenue'] += $price > 0 ? $price * $qty : 0;
-                }
-            }
-        }
+        $sold = self::sold($user, $shops->keys()->all(), 30);
 
         // Ad spend per product (last 30 days), shared equally between the products of a campaign.
         $adSpend = [];
@@ -115,6 +96,36 @@ class MarginCheck
             'threshold' => $threshold, 'checked' => count($rows), 'no_hpp' => $noHpp,
             'rugi' => $c->where('status', 'rugi')->count(), 'tipis' => $c->where('status', 'tipis')->count(), 'aman' => $c->where('status', 'aman')->count(),
         ]];
+    }
+
+    /**
+     * Units sold and revenue per variant ("shop:item:model") and per item ("shop:item") over the last $days days,
+     * from Shopee order lines (cancelled orders excluded). @return array<string, array{units: int, revenue: int}>
+     */
+    public static function sold(User $user, array $shopIds, int $days): array
+    {
+        $sold = [];
+        $orders = Order::where('user_id', $user->id)->whereIn('marketplace_shop_id', $shopIds)->where('channel', 'shopee')
+            ->where('created_at', '>=', now()->subDays($days))->whereNotIn('status', ['cancelled', 'refunded'])
+            ->where(fn ($w) => $w->whereNull('external_status')->orWhereNotIn('external_status', ['CANCELLED', 'IN_CANCEL']))
+            ->get(['marketplace_shop_id', 'items']);
+        foreach ($orders as $o) {
+            foreach ($o->items ?? [] as $it) {
+                $iid = (int) ($it['item_id'] ?? 0);
+                if (! $iid) {
+                    continue;
+                }
+                $qty = max(1, (int) ($it['qty'] ?? 1));
+                $price = (int) ($it['discounted_price'] ?? $it['price'] ?? 0);
+                foreach (["{$o->marketplace_shop_id}:{$iid}:".(int) ($it['model_id'] ?? 0), "{$o->marketplace_shop_id}:{$iid}"] as $k) {
+                    $sold[$k] ??= ['units' => 0, 'revenue' => 0];
+                    $sold[$k]['units'] += $qty;
+                    $sold[$k]['revenue'] += $price > 0 ? $price * $qty : 0;
+                }
+            }
+        }
+
+        return $sold;
     }
 
     /** Daily: notify when products newly turn "rugi" or "tipis" (not the same list every day). */

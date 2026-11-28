@@ -462,3 +462,17 @@ Artisan::command('report:daily-summary {--user= : Only this user id}', function 
     $this->info("Ringkasan harian terkirim: {$n}");
 })->purpose('Send each seller yesterday\'s profit summary');
 \Illuminate\Support\Facades\Schedule::command('report:daily-summary')->dailyAt('07:00')->timezone('Asia/Jakarta')->withoutOverlapping();
+
+// Pengingat HPP kosong: Monday 09:00 WIB, variants sold last week without HPP (switch: Pengaturan → Notifikasi).
+Artisan::command('marketplace:hpp-reminder', function () {
+    $n = 0;
+    foreach (\App\Models\User::whereNull('suspended_at')->whereHas('marketplaceShops', fn ($q) => $q->where('platform', 'shopee')->where('status', 'active')->where('is_demo', false))->get() as $user) {
+        try {
+            $n += \App\Support\HppReminder::notify($user) ? 1 : 0;
+        } catch (\Throwable $e) {
+            $this->warn("HPP user {$user->id}: {$e->getMessage()}");
+        }
+    }
+    $this->info("Pengingat HPP terkirim: {$n}");
+})->purpose('Remind sellers about products sold without HPP');
+\Illuminate\Support\Facades\Schedule::command('marketplace:hpp-reminder')->weeklyOn(1, '09:00')->timezone('Asia/Jakarta')->withoutOverlapping();
