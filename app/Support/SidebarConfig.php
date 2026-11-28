@@ -61,6 +61,9 @@ class SidebarConfig
                 ['label' => 'Diarsipkan', 'href' => '/orders?view=archived'],
                 ['label' => 'Konfirmasi Pembayaran', 'href' => '/others/payments'],
                 ['label' => 'Cek Ongkir', 'href' => '/orders/cek-ongkir'],
+                ['label' => 'Staf CS', 'href' => '/whatsapp-rotator/staff'],
+                ['label' => 'Jadwal Shift CS', 'href' => '/whatsapp-rotator/shift'],
+                ['label' => 'Cuti CS', 'href' => '/whatsapp-rotator/time-off'],
             ],
         ],
         [
