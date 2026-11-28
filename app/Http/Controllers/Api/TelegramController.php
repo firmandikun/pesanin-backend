@@ -76,7 +76,7 @@ class TelegramController extends Controller
         $i = $this->integration($request);
         abort_if(empty($i->settings['chat_id']), 422, 'Chat belum terdeteksi. Kirim /start ke bot dulu.');
         try {
-            (new TelegramClient($i->key('bot_token')))->sendMessage($i->settings['chat_id'], 'Pesanin terhubung. Resi Shopee terjadwal akan dikirim ke chat ini.');
+            (new TelegramClient($i->key('bot_token')))->sendMessage($i->settings['chat_id'], "Pesanin terhubung ✅\nChat ini akan menerima: ringkasan laba harian (07.00), iklan merugi, pesanan hampir lewat batas kirim, SKU perlu restock, dana yang perlu dicek, dan PDF resi terjadwal.\nAtur di Pesanin → Pengaturan → Notifikasi.");
         } catch (RuntimeException $e) {
             abort(422, 'Telegram: '.$e->getMessage());
         }

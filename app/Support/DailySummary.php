@@ -5,7 +5,6 @@ namespace App\Support;
 use App\Models\StockMaster;
 use App\Models\User;
 use App\Support\Shopee\ShipDeadline;
-use App\Support\Telegram\TelegramClient;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Cache;
 use Throwable;
@@ -20,7 +19,7 @@ class DailySummary
 {
     public static function enabled(User $user): bool
     {
-        return (bool) ($user->settings['notify']['daily_summary'] ?? true);
+        return Alert::enabled($user, 'daily_summary');
     }
 
     /** Figures for the WIB day before $now (default: yesterday). */
@@ -129,15 +128,7 @@ class DailySummary
             return false;
         }
         [$title, $body] = self::text($d);
-        Notifier::send($user->id, 'summary', $title, $body, '/dashboard');
-        try {
-            $i = $user->integration('telegram');
-            if ($i && $i->key('bot_token') && ! empty($i->settings['chat_id'])) {
-                (new TelegramClient($i->key('bot_token')))->sendMessage($i->settings['chat_id'], "📊 {$title}\n\n{$body}\n\nDetail: Pesanin → Dashboard");
-            }
-        } catch (Throwable) {
-            // the in-app notification is already there
-        }
+        Alert::send($user, 'summary', $title, $body, '/dashboard', '📊', 'Detail: Pesanin → Dashboard');
 
         return true;
     }

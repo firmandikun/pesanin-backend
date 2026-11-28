@@ -91,6 +91,9 @@ class RestockForecast
     /** Daily: tell the seller which SKUs newly need restocking (each SKU once until it is restocked). */
     public static function notify(User $user): int
     {
+        if (! Alert::enabled($user, 'restock')) {
+            return 0;
+        }
         $cfg = self::settings($user);
         $key = "restock_alert:{$user->id}";
         $seen = Cache::get($key, []);
@@ -113,7 +116,7 @@ class RestockForecast
         if (! $new) {
             return 0;
         }
-        Notifier::send($user->id, 'restock', count($new).' SKU perlu restock', implode("\n", array_slice($new, 0, 10)).(count($new) > 10 ? "\n+".(count($new) - 10).' lainnya' : ''), '/marketplace/stock?filter=restock');
+        Alert::send($user, 'restock', count($new).' SKU perlu restock', implode("\n", array_slice($new, 0, 10)).(count($new) > 10 ? "\n+".(count($new) - 10).' lainnya' : ''), '/marketplace/stock?filter=restock', '📦');
 
         return count($new);
     }

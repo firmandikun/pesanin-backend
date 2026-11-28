@@ -4,11 +4,9 @@ namespace App\Support\Shopee;
 
 use App\Models\Order;
 use App\Models\User;
-use App\Support\Notifier;
-use App\Support\Telegram\TelegramClient;
+use App\Support\Alert;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Cache;
-use Throwable;
 
 /**
  * Batas kirim: Shopee counts an order as late (penalty points, "Pesanan Terlambat Dikirim") when the courier has
@@ -49,6 +47,9 @@ class ShipDeadline
     /** Every 30 minutes: warn once per order when it gets within 6 hours, and once more when it is late. */
     public static function notify(User $user): int
     {
+        if (! Alert::enabled($user, 'ship_deadline')) {
+            return 0;
+        }
         $lines = [];
         foreach (self::due($user) as $d) {
             $stage = $d['late'] ? 'late' : ($d['hours_left'] <= self::SOON_HOURS ? 'soon' : null);
@@ -63,15 +64,7 @@ class ShipDeadline
         $late = count(array_filter($lines, fn ($l) => str_contains($l, 'TERLAMBAT')));
         $title = $late ? "{$late} pesanan lewat batas kirim Shopee" : count($lines).' pesanan hampir lewat batas kirim';
         $body = implode("\n", array_slice($lines, 0, 15)).(count($lines) > 15 ? "\n+".(count($lines) - 15).' lainnya' : '');
-        Notifier::send($user->id, 'ship_deadline', $title, $body, '/marketplace/health');
-        try {
-            $i = $user->integration('telegram');
-            if ($i && $i->key('bot_token') && ! empty($i->settings['chat_id'])) {
-                (new TelegramClient($i->key('bot_token')))->sendMessage($i->settings['chat_id'], "⏰ {$title}\n{$body}");
-            }
-        } catch (Throwable) {
-            // in-app notification already sent
-        }
+        Alert::send($user, 'ship_deadline', $title, $body, '/marketplace/health', '⏰');
 
         return count($lines);
     }

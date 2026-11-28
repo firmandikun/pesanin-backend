@@ -120,6 +120,9 @@ class MoneyCheck
     /** Daily: tell the seller about new findings (each order/kind once). */
     public static function notify(User $user): int
     {
+        if (! Alert::enabled($user, 'money_check')) {
+            return 0;
+        }
         $r = self::scan($user);
         $key = "money_check:{$user->id}";
         $seen = Cache::get($key, []);
@@ -144,7 +147,7 @@ class MoneyCheck
             return 0;
         }
         $lines = collect($new)->map(fn ($v, $t) => "• {$t}: {$v['n']} pesanan (".self::rp($v['amount']).')')->implode("\n");
-        Notifier::send($user->id, 'money', 'Ada dana yang perlu dicek / diklaim', $lines, '/marketplace/money-check');
+        Alert::send($user, 'money', 'Ada dana yang perlu dicek / diklaim', $lines, '/marketplace/money-check', '💰');
 
         return array_sum(array_column($new, 'n'));
     }
