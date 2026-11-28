@@ -211,7 +211,12 @@ class BroadcastController extends Controller
     {
         $uid = $request->user()->id;
         $rows = [];
-        if ($a['source'] === 'customers') {
+        if ($a['source'] === 'reorder') {
+            // Segment "Waktunya beli lagi" (Pelanggan → Waktunya Beli Lagi).
+            foreach (\App\Support\Reorder::due($request->user()) as $r) {
+                $rows[] = ['customer_id' => null, 'name' => $r['name'], 'phone' => $r['phone']];
+            }
+        } elseif ($a['source'] === 'customers') {
             Customer::where('user_id', $uid)->whereNotNull('phone')
                 ->when($a['label'] ?? null, fn ($q, $l) => $q->whereJsonContains('labels', $l))
                 ->when($a['opt_in_only'] ?? true, fn ($q) => $q->where('opt_in', true))
@@ -241,7 +246,7 @@ class BroadcastController extends Controller
     private function audienceRules(): array
     {
         return [
-            'audience' => 'required|array', 'audience.source' => 'required|in:customers,manual',
+            'audience' => 'required|array', 'audience.source' => 'required|in:customers,manual,reorder',
             'audience.label' => 'nullable|string|max:40', 'audience.opt_in_only' => 'boolean',
             'audience.numbers' => 'required_if:audience.source,manual|nullable|string|max:200000',
         ];

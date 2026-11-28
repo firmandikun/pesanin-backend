@@ -185,6 +185,25 @@ Route::middleware(['auth:sanctum', 'member', 'subscribed'])->group(function () {
     Route::post('/quick-replies', [\App\Http\Controllers\Api\InboxController::class, 'storeQuickReply']);
     Route::put('/quick-replies/{reply}', [\App\Http\Controllers\Api\InboxController::class, 'updateQuickReply']);
     Route::delete('/quick-replies/{reply}', [\App\Http\Controllers\Api\InboxController::class, 'deleteQuickReply']);
+    // Pembelian & Supplier (purchase orders, goods received → stock + HPP, payables)
+    Route::controller(\App\Http\Controllers\Api\PurchasingController::class)->group(function () {
+        Route::get('/suppliers', 'suppliers');
+        Route::post('/suppliers', 'storeSupplier');
+        Route::put('/suppliers/{supplier}', 'updateSupplier');
+        Route::delete('/suppliers/{supplier}', 'deleteSupplier');
+        Route::get('/purchases/catalog', 'catalog');
+        Route::get('/purchases', 'index');
+        Route::post('/purchases', 'store');
+        Route::get('/purchases/{purchase}', 'show')->whereNumber('purchase');
+        Route::put('/purchases/{purchase}', 'update')->whereNumber('purchase');
+        Route::post('/purchases/{purchase}/receive', 'receive')->whereNumber('purchase');
+        Route::post('/purchases/{purchase}/cancel', 'cancel')->whereNumber('purchase');
+        Route::post('/purchases/{purchase}/payments', 'pay')->whereNumber('purchase');
+        Route::delete('/purchases/{purchase}/payments/{payment}', 'deletePayment')->whereNumber('purchase');
+    });
+    Route::get('/customers/reorder', [\App\Http\Controllers\Api\ReorderController::class, 'index']);
+    Route::post('/customers/reorder/contacted', [\App\Http\Controllers\Api\ReorderController::class, 'contacted']);
+    Route::put('/customers/reorder/settings', [\App\Http\Controllers\Api\ReorderController::class, 'settings']);
     Route::get('/customers', [\App\Http\Controllers\Api\InboxController::class, 'customers']);
     Route::post('/customers', [\App\Http\Controllers\Api\InboxController::class, 'storeCustomer']);
     Route::get('/customers/{customer}', [\App\Http\Controllers\Api\InboxController::class, 'showCustomer']);
@@ -287,6 +306,9 @@ Route::middleware(['auth:sanctum', 'member', 'subscribed'])->group(function () {
     Route::post('/labels/shopee/refresh', [LabelController::class, 'shopeeRefresh']);
     Route::post('/labels/shopee/pdf', [LabelController::class, 'shopeePdf']);
     Route::post('/labels/shopee/booking-pdf', [LabelController::class, 'shopeeBookingPdf']);
+    Route::post('/labels/shopee/print-jobs', [LabelController::class, 'startPrintJob'])->middleware('throttle:10,1');
+    Route::get('/labels/shopee/print-jobs/{job}', [LabelController::class, 'printJob'])->whereNumber('job');
+    Route::get('/labels/shopee/print-jobs/{job}/file', [LabelController::class, 'printJobFile'])->whereNumber('job');
 
     Route::get('/categories', [ProductController::class, 'categories']);
     Route::post('/uploads', [ProductController::class, 'upload']);

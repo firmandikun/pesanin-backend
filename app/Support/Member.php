@@ -36,6 +36,8 @@ class Member
         'gudang' => [
             '#^\w+ (orders|labels|products|inventory|transactions|scan-out)(/|$)#', '#^\w+ marketplace/(shops|listings|listing-costs|returns|orders)(/|$)#',
             '#^GET r/staff$#',
+            // Gudang sees purchase orders and books goods in, but not prices paid / supplier payments.
+            '#^GET (purchases|suppliers)(/|$)#', '#^POST purchases/\d+/receive$#',
         ],
         'advertiser' => [
             '#^\w+ (reports|research|landing-pages|landing-reports|product-reports|rotator-stats|affiliate-stats)(/|$)#',

@@ -4,9 +4,6 @@ namespace App\Support;
 
 use App\Models\ShopeeBooking;
 use App\Models\User;
-use App\Support\Shopee\ShopeeAwb;
-use App\Support\Shopee\ShopeeException;
-use App\Support\Shopee\ShopeeSync;
 use App\Support\Telegram\TelegramClient;
 use Carbon\CarbonInterface;
 use Illuminate\Support\Facades\Cache;
@@ -14,8 +11,6 @@ use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 use RuntimeException;
-use Symfony\Component\Process\ExecutableFinder;
-use Symfony\Component\Process\Process;
 use Throwable;
 
 /**
@@ -95,41 +90,19 @@ class AwbSchedule
         $tg = self::telegram($user);
         $chat = $user->integration('telegram')->settings['chat_id'];
 
-        $notDemo = fn ($q) => $q->where('is_demo', false);
-        $orders = $user->orders()->active()->where('channel', 'shopee')->whereIn('external_status', ['PROCESSED', 'RETRY_SHIP', 'IN_CANCEL'])
-            ->whereNotNull('tracking_number')->where('tracking_number', '!=', '')->when($onlyNew, fn ($q) => $q->whereNull('awb_printed_at'))
-            ->whereHas('marketplaceShop', $notDemo)->with('marketplaceShop')->orderBy('id')->limit(self::MAX)->get();
-        $bookings = ShopeeBooking::where('user_id', $user->id)->where('booking_status', 'PROCESSED')
-            ->whereNotNull('tracking_number')->where('tracking_number', '!=', '')->when($onlyNew, fn ($q) => $q->whereNull('awb_printed_at'))
-            ->whereHas('marketplaceShop', $notDemo)->with('marketplaceShop')->orderBy('id')->limit(self::MAX)->get();
-
-        // Re-read order status from Shopee: parcels already handed over are dropped (their label can't be printed
-        // again) and move to "Dikirim" instead of failing the whole document.
-        $sync = new ShopeeSync;
-        foreach ($orders->groupBy('marketplace_shop_id') as $group) {
-            foreach ($group->chunk(50) as $chunk) {
-                try {
-                    foreach ((new \App\Support\Shopee\ShopeeClient)->orderDetail($chunk->first()->marketplaceShop, $chunk->pluck('external_order_sn')->all()) as $d) {
-                        $sync->upsertOrder($chunk->first()->marketplaceShop, $d);
-                    }
-                } catch (ShopeeException) {
-                }
-            }
-        }
-        $orders = $orders->map(fn ($o) => $o->fresh(['marketplaceShop']))
-            ->filter(fn ($o) => in_array($o->external_status, ['PROCESSED', 'RETRY_SHIP', 'IN_CANCEL'], true))->values();
+        [$orders, $bookings] = AwbBatch::collect($user, $onlyNew ? 'new' : 'all', limit: self::MAX);
+        // Parcels already handed over are dropped (their label can't be printed again) and move to "Dikirim".
+        [$orders] = AwbBatch::refresh($orders);
 
         if ($orders->isEmpty() && $bookings->isEmpty()) {
             $tg->sendMessage($chat, "{$label}: tidak ada resi Shopee ".($onlyNew ? 'baru ' : '').'untuk dicetak.');
 
             return ['count' => 0, 'failed' => []];
         }
-        ShopeeSync::withListingSkus($orders);
-
         $dir = storage_path('app/awb/'.Str::uuid());
         File::ensureDirectoryExists($dir);
         try {
-            [$parts, $doneOrders, $doneBookings, $failed] = self::download($dir, $orders, $bookings);
+            [$parts, $doneOrders, $doneBookings, $failed] = AwbBatch::download($dir, $orders, $bookings);
             if (! $parts) {
                 throw new RuntimeException('Resi gagal diambil dari Shopee: '.implode('; ', $failed));
             }
@@ -142,7 +115,7 @@ class AwbSchedule
             $stamp = now()->setTimezone(Dates::TZ)->format('Ymd-Hi');
             $out = "{$dir}/resi.pdf";
             $printSettings = $user->settings['print_settings'] ?? [];
-            if (self::render($parts, $out, $printSettings)) {
+            if (AwbBatch::render($parts, $out, $printSettings) !== null) {
                 $tg->sendDocument($chat, $out, "resi-shopee-{$stamp}.pdf", $caption);
             } else {
                 // Post-processing failed: still deliver Shopee's own labels rather than nothing.
@@ -167,77 +140,5 @@ class AwbSchedule
         }
 
         return new TelegramClient($i->key('bot_token'));
-    }
-
-    /** Shopee batches labels per shop + courier, at most 50 per document. */
-    private static function download(string $dir, $orders, $bookings): array
-    {
-        $awb = new ShopeeAwb;
-        $parts = [];
-        $doneOrders = [];
-        $doneBookings = [];
-        $failed = [];
-        foreach ($orders->groupBy(fn ($o) => $o->marketplace_shop_id.'|'.$o->courier) as $group) {
-            foreach ($group->chunk(50) as $chunk) {
-                try {
-                    $path = "{$dir}/p".count($parts).'.pdf';
-                    file_put_contents($path, $awb->orders($chunk->first()->marketplaceShop, $chunk->values()));
-                    $parts[] = ['pdf' => $path, 'orders' => $chunk->map(fn ($o) => ['sns' => [$o->external_order_sn], 'items' => self::itemRows($o->items)])->values()->all()];
-                    array_push($doneOrders, ...$chunk->pluck('id')->all());
-                } catch (ShopeeException $e) {
-                    $failed[] = $chunk->pluck('external_order_sn')->implode(', ').' ('.$e->getMessage().')';
-                }
-            }
-        }
-        foreach ($bookings->groupBy(fn ($b) => $b->marketplace_shop_id.'|'.$b->shipping_carrier) as $group) {
-            foreach ($group->chunk(50) as $chunk) {
-                try {
-                    $path = "{$dir}/p".count($parts).'.pdf';
-                    file_put_contents($path, $awb->bookings($chunk->first()->marketplaceShop, $chunk->values()));
-                    $parts[] = ['pdf' => $path, 'orders' => $chunk->map(fn ($b) => ['sns' => array_values(array_filter([$b->booking_sn, $b->order_sn])), 'items' => self::itemRows($b->items)])->values()->all()];
-                    array_push($doneBookings, ...$chunk->pluck('id')->all());
-                } catch (ShopeeException $e) {
-                    $failed[] = $chunk->pluck('booking_sn')->implode(', ').' ('.$e->getMessage().')';
-                }
-            }
-        }
-
-        return [$parts, $doneOrders, $doneBookings, $failed];
-    }
-
-    /**
-     * Label rows per item: the SKU (variation SKU, else product SKU) plus the product and variation names, which the
-     * label prints instead when the item has no SKU.
-     *
-     * @return list<array{sku:string, name:string, variant:string}>
-     */
-    private static function itemRows(?array $items): array
-    {
-        return collect($items ?? [])->map(fn ($i) => [
-            'sku' => (string) (($i['model_sku'] ?? null) ?: (($i['item_sku'] ?? null) ?: ($i['sku'] ?? ''))),
-            'name' => trim((string) ($i['name'] ?? '')),
-            'variant' => trim((string) ($i['variant'] ?? '')),
-        ])->values()->all();
-    }
-
-    private static function render(array $parts, string $out, array $printSettings = []): bool
-    {
-        $node = config('services.node.binary') ?: (new ExecutableFinder)->find('node', null, ['/usr/local/bin', '/usr/bin']);
-        $script = base_path('scripts/awb/awb.mjs');
-        if (! $node || ! is_file($script) || ! is_dir(base_path('scripts/awb/node_modules'))) {
-            return false;
-        }
-        $job = dirname($out).'/job.json';
-        file_put_contents($job, json_encode(['output' => $out, 'parts' => $parts, 'print_settings' => $printSettings]));
-        $p = new Process([$node, $script, $job], base_path('scripts/awb'));
-        $p->setTimeout(180);
-        $p->run();
-        if (! $p->isSuccessful() || ! is_file($out)) {
-            Log::warning('AWB render failed: '.mb_substr($p->getErrorOutput() ?: $p->getOutput(), 0, 500));
-
-            return false;
-        }
-
-        return true;
     }
 }

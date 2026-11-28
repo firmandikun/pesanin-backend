@@ -14,7 +14,7 @@ use Throwable;
 class Alert
 {
     /** Alert kinds sellers can switch off (Pengaturan → Notifikasi). Ads use settings.ads_guard.notify instead. */
-    public const KINDS = ['daily_summary', 'ship_deadline', 'restock', 'money_check', 'missing_hpp', 'activation'];
+    public const KINDS = ['daily_summary', 'ship_deadline', 'restock', 'money_check', 'missing_hpp', 'activation', 'reorder'];
 
     public static function enabled(User $user, string $kind): bool
     {

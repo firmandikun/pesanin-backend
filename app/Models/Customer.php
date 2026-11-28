@@ -8,7 +8,7 @@ class Customer extends Model
 {
     protected $guarded = ['id', 'user_id'];
 
-    protected $casts = ['labels' => 'array', 'opt_in' => 'boolean'];
+    protected $casts = ['labels' => 'array', 'opt_in' => 'boolean', 'reorder_contacted_at' => 'datetime'];
 
     public function threads()
     {

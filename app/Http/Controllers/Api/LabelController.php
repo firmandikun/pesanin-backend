@@ -369,4 +369,35 @@ class LabelController extends Controller
     }
 
     /** Address flagged for pickup, with the chosen time slot when it exists there, else the earliest one. */
+
+    /* ── Cetak resi di latar belakang ─────────────────────────────────────────────── */
+
+    /** Start a background print: the selected orders/reservations, or every label not printed yet / ready to print. */
+    public function startPrintJob(Request $request)
+    {
+        $d = $request->validate([
+            'scope' => 'required|in:selected,new,all',
+            'order_ids' => 'nullable|array|max:'.\App\Support\AwbPrintJobs::MAX, 'order_ids.*' => 'integer',
+            'booking_ids' => 'nullable|array|max:'.\App\Support\AwbPrintJobs::MAX, 'booking_ids.*' => 'integer',
+        ]);
+        abort_if($d['scope'] === 'selected' && empty($d['order_ids']) && empty($d['booking_ids']), 422, 'Pilih pesanan yang akan dicetak.');
+        $job = \App\Support\AwbPrintJobs::start($request->user(), $d['scope'], $d['order_ids'] ?? [], $d['booking_ids'] ?? []);
+
+        return response()->json(\App\Support\AwbPrintJobs::present($job), 201);
+    }
+
+    public function printJob(Request $request, \App\Models\AwbPrintJob $job)
+    {
+        abort_unless($job->user_id === $request->user()->id, 404);
+
+        return \App\Support\AwbPrintJobs::present($job);
+    }
+
+    public function printJobFile(Request $request, \App\Models\AwbPrintJob $job)
+    {
+        abort_unless($job->user_id === $request->user()->id, 404);
+        abort_unless($job->status === 'done' && $job->file && is_file($job->file), 404, 'File resi sudah tidak tersedia. Cetak ulang.');
+
+        return response()->file($job->file, ['Content-Type' => 'application/pdf', 'Content-Disposition' => 'inline; filename="resi-shopee-'.$job->id.'.pdf"']);
+    }
 }

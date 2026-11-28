@@ -49,21 +49,11 @@ class KomerceDeliveryTest extends TestCase
             'quantity' => 2, 'payment_method' => 'cod', 'courier' => 'jne:reg'])->assertCreated();
     }
 
-    public function test_auto_resi_runs_for_paid_or_allowed_cod_orders(): void
-    {
-        $this->setUpShop();
-        $set = fn (array $a) => $this->seller->forceFill(['settings' => ['automation' => $a]])->save();
-        $set(['auto_ship' => true, 'auto_ship_cod' => false]);
-        $this->assertSame(0, \App\Support\RajaOngkir\CourierBooking::auto(), 'COD waits unless allowed');
-        $set(['auto_ship' => true, 'auto_ship_cod' => true]);
-        $this->assertSame(1, \App\Support\RajaOngkir\CourierBooking::auto());
-        $this->assertSame('JNE999', Order::first()->tracking_number);
-        $this->assertSame(0, \App\Support\RajaOngkir\CourierBooking::auto(), 'never booked twice');
-    }
-
     public function test_env_keys_are_shown_as_status_only_and_seller_keys_are_ignored(): void
     {
-        $this->setUpShop();
+        // Only the integrations status is checked here (no checkout), so no courier call is made.
+        $this->seller = User::factory()->create(['store_name' => 'Toko Uji']);
+        config(['services.rajaongkir.key' => 'ship-key', 'services.rajaongkir.delivery_key' => 'deliv-key']);
         // An old per-seller key is ignored: the integration status comes from Pesanin's .env keys.
         // (Pesan kurir itself now runs on KiriminAja: see KiriminAjaIntegrationTest.)
         UserIntegration::create(['user_id' => $this->seller->id, 'provider' => 'rajaongkir', 'credentials' => ['api_key' => 'old-seller-key'], 'webhook_token' => Str::random(40), 'status' => 'active']);

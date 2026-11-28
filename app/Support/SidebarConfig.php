@@ -74,6 +74,7 @@ class SidebarConfig
                 ['label' => 'Broadcast', 'href' => '/broadcast'],
                 ['label' => 'Template WhatsApp', 'href' => '/broadcast/templates'],
                 ['label' => 'Pelanggan', 'href' => '/customers'],
+                ['label' => 'Waktunya Beli Lagi', 'href' => '/customers/reorder'],
                 ['label' => 'Balasan Cepat & Label', 'href' => '/chat/quick-replies'],
                 ['label' => 'Team Members', 'href' => '/others/team-members'],
             ],
@@ -119,6 +120,18 @@ class SidebarConfig
                 ['label' => 'Riset Produk', 'href' => '/reports/research'],
                 ['label' => 'Riset Pasar', 'href' => '/reports/market'],
                 ['label' => 'Diagnosa Bisnis AI', 'href' => '/reports/ai-diagnosis'],
+            ],
+        ],
+        [
+            'key' => 'purchasing',
+            'label' => 'Pembelian',
+            'description' => 'Purchase order ke supplier, barang masuk (stok & HPP otomatis), dan utang supplier',
+            'icon' => 'Truck',
+            'locked' => false,
+            'default_visible' => true,
+            'children' => [
+                ['label' => 'Pembelian (PO)', 'href' => '/purchases'],
+                ['label' => 'Supplier', 'href' => '/suppliers'],
             ],
         ],
         [
@@ -211,6 +224,7 @@ class SidebarConfig
     public const CHILD_TRACK = [
         '/broadcast' => 'social', '/broadcast/templates' => 'social', '/reports/meta-ads' => 'social', '/others/product-reports' => 'social',
         '/reports/research' => 'marketplace', '/reports/market' => 'marketplace',
+        '/customers/reorder' => 'social',
         '/settings/addresses' => 'social', '/settings/tracking' => 'social', '/settings/domains' => 'social', '/settings/banned' => 'social',
     ];
 

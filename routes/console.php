@@ -490,3 +490,28 @@ Artisan::command('activation:nudge', function () {
     $this->info("Pengingat langkah awal terkirim: {$n}");
 })->purpose('Remind new sellers about their next activation step');
 \Illuminate\Support\Facades\Schedule::command('activation:nudge')->dailyAt('10:00')->timezone('Asia/Jakarta')->withoutOverlapping();
+
+// Waktunya beli lagi: 09:30 WIB, tell sellers about web/social buyers who newly reached their buying cycle.
+Artisan::command('customers:reorder-alert', function () {
+    $n = 0;
+    foreach (\App\Models\User::whereNull('suspended_at')->whereHas('orders', fn ($q) => $q->where('channel', '!=', 'shopee')->where('created_at', '>=', now()->subDays(210)))->get() as $user) {
+        try {
+            $n += \App\Support\Reorder::notify($user);
+        } catch (\Throwable $e) {
+            $this->warn("Reorder user {$user->id}: {$e->getMessage()}");
+        }
+    }
+    $this->info("Pelanggan waktunya beli lagi (baru): {$n}");
+})->purpose('Tell sellers which customers are due to reorder');
+\Illuminate\Support\Facades\Schedule::command('customers:reorder-alert')->dailyAt('09:30')->timezone('Asia/Jakarta')->withoutOverlapping();
+
+// Cetak resi di latar belakang (AwbPrintJobs::start spawns this detached).
+Artisan::command('awb:print-job {id}', function (int $id) {
+    $job = \App\Models\AwbPrintJob::findOrFail($id);
+    $r = \App\Support\AwbPrintJobs::run($job);
+    $this->info("Print job {$id}: {$r->status}, {$r->done} resi, {$r->pages} halaman");
+})->purpose('Download and format Shopee labels into one PDF in the background');
+Artisan::command('awb:print-jobs-prune', function () {
+    $this->info('Print job lama dihapus: '.\App\Support\AwbPrintJobs::prune());
+})->purpose('Delete background print files older than 3 days');
+\Illuminate\Support\Facades\Schedule::command('awb:print-jobs-prune')->dailyAt('04:10')->timezone('Asia/Jakarta')->withoutOverlapping();
