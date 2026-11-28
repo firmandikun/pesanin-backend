@@ -444,3 +444,21 @@ Artisan::command('shopee:push-process {--seconds=50}', function () {
 \Illuminate\Support\Facades\Schedule::command('shopee:push-process')->everyFiveSeconds()->withoutOverlapping()->runInBackground();
 // Raw Shopee push log: applied/failed events older than MARKETPLACE_EVENTS_KEEP_DAYS (default 30) are deleted. Orders are untouched.
 \Illuminate\Support\Facades\Schedule::command('model:prune', ['--model' => [\App\Models\MarketplaceEvent::class]])->dailyAt('03:40')->withoutOverlapping();
+
+// Ringkasan laba harian: at 07:00 WIB, yesterday's revenue/net profit + what needs attention today (in-app, Web Push, Telegram).
+Artisan::command('report:daily-summary {--user= : Only this user id}', function () {
+    $users = \App\Models\User::whereNull('suspended_at')
+        ->when($this->option('user'), fn ($q, $id) => $q->whereKey($id), fn ($q) => $q->where(fn ($w) => $w
+            ->whereHas('marketplaceShops', fn ($s) => $s->where('status', 'active')->where('is_demo', false))
+            ->orWhereHas('orders', fn ($o) => $o->where('created_at', '>=', now()->subDays(30)))));
+    $n = 0;
+    foreach ($users->get() as $user) {
+        try {
+            $n += \App\Support\DailySummary::send($user) ? 1 : 0;
+        } catch (\Throwable $e) {
+            $this->warn("Ringkasan user {$user->id}: {$e->getMessage()}");
+        }
+    }
+    $this->info("Ringkasan harian terkirim: {$n}");
+})->purpose('Send each seller yesterday\'s profit summary');
+\Illuminate\Support\Facades\Schedule::command('report:daily-summary')->dailyAt('07:00')->timezone('Asia/Jakarta')->withoutOverlapping();
