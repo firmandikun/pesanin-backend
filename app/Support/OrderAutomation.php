@@ -32,12 +32,16 @@ class OrderAutomation
             'auto_ship_shopee' => false, 'auto_ship_shopee_method' => 'auto',
             'awb_schedule' => false, 'awb_times' => ['08:00'], 'awb_slots' => null,
             'digital_email' => true, 'digital_wa_template' => null,
+            'cod_confirm' => false, 'cod_confirm_template' => null, 'cod_confirm_level' => 'all', 'cod_confirm_hours' => 12,
         ];
     }
 
     public static function run(): array
     {
-        return ['shipped' => \App\Support\KiriminAja\CourierBooking::auto(), 'shopee_shipped' => self::shopeeAutoShip(), 'delivered' => self::deliverDigital(),
+        // Konfirmasi COD first, so new COD orders are held before auto resi looks at them.
+        $codAsked = CodConfirm::run();
+
+        return ['cod_asked' => $codAsked, 'shipped' => \App\Support\KiriminAja\CourierBooking::auto(), 'shopee_shipped' => self::shopeeAutoShip(), 'delivered' => self::deliverDigital(),
             // Stok master: push changed stock to every linked Shopee listing.
             'stock_pushed' => \App\Support\MasterStock::pushPending()];
     }

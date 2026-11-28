@@ -161,6 +161,8 @@ Route::middleware(['auth:sanctum', 'member', 'subscribed'])->group(function () {
     Route::post('/whatsapp/connect', [\App\Http\Controllers\Api\WhatsAppConnectController::class, 'connect']);
     Route::get('/whatsapp/connect/pending', [\App\Http\Controllers\Api\WhatsAppConnectController::class, 'pending']);
     Route::post('/whatsapp/connect/select', [\App\Http\Controllers\Api\WhatsAppConnectController::class, 'select']);
+    Route::get('/whatsapp/status', [\App\Http\Controllers\Api\WhatsAppConnectController::class, 'status']);
+    Route::post('/whatsapp/test', [\App\Http\Controllers\Api\WhatsAppConnectController::class, 'test'])->middleware('throttle:10,1');
     // WhatsApp broadcast + message templates
     Route::get('/broadcasts/status', [\App\Http\Controllers\Api\BroadcastController::class, 'status']);
     Route::post('/broadcasts/preview', [\App\Http\Controllers\Api\BroadcastController::class, 'preview']);
@@ -192,6 +194,7 @@ Route::middleware(['auth:sanctum', 'member', 'subscribed'])->group(function () {
         Route::put('/suppliers/{supplier}', 'updateSupplier');
         Route::delete('/suppliers/{supplier}', 'deleteSupplier');
         Route::get('/purchases/catalog', 'catalog');
+        Route::get('/purchases/restock', 'restock');
         Route::get('/purchases', 'index');
         Route::post('/purchases', 'store');
         Route::get('/purchases/{purchase}', 'show')->whereNumber('purchase');
@@ -326,6 +329,7 @@ Route::middleware(['auth:sanctum', 'member', 'subscribed'])->group(function () {
     Route::get('/orders/export', [OrderController::class, 'export']);
     Route::get('/orders/cs-summary', [OrderController::class, 'csSummary']);
     Route::put('/orders/{order}/cs', [OrderController::class, 'assignCs']);
+    Route::put('/orders/{order}/cod-confirm', [OrderController::class, 'codConfirm']);
     Route::get('/orders/{order}/shipping-rates', [\App\Http\Controllers\Api\IntegrationController::class, 'orderRates']);
     Route::post('/orders/{order}/ship/cancel', [\App\Http\Controllers\Api\IntegrationController::class, 'cancelShipment'])->middleware('throttle:20,1');
     Route::post('/orders/book', [\App\Http\Controllers\Api\IntegrationController::class, 'book'])->middleware('throttle:20,1');

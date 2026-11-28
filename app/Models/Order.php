@@ -43,6 +43,8 @@ class Order extends Model
             'packed_at' => 'datetime',
             'packing_check' => 'array',
             'cs_contacted_at' => 'datetime',
+            'cod_confirm_sent_at' => 'datetime',
+            'cod_confirmed_at' => 'datetime',
         ];
     }
 

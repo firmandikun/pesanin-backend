@@ -62,6 +62,12 @@ class PurchasingController extends Controller
 
     /* ── Purchase orders ────────────────────────────────────────────────────────── */
 
+    /** Saran Restock: what to buy now, grouped by the supplier it was last bought from (ready for draft POs). */
+    public function restock(Request $request)
+    {
+        return \App\Support\RestockDraft::suggestions($request->user());
+    }
+
     /** What can be bought: Shopee SKUs (Stok Master) and web/social products, with stock and HPP. */
     public function catalog(Request $request)
     {

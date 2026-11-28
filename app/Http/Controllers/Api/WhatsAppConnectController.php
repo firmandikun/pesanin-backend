@@ -54,6 +54,62 @@ class WhatsAppConnectController extends Controller
         return 'pick';
     }
 
+    /**
+     * Pengaturan → WhatsApp: everything the setup checklist needs in one call — the connected number, how it was
+     * connected, and whether customer messages have reached Pesanin yet (proof the webhook works).
+     */
+    public function status(Request $request)
+    {
+        $i = WhatsAppChatController::integration($request->user());
+        $lastIn = $i ? \App\Models\WaMessage::where('user_id', $request->user()->id)->where('direction', 'in')->latest('sent_at')->value('sent_at') : null;
+        $s = $i?->settings ?? [];
+
+        return [
+            'connected' => (bool) $i, 'phone' => $s['display_phone'] ?? null, 'verified_name' => $s['verified_name'] ?? null, 'quality' => $s['quality'] ?? null,
+            'connected_via' => $s['connected_via'] ?? ($i ? 'token' : null), 'token_expires_at' => $s['token_expires_at'] ?? null,
+            'last_error' => $i?->last_error, 'last_inbound_at' => $lastIn ? \Carbon\Carbon::parse($lastIn)->toIso8601String() : null,
+            'pending_numbers' => count(self::pendingFor($request->user())['numbers'] ?? []),
+        ];
+    }
+
+    /**
+     * "Kirim pesan tes": Meta's built-in hello_world template (every new WhatsApp Business Account has it) to the
+     * seller's own phone, so they see the connection work end to end. Meta's errors are explained in plain words.
+     */
+    public function test(Request $request)
+    {
+        $to = \App\Models\Customer::normalizePhone($request->validate(['to' => 'required|string|max:30'])['to']);
+        abort_unless($to && strlen($to) >= 10, 422, 'Nomor tujuan tidak valid.');
+        $wa = WhatsAppCloud::for(WhatsAppChatController::integration($request->user()));
+        abort_unless($wa, 422, 'WhatsApp belum terhubung.');
+        try {
+            $wa->sendTemplate($to, 'hello_world', 'en_US');
+        } catch (\Throwable $e) {
+            abort(422, self::explain($e->getMessage(), true, (int) $e->getCode()));
+        }
+
+        return ['ok' => true];
+    }
+
+    /**
+     * Meta error → what the seller should do. $code is Meta's error code (WhatsAppCloud passes it as the exception
+     * code); unknown errors keep their text, with "Meta menolak:" when $prefix.
+     */
+    public static function explain(string $error, bool $prefix = true, int $code = 0): string
+    {
+        $e = strtolower($error);
+
+        return match (true) {
+            $code === 132001 || str_contains($e, 'template name does not exist') => 'Template tes "hello_world" tidak ada di akun WhatsApp Business-mu. Koneksi tetap bisa dipakai; buat template sendiri di menu Broadcast → Template.',
+            $code === 133010 || str_contains($e, 'not registered') => 'Nomor belum terdaftar di WhatsApp Cloud API. Buka WhatsApp Manager → Nomor telepon, selesaikan pendaftaran/verifikasi nomor, lalu coba lagi.',
+            $code === 131042 || str_contains($e, 'payment') => 'Metode pembayaran Meta belum diatur. Tambahkan kartu di Meta Business → Penagihan WhatsApp agar bisa mengirim template.',
+            $code === 190 || str_contains($e, 'session has expired') => 'Login Facebook sudah kedaluwarsa. Klik "Masuk dengan Facebook" lagi untuk memperbarui.',
+            in_array($code, [10, 200], true) || str_contains($e, 'permission') => 'Izin akun belum lengkap. Login ulang dan centang akun WhatsApp Business serta nomornya.',
+            str_contains($e, 'user denied') || str_contains($e, 'access_denied') || str_contains($e, 'permissions error') => 'Login dibatalkan. Klik "Masuk dengan Facebook" lagi dan selesaikan semua langkahnya.',
+            default => ($prefix && ! str_starts_with($error, 'WhatsApp') && ! $code ? 'Meta menolak: ' : '').mb_substr($error, 0, 250),
+        };
+    }
+
     public function pending(Request $request)
     {
         $p = self::pendingFor($request->user());

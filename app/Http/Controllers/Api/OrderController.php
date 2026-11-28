@@ -215,6 +215,18 @@ class OrderController extends Controller
         return $order->load('csStaff:id,name,phone');
     }
 
+    /** Konfirmasi COD by hand: CS confirmed by phone/chat, or the buyer cancelled. */
+    public function codConfirm(Request $request, Order $order)
+    {
+        $this->authorizeOwner($request, $order);
+        $d = $request->validate(['status' => 'required|in:confirmed,declined']);
+        abort_unless($order->payment_method === 'cod', 422, 'Bukan pesanan COD.');
+        \App\Support\CodConfirm::set($order, $d['status']);
+        ActivityLog::record($request->user(), 'order.cod_confirm', "Konfirmasi COD {$order->code}: {$d['status']}");
+
+        return $order->only(['id', 'cod_confirm_status', 'cod_confirmed_at']);
+    }
+
     /** Kinerja CS: orders, contacted, paid and closing rate per CS for a period (default: this month). */
     public function csSummary(Request $request)
     {
@@ -340,6 +352,9 @@ class OrderController extends Controller
             $q->where('channel', '!=', 'shopee');
         }
         // CS penanggung jawab: an id, or "none" for orders nobody handles yet.
+        if ($cc = $request->query('cod_confirm')) {
+            $q->where('payment_method', 'cod')->where('cod_confirm_status', $cc);
+        }
         if ($cs = $request->query('cs_staff_id')) {
             $cs === 'none' ? $q->whereNull('cs_staff_id') : $q->where('cs_staff_id', (int) $cs);
         }

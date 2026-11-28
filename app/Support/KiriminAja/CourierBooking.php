@@ -127,13 +127,15 @@ class CourierBooking
         }
         foreach (User::where('settings->automation->auto_ship', true)->get()->filter(fn (User $u) => OrderAutomation::settings($u)['auto_ship']) as $user) {
             $cod = OrderAutomation::settings($user)['auto_ship_cod'];
+            $confirming = \App\Support\CodConfirm::active($user);
             $orders = $user->orders()->where('is_abandoned', false)->where('channel', '!=', 'shopee')->whereNull('dropship_product_id')
                 ->whereNull('tracking_number')->where('shipping_status', 'not_shipped')->whereNotIn('status', ['cancelled', 'refunded'])
                 ->whereNotNull('courier')->where('auto_ship_tries', '<', self::MAX_TRIES)->where('created_at', '>=', now()->subDays(7))
                 ->where(fn ($q) => $cod ? $q->where('payment_status', 'paid')->orWhere('payment_method', 'cod') : $q->where('payment_status', 'paid'))
                 ->orderBy('id')->limit(20)->get();
             foreach ($orders as $order) {
-                if (self::blocker($order, $user)) {
+                // Konfirmasi COD: wait until the buyer replied YA (or the CS confirmed).
+                if (\App\Support\CodConfirm::holds($order, $confirming) || self::blocker($order, $user)) {
                     continue;
                 }
                 $error = self::book($order, $api);

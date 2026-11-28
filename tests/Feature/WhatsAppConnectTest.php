@@ -48,7 +48,7 @@ class WhatsAppConnectTest extends TestCase
     public function test_single_number_connects_directly(): void
     {
         $this->fake([['id' => '555', 'display_phone_number' => '+62 812-0000-1111', 'verified_name' => 'Toko A', 'quality_rating' => 'GREEN']]);
-        $this->loginCallback()->assertRedirect('http://front/settings/integrations?wa=connected#whatsapp');
+        $this->loginCallback()->assertRedirect('http://front/settings/whatsapp?wa=connected');
 
         $i = UserIntegration::where('user_id', $this->user->id)->where('provider', 'whatsapp_cloud')->first();
         $this->assertSame('LONG', $i->key('access_token'));
@@ -60,7 +60,7 @@ class WhatsAppConnectTest extends TestCase
     public function test_several_numbers_let_the_seller_pick(): void
     {
         $this->fake([['id' => '555', 'display_phone_number' => '+62 1'], ['id' => '556', 'display_phone_number' => '+62 2']]);
-        $this->loginCallback()->assertRedirect('http://front/settings/integrations?wa=pick#whatsapp');
+        $this->loginCallback()->assertRedirect('http://front/settings/whatsapp?wa=pick');
         $this->getJson('/api/whatsapp/connect/pending')->assertJsonCount(2, 'numbers');
         $this->postJson('/api/whatsapp/connect/select', ['phone_number_id' => 'nope'])->assertStatus(422);
         $this->postJson('/api/whatsapp/connect/select', ['phone_number_id' => '556'])->assertJsonPath('phone', '+62 2');
@@ -73,5 +73,25 @@ class WhatsAppConnectTest extends TestCase
         $this->fake([]);
         $this->loginCallback()->assertRedirectContains('wa_error=');
         $this->assertSame(0, UserIntegration::count());
+    }
+
+    public function test_status_and_test_message_with_plain_errors(): void
+    {
+        $this->getJson('/api/whatsapp/status')->assertOk()->assertJson(['connected' => false, 'last_inbound_at' => null]);
+        $this->postJson('/api/whatsapp/test', ['to' => '081234567890'])->assertStatus(422);
+
+        UserIntegration::create(['user_id' => $this->user->id, 'provider' => 'whatsapp_cloud', 'webhook_token' => 'tok', 'status' => 'active',
+            'credentials' => ['access_token' => 'EAAT'], 'settings' => ['phone_number_id' => '555', 'display_phone' => '+62 812', 'connected_via' => 'login']]);
+        $this->getJson('/api/whatsapp/status')->assertJson(['connected' => true, 'phone' => '+62 812', 'connected_via' => 'login']);
+
+        Http::fake(['*/555/messages' => Http::sequence()
+            ->push(['messages' => [['id' => 'wamid.T']]])
+            ->push(['error' => ['message' => '(#132001) Template name does not exist in the translation', 'code' => 132001]], 400)]);
+        $this->postJson('/api/whatsapp/test', ['to' => '0812-3456-7890'])->assertOk();
+        Http::assertSent(fn (HttpRequest $r) => str_ends_with($r->url(), '/555/messages') && $r['to'] === '6281234567890' && $r['template']['name'] === 'hello_world');
+        $this->postJson('/api/whatsapp/test', ['to' => '081234567890'])->assertStatus(422)->assertJsonFragment(['message' => 'Template tes "hello_world" tidak ada di akun WhatsApp Business-mu. Koneksi tetap bisa dipakai; buat template sendiri di menu Broadcast → Template.']);
+
+        \App\Models\WaMessage::create(['user_id' => $this->user->id, 'phone_number_id' => '555', 'wa_id' => '62811', 'direction' => 'in', 'type' => 'text', 'text' => 'halo', 'sent_at' => now()]);
+        $this->assertNotNull($this->getJson('/api/whatsapp/status')->json('last_inbound_at'));
     }
 }

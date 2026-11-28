@@ -116,7 +116,7 @@ class RestockForecast
         if (! $new) {
             return 0;
         }
-        Alert::send($user, 'restock', count($new).' SKU perlu restock', implode("\n", array_slice($new, 0, 10)).(count($new) > 10 ? "\n+".(count($new) - 10).' lainnya' : ''), '/marketplace/stock?filter=restock', '📦');
+        Alert::send($user, 'restock', count($new).' SKU perlu restock', implode("\n", array_slice($new, 0, 10)).(count($new) > 10 ? "\n+".(count($new) - 10).' lainnya' : ''), '/purchases/restock', '📦');
 
         return count($new);
     }

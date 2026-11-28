@@ -100,6 +100,7 @@ class WhatsAppChatController extends Controller
                 'sent_at' => Carbon::createFromTimestamp((int) ($m['timestamp'] ?? time())),
             ]);
             if ($msg->wasRecentlyCreated) {
+                \App\Support\CodConfirm::reply($i->user_id, (string) $m['from'], (string) $msg->text);
                 Notifier::send($i->user_id, 'chat', 'Pesan WhatsApp baru',
                     mb_strimwidth(($msg->contact_name ?: '+'.$msg->wa_id).': '.$msg->text, 0, 120, '…'),
                     "/chat?channel=whatsapp&source={$pnid}&c={$msg->wa_id}");

@@ -137,6 +137,7 @@ class SidebarConfig
             'default_visible' => true,
             'children' => [
                 ['label' => 'Pembelian (PO)', 'href' => '/purchases'],
+                ['label' => 'Saran Restock', 'href' => '/purchases/restock'],
                 ['label' => 'Supplier', 'href' => '/suppliers'],
             ],
         ],
@@ -179,6 +180,7 @@ class SidebarConfig
                 ['label' => 'Akun', 'href' => '/settings/account'],
                 ['label' => 'Paket & Tagihan', 'href' => '/settings/billing'],
                 ['label' => 'Integrasi', 'href' => '/settings/integrations'],
+                ['label' => 'WhatsApp', 'href' => '/settings/whatsapp'],
                 ['label' => 'Alamat Pickup', 'href' => '/settings/addresses'],
                 ['label' => 'Otomatisasi Pesanan', 'href' => '/settings/automation'],
                 ['label' => 'Cetak Resi & Label', 'href' => '/settings/print'],
@@ -231,7 +233,7 @@ class SidebarConfig
         '/broadcast' => 'social', '/broadcast/templates' => 'social', '/reports/meta-ads' => 'social', '/others/product-reports' => 'social',
         '/reports/research' => 'marketplace', '/reports/market' => 'marketplace',
         '/customers/reorder' => 'social',
-        '/settings/addresses' => 'social', '/settings/tracking' => 'social', '/settings/domains' => 'social', '/settings/banned' => 'social',
+        '/settings/addresses' => 'social', '/settings/whatsapp' => 'social', '/settings/tracking' => 'social', '/settings/domains' => 'social', '/settings/banned' => 'social',
     ];
 
     /** Menu entries that need a plan feature (shown with the plan that unlocks it). */

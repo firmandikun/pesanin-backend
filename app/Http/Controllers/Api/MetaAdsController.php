@@ -82,7 +82,7 @@ class MetaAdsController extends Controller
             if (($state['kind'] ?? 'ads') === 'whatsapp') {
                 $r = WhatsAppConnectController::fromToken(User::findOrFail($state['uid']), $res->json('access_token'));
 
-                return redirect(rtrim(config('services.frontend_url'), '/').'/settings/integrations?wa='.$r.'#whatsapp');
+                return redirect(rtrim(config('services.frontend_url'), '/').'/settings/whatsapp?wa='.$r);
             }
             if (($state['kind'] ?? 'ads') === 'chat') {
                 MetaChatController::saveFromToken(User::findOrFail($state['uid']), $res->json('access_token'));
@@ -99,7 +99,7 @@ class MetaAdsController extends Controller
 
             $msg = $request->query('error_description') ?: ($e instanceof \RuntimeException ? $e->getMessage() : 'Gagal menghubungkan akun Meta.');
             if ($kind === 'whatsapp') {
-                return redirect(rtrim(config('services.frontend_url'), '/').'/settings/integrations?wa_error='.urlencode($msg).'#whatsapp');
+                return redirect(rtrim(config('services.frontend_url'), '/').'/settings/whatsapp?wa_error='.urlencode(WhatsAppConnectController::explain($msg, false)));
             }
 
             return redirect(($kind === 'chat' ? rtrim(config('services.frontend_url'), '/').'/chat' : $front).'?error='.urlencode($msg));
