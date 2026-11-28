@@ -41,9 +41,6 @@ class WhatsAppConnectController extends Controller
     {
         $token = self::longLived($token);
         $numbers = self::numbers($token);
-        if (! $numbers) {
-            throw new RuntimeException('Tidak ada nomor WhatsApp Business yang diizinkan. Saat login, pilih akun WhatsApp Business dan nomornya.');
-        }
         if (count($numbers) === 1) {
             self::save($user, $token, $numbers[0]);
 
@@ -148,12 +145,26 @@ class WhatsAppConnectController extends Controller
         return $res->successful() && $res->json('access_token') ? $res->json('access_token') : $token;
     }
 
-    /** Every number in the WhatsApp Business Accounts this login was granted. */
+    /**
+     * Every number in the WhatsApp Business Accounts this login was granted. The accounts come from the token's
+     * granular scopes; when Meta leaves those empty (access to "all" accounts), from the businesses the user manages.
+     * Throws a seller-readable error saying what is missing: the permission, the account, or a number in it.
+     */
     public static function numbers(string $token): array
     {
         $app = config('services.meta.app_id').'|'.config('services.meta.app_secret');
-        $scopes = Http::timeout(20)->get(MetaAds::graph('debug_token'), ['input_token' => $token, 'access_token' => $app])->json('data.granular_scopes') ?? [];
-        $wabas = collect($scopes)->whereIn('scope', ['whatsapp_business_management', 'whatsapp_business_messaging'])->pluck('target_ids')->flatten()->filter()->unique()->values();
+        $scopes = collect(Http::timeout(20)->get(MetaAds::graph('debug_token'), ['input_token' => $token, 'access_token' => $app])->json('data.granular_scopes') ?? []);
+        $waScopes = $scopes->whereIn('scope', ['whatsapp_business_management', 'whatsapp_business_messaging']);
+        if ($waScopes->isEmpty()) {
+            throw new RuntimeException('Izin WhatsApp belum diberikan. Klik "Masuk dengan Facebook" lagi dan di langkah izin centang semua izin WhatsApp (kelola & kirim pesan).');
+        }
+        $wabas = $waScopes->pluck('target_ids')->flatten()->filter()->map(fn ($id) => (string) $id)->unique()->values();
+        if ($wabas->isEmpty()) {
+            $wabas = self::wabasFromBusinesses($token);
+        }
+        if ($wabas->isEmpty()) {
+            throw new RuntimeException('Belum ada akun WhatsApp Business yang dipilih. Saat login, pilih (atau buat) akun WhatsApp Business di langkah "Pilih akun WhatsApp Business", lalu centang akun itu di langkah izin.');
+        }
 
         $out = [];
         foreach ($wabas as $waba) {
@@ -167,8 +178,23 @@ class WhatsAppConnectController extends Controller
                 ];
             }
         }
+        if (! $out) {
+            throw new RuntimeException('Akun WhatsApp Business sudah terhubung, tapi belum ada nomor telepon di dalamnya. Login lagi lalu di langkah "Tambah nomor telepon" masukkan nomor dan kode verifikasinya, atau tambahkan nomor di WhatsApp Manager (business.facebook.com/wa/manage/phone-numbers) lalu login ulang.');
+        }
 
         return $out;
+    }
+
+    /** WhatsApp Business Accounts of the businesses this user manages (owned or shared with them). */
+    private static function wabasFromBusinesses(string $token): \Illuminate\Support\Collection
+    {
+        $res = Http::timeout(20)->get(MetaAds::graph('me/businesses'), [
+            'access_token' => $token, 'fields' => 'owned_whatsapp_business_accounts{id},client_whatsapp_business_accounts{id}', 'limit' => 50,
+        ]);
+
+        return collect($res->json('data') ?? [])
+            ->flatMap(fn ($b) => array_merge($b['owned_whatsapp_business_accounts']['data'] ?? [], $b['client_whatsapp_business_accounts']['data'] ?? []))
+            ->pluck('id')->filter()->map(fn ($id) => (string) $id)->unique()->values();
     }
 
     private static function save(User $user, string $token, array $number): UserIntegration

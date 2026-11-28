@@ -71,8 +71,41 @@ class WhatsAppConnectTest extends TestCase
     public function test_login_without_numbers_shows_error(): void
     {
         $this->fake([]);
-        $this->loginCallback()->assertRedirectContains('wa_error=');
+        $this->loginCallback()->assertRedirectContains('wa_error='.urlencode('Akun WhatsApp Business sudah terhubung, tapi belum ada nomor telepon'));
         $this->assertSame(0, UserIntegration::count());
+    }
+
+    /** Meta's debug_token result for a login with the given WhatsApp scopes. */
+    private function fakeScopes(array $scopes, array $extra = []): void
+    {
+        Http::fake($extra + [
+            '*/oauth/access_token*' => Http::sequence()->push(['access_token' => 'SHORT'])->push(['access_token' => 'LONG']),
+            '*/debug_token*' => Http::response(['data' => ['expires_at' => 0, 'granular_scopes' => $scopes]]),
+            '*/me/businesses*' => Http::response(['data' => []]),
+            '*/subscribed_apps' => Http::response(['success' => true]),
+        ]);
+    }
+
+    public function test_missing_whatsapp_permission_is_explained(): void
+    {
+        $this->fakeScopes([['scope' => 'business_management']]);
+        $this->loginCallback()->assertRedirectContains('wa_error='.urlencode('Izin WhatsApp belum diberikan'));
+    }
+
+    public function test_permission_without_account_is_explained(): void
+    {
+        $this->fakeScopes([['scope' => 'whatsapp_business_management']]);
+        $this->loginCallback()->assertRedirectContains('wa_error='.urlencode('Belum ada akun WhatsApp Business yang dipilih'));
+    }
+
+    public function test_accounts_found_through_businesses_when_scopes_have_no_ids(): void
+    {
+        $this->fakeScopes([['scope' => 'whatsapp_business_management'], ['scope' => 'whatsapp_business_messaging']], [
+            '*/me/businesses*' => Http::response(['data' => [['id' => 'b1', 'owned_whatsapp_business_accounts' => ['data' => [['id' => '888']]]]]]),
+            '*/888/phone_numbers*' => Http::response(['data' => [['id' => '777', 'display_phone_number' => '+62 813']]]),
+        ]);
+        $this->loginCallback()->assertRedirect('http://front/settings/whatsapp?wa=connected');
+        $this->assertSame(['777', '888'], [UserIntegration::sole()->settings['phone_number_id'], UserIntegration::sole()->settings['waba_id']]);
     }
 
     public function test_status_and_test_message_with_plain_errors(): void
