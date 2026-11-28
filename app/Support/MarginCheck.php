@@ -77,6 +77,11 @@ class MarginCheck
             $adPerUnit = $itemUnits > 0 ? (int) round($spend / $itemUnits) : 0;
             $margin = $price - $fee - $hpp - $adPerUnit;
             $pct = round($margin / $price * 100, 1);
+            $minPrice = (int) (ceil(($hpp + $adPerUnit) / max(0.05, 1 - ($rate ?? self::DEFAULT_FEE_RATE) - $threshold / 100) / 100) * 100);
+            // List price to set so buyers still pay at least the minimum price: buyers paid $price for a $l->price listing
+            // on average (discounts), so keep that ratio. Null when the list price is already high enough (the promo is the problem).
+            $ratio = $l->price > 0 ? min(1, $price / $l->price) : 1;
+            $suggested = (int) (ceil($minPrice / max(0.3, $ratio) / 100) * 100);
             $rows[] = [
                 'id' => $l->id, 'shop_id' => (int) $l->marketplace_shop_id, 'shop_name' => $shops[$l->marketplace_shop_id] ?? null,
                 'item_id' => (int) $l->item_id, 'name' => $l->name, 'variant' => $l->model_name, 'sku' => $l->sku, 'image' => $l->image,
@@ -86,7 +91,8 @@ class MarginCheck
                 'margin' => $margin, 'margin_pct' => $pct,
                 'status' => $margin < 0 ? 'rugi' : ($pct < $threshold ? 'tipis' : 'aman'),
                 // Lowest price that still leaves the minimum margin: (hpp + ads) / (1 − fee rate − threshold).
-                'min_price' => (int) (ceil(($hpp + $adPerUnit) / max(0.05, 1 - ($rate ?? self::DEFAULT_FEE_RATE) - $threshold / 100) / 100) * 100),
+                'min_price' => $minPrice,
+                'suggested_price' => $margin < 0 || $pct < $threshold ? ($suggested > (int) $l->price ? $suggested : null) : null,
             ];
         }
         usort($rows, fn ($a, $b) => [$a['status'] === 'aman', $a['margin_pct']] <=> [$b['status'] === 'aman', $b['margin_pct']]);

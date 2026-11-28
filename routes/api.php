@@ -274,6 +274,8 @@ Route::middleware(['auth:sanctum', 'member', 'subscribed'])->group(function () {
         Route::post('/stats/sync', 'statsSync')->middleware('throttle:4,1');
         Route::get('/performance', 'performance');
         Route::get('/margins', 'margins');
+        Route::get('/bundle-suggestions', 'bundleSuggestions')->middleware('throttle:30,1');
+        Route::get('/order-hours', 'orderHours')->middleware('throttle:30,1');
         Route::get('/active-promotions', 'activePromotions')->middleware('throttle:30,1');
         Route::post('/prices', 'prices')->middleware('throttle:20,1');
         Route::post('/unlist', 'unlist')->middleware('throttle:20,1');

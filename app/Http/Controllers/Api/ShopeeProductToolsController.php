@@ -168,6 +168,20 @@ class ShopeeProductToolsController extends Controller
         return \App\Support\MarginCheck::compute($request->user(), $request->integer('shop_id') ?: null);
     }
 
+    /** Peta Jam Ramai: orders per day × hour (WIB). */
+    public function orderHours(Request $request)
+    {
+        $d = $request->validate(['days' => 'nullable|integer|in:7,30,60,90', 'channel' => 'nullable|in:shopee,all', 'shop_id' => 'nullable|integer']);
+
+        return \App\Support\OrderHours::compute($request->user(), (int) ($d['days'] ?? 30), $d['channel'] ?? 'shopee', $d['shop_id'] ?? null);
+    }
+
+    /** Saran Paket: product pairs often bought in the same order (Paket Diskon candidates). */
+    public function bundleSuggestions(Request $request)
+    {
+        return \App\Support\BundleSuggest::compute($request->user(), $request->integer('shop_id') ?: null);
+    }
+
     /**
      * Cek promo aktif per produk, keyed "marketplace_shop_id:item_id" (the same keys as Cek Margin / Simulasi Promo rows).
      * ?fresh=1 skips the 15-minute cache.
