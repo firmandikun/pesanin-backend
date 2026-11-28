@@ -442,3 +442,5 @@ Artisan::command('shopee:push-process {--seconds=50}', function () {
     }
 })->purpose('Apply stored Shopee Live Push events');
 \Illuminate\Support\Facades\Schedule::command('shopee:push-process')->everyFiveSeconds()->withoutOverlapping()->runInBackground();
+// Raw Shopee push log: applied/failed events older than MARKETPLACE_EVENTS_KEEP_DAYS (default 30) are deleted. Orders are untouched.
+\Illuminate\Support\Facades\Schedule::command('model:prune', ['--model' => [\App\Models\MarketplaceEvent::class]])->dailyAt('03:40')->withoutOverlapping();

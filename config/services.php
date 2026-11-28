@@ -110,6 +110,9 @@ return [
         'binary' => env('NODE_BINARY'),
     ],
 
+    // Days to keep the raw marketplace webhook log (marketplace_events); orders are never affected.
+    'marketplace_events_keep_days' => (int) env('MARKETPLACE_EVENTS_KEEP_DAYS', 30),
+
     'shopee' => [
         // Shopee Open Platform v2. Sandbox keys come from open.shopee.com → App → Test credentials.
         'partner_id' => (int) env('SHOPEE_PARTNER_ID', 0),
