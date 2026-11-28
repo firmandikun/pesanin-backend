@@ -86,6 +86,101 @@ class ShopeePromotions
         };
     }
 
+    /** Every item_id found anywhere in a Shopee response (item lists differ per promotion type). @return int[] */
+    private static function itemIds(mixed $node): array
+    {
+        $out = [];
+        if (is_array($node)) {
+            foreach ($node as $k => $v) {
+                if ($k === 'item_id' && is_numeric($v)) {
+                    $out[] = (int) $v;
+                } elseif (in_array($k, ['item_id_list', 'item_ids'], true) && is_array($v) && array_is_list($v) && array_filter($v, 'is_numeric') === $v) {
+                    array_push($out, ...array_map('intval', $v)); // e.g. product vouchers: "item_id_list": [1, 2]
+                } elseif (is_array($v)) {
+                    array_push($out, ...self::itemIds($v));
+                }
+            }
+        }
+
+        return array_values(array_unique($out));
+    }
+
+    /**
+     * Cek promo aktif per produk: which ongoing or upcoming promotions each item is already in, so a new discount
+     * does not stack on top of a flash sale, bundle or voucher without the seller noticing.
+     * Uses the promotion modules Pesanin already manages (list + the item list of each promotion). Each type is read
+     * on its own: one Shopee error only drops that type (reported in `errors`). Cached 15 minutes per shop.
+     *
+     * @return array{items: array<int, array<int, array{type: string, label: string, name: string, status: string, start_time: ?int, end_time: ?int, detail: string}>>, shop_wide: array, errors: array<int, string>}
+     */
+    public function activeItems(MarketplaceShop $shop, bool $fresh = false): array
+    {
+        $key = "shopee:active_promos:{$shop->id}";
+        if (! $fresh && ($hit = \Illuminate\Support\Facades\Cache::get($key))) {
+            return $hit;
+        }
+        $items = [];
+        $shopWide = [];
+        $errors = [];
+        $live = fn (array $r) => in_array($r['status'], ['ongoing', 'upcoming'], true);
+        $add = function (array $ids, string $type, string $label, array $row) use (&$items) {
+            foreach ($ids as $id) {
+                $items[$id][] = ['type' => $type, 'label' => $label, 'name' => $row['name'], 'status' => $row['status'],
+                    'start_time' => $row['start_time'], 'end_time' => $row['end_time'], 'detail' => $row['detail']];
+            }
+        };
+        $each = function (string $type, string $label, callable $fn) use (&$errors) {
+            try {
+                $fn();
+            } catch (\Throwable $e) {
+                $errors[] = "{$label}: ".mb_substr($e->getMessage(), 0, 120);
+            }
+        };
+
+        $each('discount', 'Promo Toko', function () use ($shop, $live, $add) {
+            foreach (array_filter($this->list($shop, 'discount'), $live) as $d) {
+                $r = $this->call($shop, 'GET', 'discount/get_discount', ['discount_id' => (int) $d['id'], 'page_no' => 1, 'page_size' => 100]);
+                $add(self::itemIds($r['item_list'] ?? $r), 'discount', 'Promo Toko', $d);
+            }
+        });
+        $each('flash', 'Flash Sale', function () use ($shop, $live, $add) {
+            foreach (array_filter($this->list($shop, 'flash'), fn ($f) => $live($f) && empty($f['disabled'])) as $f) {
+                $r = $this->call($shop, 'GET', 'shop_flash_sale/get_shop_flash_sale_items', ['flash_sale_id' => (int) $f['id'], 'offset' => 0, 'limit' => 100]);
+                $add(self::itemIds($r), 'flash', 'Flash Sale', $f);
+            }
+        });
+        $each('bundle', 'Paket Diskon', function () use ($shop, $live, $add) {
+            foreach (array_filter($this->list($shop, 'bundle'), $live) as $b) {
+                $r = $this->call($shop, 'GET', 'bundle_deal/get_bundle_deal_item', ['bundle_deal_id' => (int) $b['id']]);
+                $add(self::itemIds($r), 'bundle', 'Paket Diskon', $b);
+            }
+        });
+        $each('addon', 'Kombo Hemat', function () use ($shop, $live, $add) {
+            foreach (array_filter($this->list($shop, 'addon'), $live) as $a) {
+                $r = $this->call($shop, 'GET', 'add_on_deal/get_add_on_deal_main_item', ['add_on_deal_id' => (int) $a['id']]);
+                $add(self::itemIds($r), 'addon', 'Kombo Hemat', $a);
+            }
+        });
+        $each('voucher', 'Voucher', function () use ($shop, $live, $add, &$shopWide) {
+            $raw = collect($this->call($shop, 'GET', 'voucher/get_voucher_list', ['status' => 'all', 'page_no' => 1, 'page_size' => 100])['voucher_list'] ?? [])->keyBy('voucher_id');
+            foreach (array_filter($this->list($shop, 'voucher'), $live) as $v) {
+                if ((int) ($raw[$v['id']]['voucher_type'] ?? 1) === 2) {
+                    $r = $this->call($shop, 'GET', 'voucher/get_voucher', ['voucher_id' => (int) $v['id']]);
+                    $add(self::itemIds($r), 'voucher', 'Voucher Produk', $v);
+                } else {
+                    // Shop voucher: applies to every product.
+                    $shopWide[] = ['type' => 'voucher', 'label' => 'Voucher Toko', 'name' => $v['name'], 'status' => $v['status'],
+                        'start_time' => $v['start_time'], 'end_time' => $v['end_time'], 'detail' => $v['detail']];
+                }
+            }
+        });
+
+        $out = ['items' => $items, 'shop_wide' => $shopWide, 'errors' => $errors, 'checked_at' => now()->toIso8601String()];
+        \Illuminate\Support\Facades\Cache::put($key, $out, now()->addMinutes(15));
+
+        return $out;
+    }
+
     /** Free flash-sale time slots Shopee offers for a period (unix seconds). */
     public function timeSlots(MarketplaceShop $shop, int $from, int $to): array
     {

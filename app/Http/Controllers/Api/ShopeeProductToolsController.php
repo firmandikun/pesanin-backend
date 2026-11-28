@@ -168,6 +168,38 @@ class ShopeeProductToolsController extends Controller
         return \App\Support\MarginCheck::compute($request->user(), $request->integer('shop_id') ?: null);
     }
 
+    /**
+     * Cek promo aktif per produk, keyed "marketplace_shop_id:item_id" (the same keys as Cek Margin / Simulasi Promo rows).
+     * ?fresh=1 skips the 15-minute cache.
+     */
+    public function activePromotions(Request $request)
+    {
+        $shopId = $request->integer('shop_id') ?: null;
+        $shops = MarketplaceShop::where('user_id', $request->user()->id)->where('platform', 'shopee')->where('status', 'active')->where('is_demo', false)
+            ->when($shopId, fn ($q) => $q->whereKey($shopId))->get();
+        $items = [];
+        $shopWide = [];
+        $errors = [];
+        foreach ($shops as $shop) {
+            try {
+                $r = (new \App\Support\Shopee\ShopeePromotions)->activeItems($shop, $request->boolean('fresh'));
+            } catch (\Throwable $e) {
+                $errors[] = "{$shop->shop_name}: ".mb_substr($e->getMessage(), 0, 120);
+
+                continue;
+            }
+            foreach ($r['items'] as $itemId => $promos) {
+                $items["{$shop->id}:{$itemId}"] = $promos;
+            }
+            $shopWide[$shop->id] = $r['shop_wide'];
+            foreach ($r['errors'] as $e) {
+                $errors[] = "{$shop->shop_name} · {$e}";
+            }
+        }
+
+        return ['items' => (object) $items, 'shop_wide' => (object) $shopWide, 'errors' => $errors];
+    }
+
     public function performance(Request $request)
     {
         $userId = $request->user()->id;
