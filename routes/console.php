@@ -476,3 +476,17 @@ Artisan::command('marketplace:hpp-reminder', function () {
     $this->info("Pengingat HPP terkirim: {$n}");
 })->purpose('Remind sellers about products sold without HPP');
 \Illuminate\Support\Facades\Schedule::command('marketplace:hpp-reminder')->weeklyOn(1, '09:00')->timezone('Asia/Jakarta')->withoutOverlapping();
+
+// Aktivasi: 10:00 WIB, remind sellers (1–14 days old) about the first checklist step they skipped. Once per step.
+Artisan::command('activation:nudge', function () {
+    $n = 0;
+    foreach (\App\Models\User::where('is_admin', false)->whereNull('suspended_at')->whereBetween('created_at', [now()->subDays(14), now()->subDay()])->get() as $user) {
+        try {
+            $n += \App\Support\Activation::nudge($user) ? 1 : 0;
+        } catch (\Throwable $e) {
+            $this->warn("Aktivasi user {$user->id}: {$e->getMessage()}");
+        }
+    }
+    $this->info("Pengingat langkah awal terkirim: {$n}");
+})->purpose('Remind new sellers about their next activation step');
+\Illuminate\Support\Facades\Schedule::command('activation:nudge')->dailyAt('10:00')->timezone('Asia/Jakarta')->withoutOverlapping();

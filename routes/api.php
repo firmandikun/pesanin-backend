@@ -68,6 +68,7 @@ Route::prefix('public')->middleware('throttle:60,1')->group(function () {
 // Pesanin platform admin (users.is_admin).
 Route::middleware(['auth:sanctum', 'member', 'admin'])->prefix('admin')->controller(\App\Http\Controllers\Api\AdminController::class)->group(function () {
     Route::get('/overview', 'overview');
+    Route::get('/activation', 'activation');
     Route::get('/users', 'users');
     Route::get('/users/{user}', 'user');
     Route::put('/users/{user}', 'updateUser');

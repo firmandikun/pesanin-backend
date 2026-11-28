@@ -90,6 +90,14 @@ class AdminController extends Controller
         ];
     }
 
+    /** Aktivasi seller baru: funnel of the checklist steps + sellers who stopped halfway (to contact them). */
+    public function activation(Request $request)
+    {
+        $data = $request->validate(['days' => 'nullable|integer|in:7,14,30,90', 'track' => 'nullable|in:marketplace,social']);
+
+        return \App\Support\Activation::report((int) ($data['days'] ?? 30), $data['track'] ?? 'marketplace');
+    }
+
     public function users(Request $request)
     {
         $data = $request->validate(['search' => 'nullable|string|max:100', 'plan' => 'nullable|string|max:20', 'status' => 'nullable|in:active,suspended,admin,expiring', 'per_page' => 'nullable|integer|min:1|max:1000']);

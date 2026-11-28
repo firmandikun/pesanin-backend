@@ -68,22 +68,9 @@ class ReportController extends Controller
                 'revenue' => (int) (clone $orders)->whereBetween('created_at', \App\Support\Dates::today())->sum('total'),
             ],
             'track' => \App\Support\Plans::track($user),
-            // Marketplace activation (GTM Playbook): connect Shopee, HPP on 3+ products, orders in, profit visible.
-            'onboarding_marketplace' => [
-                'shop' => $hasShop = $user->marketplaceShops()->where('is_demo', false)->where('status', 'active')->exists(),
-                'hpp' => $hpp = \App\Models\MarketplaceListing::where('user_id', $user->id)->where('cost_price', '>', 0)->count() >= 3,
-                'order' => $shopeeOrder = $user->orders()->where('channel', 'shopee')->exists(),
-                'profit' => $hasShop && $hpp && $shopeeOrder,
-                'whatsapp' => (bool) $user->whatsapp,
-            ],
-            'onboarding' => [
-                'product' => $user->products()->exists(),
-                'order' => $user->orders()->where('is_abandoned', false)->exists(),
-                'tracking' => $user->orders()->whereNotNull('tracking_number')->exists(),
-                'followup' => $user->followupTemplates()->where('updated_at', '>', $user->created_at->addSecond())->exists(),
-                'address' => $user->addresses()->exists(),
-                'whatsapp' => $user->whatsapp && ! empty($user->bank_accounts),
-            ],
+            // Aktivasi (App\Support\Activation): checklist steps per track, shared with the Admin Console funnel.
+            'onboarding_marketplace' => \App\Support\Activation::progress($user, 'marketplace'),
+            'onboarding' => \App\Support\Activation::progress($user, 'social'),
             'recent_orders' => (clone $orders)->with(['product:id,name', 'marketplaceShop:id,shop_name'])->latest()->limit(6)
                 ->get(['id', 'code', 'channel', 'utm_source', 'customer_name', 'product_id', 'marketplace_shop_id', 'external_order_sn', 'external_status', 'items', 'total', 'status', 'payment_status', 'created_at']),
         ];
